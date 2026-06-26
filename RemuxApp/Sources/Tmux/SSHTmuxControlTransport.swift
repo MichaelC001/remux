@@ -15,7 +15,7 @@ struct SSHTmuxControlConfiguration: Sendable {
     let sessionName: String
     let initialViewport: TmuxControlViewport
     let traceFlowID: String?
-    let authenticatedConnectionPoolKey: SSHTmuxAuthenticatedConnectionPoolKey?
+    let sshRootKey: SSHTmuxAuthenticatedConnectionPoolKey?
 
     init(
         host: String,
@@ -28,7 +28,7 @@ struct SSHTmuxControlConfiguration: Sendable {
         sessionName: String,
         initialViewport: TmuxControlViewport = .default,
         traceFlowID: String? = nil,
-        authenticatedConnectionPoolKey: SSHTmuxAuthenticatedConnectionPoolKey? = nil
+        sshRootKey: SSHTmuxAuthenticatedConnectionPoolKey? = nil
     ) {
         self.host = host
         self.port = port
@@ -40,7 +40,7 @@ struct SSHTmuxControlConfiguration: Sendable {
         self.sessionName = sessionName
         self.initialViewport = initialViewport
         self.traceFlowID = traceFlowID
-        self.authenticatedConnectionPoolKey = authenticatedConnectionPoolKey
+        self.sshRootKey = sshRootKey
     }
 }
 
@@ -176,7 +176,7 @@ actor SSHTmuxControlTransport: TmuxControlTransport {
 
     private let configuration: SSHTmuxControlConfiguration
     private let inboundStream: SSHTmuxControlInboundStream
-    private let authenticatedConnectionPool: SSHTmuxAuthenticatedConnectionPool?
+    private let sshRootService: SSHTmuxAuthenticatedConnectionPool?
 
     private var resizeState: TmuxViewportResizeState
     private var pendingWrites: [Data] = []
@@ -187,10 +187,10 @@ actor SSHTmuxControlTransport: TmuxControlTransport {
 
     init(
         configuration: SSHTmuxControlConfiguration,
-        authenticatedConnectionPool: SSHTmuxAuthenticatedConnectionPool? = nil
+        sshRootService: SSHTmuxAuthenticatedConnectionPool? = nil
     ) {
         self.configuration = configuration
-        self.authenticatedConnectionPool = authenticatedConnectionPool
+        self.sshRootService = sshRootService
         self.resizeState = TmuxViewportResizeState(initialViewport: configuration.initialViewport)
         let inboundStream = SSHTmuxControlInboundStream()
         self.inboundStream = inboundStream
@@ -375,10 +375,10 @@ actor SSHTmuxControlTransport: TmuxControlTransport {
             ]
         )
 
-        if let authenticatedConnectionPool,
-           let poolKey = configuration.authenticatedConnectionPoolKey {
-            return await authenticatedConnectionPool.preparedConnection(
-                for: poolKey,
+        if let sshRootService,
+           let rootKey = configuration.sshRootKey {
+            return await sshRootService.preparedConnection(
+                for: rootKey,
                 configuration: configuration,
                 trace: startupTrace
             )
