@@ -163,7 +163,7 @@ struct RemuxAppDependencies: Sendable {
 
         await sshRootService.prewarmConnection(
             for: rootKey,
-            configuration: configuration,
+            configuration: configuration.sshRootConfiguration,
             trace: trace,
             reason: "library"
         )

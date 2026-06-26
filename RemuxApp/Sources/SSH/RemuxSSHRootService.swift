@@ -20,6 +20,28 @@ struct RemuxSSHRootKey: Hashable, Sendable {
     }
 }
 
+struct RemuxSSHRootConfiguration: Sendable {
+    let host: String
+    let port: Int
+    let authenticationMethod: @Sendable () throws -> SSHAuthenticationMethod
+    let hostKeyValidator: SSHHostKeyValidator
+    let connectTimeout: TimeAmount
+
+    init(
+        host: String,
+        port: Int,
+        authenticationMethod: @escaping @Sendable () throws -> SSHAuthenticationMethod,
+        hostKeyValidator: SSHHostKeyValidator,
+        connectTimeout: TimeAmount
+    ) {
+        self.host = host
+        self.port = port
+        self.authenticationMethod = authenticationMethod
+        self.hostKeyValidator = hostKeyValidator
+        self.connectTimeout = connectTimeout
+    }
+}
+
 enum RemuxSSHRootReadiness: Equatable, Sendable {
     case connecting
     case ready
@@ -158,7 +180,7 @@ struct SSHTmuxPreparedConnection {
     }
 
     static func dedicated(
-        configuration: SSHTmuxControlConfiguration,
+        configuration: RemuxSSHRootConfiguration,
         trace: SSHTmuxControlStartupTrace
     ) -> SSHTmuxPreparedConnection {
         SSHTmuxPreparedConnection(
@@ -336,7 +358,7 @@ actor RemuxSSHRootService {
 
     func prewarmConnection(
         for key: RemuxSSHRootKey,
-        configuration: SSHTmuxControlConfiguration,
+        configuration: RemuxSSHRootConfiguration,
         trace: SSHTmuxControlStartupTrace,
         reason: String
     ) {
@@ -383,7 +405,7 @@ actor RemuxSSHRootService {
 
     func preparedConnection(
         for key: RemuxSSHRootKey,
-        configuration: SSHTmuxControlConfiguration,
+        configuration: RemuxSSHRootConfiguration,
         trace: SSHTmuxControlStartupTrace
     ) -> SSHTmuxPreparedConnection {
         guard let snapshot = reserveEntry(
@@ -573,7 +595,7 @@ actor RemuxSSHRootService {
 
     private func entrySnapshot(
         for key: RemuxSSHRootKey,
-        configuration: SSHTmuxControlConfiguration,
+        configuration: RemuxSSHRootConfiguration,
         trace: SSHTmuxControlStartupTrace
     ) -> EntrySnapshot {
         if let existing = entries[key] {
@@ -610,7 +632,7 @@ actor RemuxSSHRootService {
 
     private func reserveEntry(
         for key: RemuxSSHRootKey,
-        configuration: SSHTmuxControlConfiguration,
+        configuration: RemuxSSHRootConfiguration,
         trace: SSHTmuxControlStartupTrace
     ) -> EntrySnapshot? {
         let reservationID = UUID()
@@ -668,14 +690,14 @@ actor RemuxSSHRootService {
     }
 
     private func dedicatedPreparedConnection(
-        configuration: SSHTmuxControlConfiguration,
+        configuration: RemuxSSHRootConfiguration,
         trace: SSHTmuxControlStartupTrace
     ) -> SSHTmuxPreparedConnection {
         SSHTmuxPreparedConnection.dedicated(configuration: configuration, trace: trace)
     }
 
     private nonisolated func makeAuthenticationTask(
-        configuration: SSHTmuxControlConfiguration,
+        configuration: RemuxSSHRootConfiguration,
         trace: SSHTmuxControlStartupTrace
     ) -> Task<SSHTmuxAuthenticatedConnection, Error> {
         SSHTmuxPreparedConnection.authenticationTask(configuration: configuration, trace: trace)
@@ -878,7 +900,7 @@ actor RemuxSSHRootService {
 
 private extension SSHTmuxPreparedConnection {
     static func authenticationTask(
-        configuration: SSHTmuxControlConfiguration,
+        configuration: RemuxSSHRootConfiguration,
         trace: SSHTmuxControlStartupTrace
     ) -> Task<SSHTmuxAuthenticatedConnection, Error> {
         Task.detached(priority: .userInitiated) {
@@ -892,7 +914,7 @@ private extension SSHTmuxPreparedConnection {
 
 private enum SSHTmuxAuthenticatedConnectionBootstrap {
     static func authenticate(
-        using configuration: SSHTmuxControlConfiguration,
+        using configuration: RemuxSSHRootConfiguration,
         trace: SSHTmuxControlStartupTrace
     ) async throws -> SSHTmuxAuthenticatedConnection {
         var rootChannel: Channel?

@@ -42,6 +42,16 @@ struct SSHTmuxControlConfiguration: Sendable {
         self.traceFlowID = traceFlowID
         self.sshRootKey = sshRootKey
     }
+
+    var sshRootConfiguration: RemuxSSHRootConfiguration {
+        RemuxSSHRootConfiguration(
+            host: host,
+            port: port,
+            authenticationMethod: authenticationMethod,
+            hostKeyValidator: hostKeyValidator,
+            connectTimeout: connectTimeout
+        )
+    }
 }
 
 struct SSHTmuxControlChannelCompletionState: Equatable, Sendable {
@@ -379,13 +389,13 @@ actor SSHTmuxControlTransport: TmuxControlTransport {
            let rootKey = configuration.sshRootKey {
             return await sshRootService.preparedConnection(
                 for: rootKey,
-                configuration: configuration,
+                configuration: configuration.sshRootConfiguration,
                 trace: startupTrace
             )
         }
 
         return SSHTmuxPreparedConnection.dedicated(
-            configuration: configuration,
+            configuration: configuration.sshRootConfiguration,
             trace: startupTrace
         )
     }
