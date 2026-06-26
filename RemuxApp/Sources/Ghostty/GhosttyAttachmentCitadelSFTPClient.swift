@@ -330,7 +330,14 @@ struct GhosttyAttachmentCitadelSFTPClientProvider: GhosttyAttachmentSFTPClientPr
         )
 
         do {
+            let sftpOpenStartedAt = GhosttyRuntimeTrace.latencyEnabled ? GhosttyRuntimeTrace.nowNanos() : nil
+            GhosttyRuntimeTrace.latency("sftp.open begin host=\(configuration.host):\(configuration.port)")
             let sftp = try await ssh.openSFTP()
+            if let sftpOpenStartedAt {
+                GhosttyRuntimeTrace.latency(
+                    "sftp.open end host=\(configuration.host):\(configuration.port) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: sftpOpenStartedAt))"
+                )
+            }
             let leaseState = GhosttyAttachmentCitadelSFTPLeaseState(
                 sftp: sftp,
                 ssh: ssh

@@ -469,7 +469,14 @@ struct GhosttyAttachmentSFTPTransferService<Client: GhosttyAttachmentSFTPClient>
             for: remotePath.remoteDirectory
         ) where ensuredDirectories.insert(directory).inserted {
             do {
+                let mkdirStartedAt = GhosttyRuntimeTrace.latencyEnabled ? GhosttyRuntimeTrace.nowNanos() : nil
+                GhosttyRuntimeTrace.latency("upload.mkdir begin path=\(directory)")
                 try await client.ensureDirectoryExists(atPath: directory)
+                if let mkdirStartedAt {
+                    GhosttyRuntimeTrace.latency(
+                        "upload.mkdir end path=\(directory) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: mkdirStartedAt))"
+                    )
+                }
             } catch is CancellationError {
                 throw GhosttyAttachmentTransferError.cancelled
             } catch let error as GhosttyAttachmentSFTPClientError where error == .operationTimedOut {
@@ -499,6 +506,10 @@ struct GhosttyAttachmentSFTPTransferService<Client: GhosttyAttachmentSFTPClient>
         ))
 
         do {
+            let writeStartedAt = GhosttyRuntimeTrace.latencyEnabled ? GhosttyRuntimeTrace.nowNanos() : nil
+            GhosttyRuntimeTrace.latency(
+                "upload.write begin path=\(remotePath.remoteTemporaryPath) bytes=\(totalBytes)"
+            )
             try await client.uploadFile(
                 from: localURL,
                 to: remotePath.remoteTemporaryPath,
@@ -512,6 +523,11 @@ struct GhosttyAttachmentSFTPTransferService<Client: GhosttyAttachmentSFTPClient>
                     ))
                 }
             )
+            if let writeStartedAt {
+                GhosttyRuntimeTrace.latency(
+                    "upload.write end path=\(remotePath.remoteTemporaryPath) bytes=\(totalBytes) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: writeStartedAt))"
+                )
+            }
         } catch is CancellationError {
             await cleanupTemporaryFileIfPossible(at: remotePath.remoteTemporaryPath)
             throw GhosttyAttachmentTransferError.cancelled
@@ -525,10 +541,19 @@ struct GhosttyAttachmentSFTPTransferService<Client: GhosttyAttachmentSFTPClient>
         }
 
         do {
+            let renameStartedAt = GhosttyRuntimeTrace.latencyEnabled ? GhosttyRuntimeTrace.nowNanos() : nil
+            GhosttyRuntimeTrace.latency(
+                "upload.rename begin from=\(remotePath.remoteTemporaryPath) to=\(remotePath.remoteFinalPath)"
+            )
             try await client.renameFile(
                 from: remotePath.remoteTemporaryPath,
                 to: remotePath.remoteFinalPath
             )
+            if let renameStartedAt {
+                GhosttyRuntimeTrace.latency(
+                    "upload.rename end from=\(remotePath.remoteTemporaryPath) to=\(remotePath.remoteFinalPath) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: renameStartedAt))"
+                )
+            }
         } catch is CancellationError {
             await cleanupTemporaryFileIfPossible(at: remotePath.remoteTemporaryPath)
             throw GhosttyAttachmentTransferError.cancelled
@@ -543,7 +568,14 @@ struct GhosttyAttachmentSFTPTransferService<Client: GhosttyAttachmentSFTPClient>
         }
 
         do {
+            let realPathStartedAt = GhosttyRuntimeTrace.latencyEnabled ? GhosttyRuntimeTrace.nowNanos() : nil
+            GhosttyRuntimeTrace.latency("upload.realpath begin path=\(remotePath.remoteFinalPath)")
             let terminalPath = try await client.realPath(atPath: remotePath.remoteFinalPath)
+            if let realPathStartedAt {
+                GhosttyRuntimeTrace.latency(
+                    "upload.realpath end path=\(remotePath.remoteFinalPath) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: realPathStartedAt))"
+                )
+            }
             return remotePath.withTerminalPath(terminalPath)
         } catch let error as GhosttyAttachmentSFTPClientError where error == .operationTimedOut {
             throw GhosttyAttachmentTransferError.remoteOperationTimedOut
