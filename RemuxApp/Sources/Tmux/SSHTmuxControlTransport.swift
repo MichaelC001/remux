@@ -15,7 +15,7 @@ struct SSHTmuxControlConfiguration: Sendable {
     let sessionName: String
     let initialViewport: TmuxControlViewport
     let traceFlowID: String?
-    let sshRootKey: SSHTmuxAuthenticatedConnectionPoolKey?
+    let sshRootKey: RemuxSSHRootKey?
 
     init(
         host: String,
@@ -28,7 +28,7 @@ struct SSHTmuxControlConfiguration: Sendable {
         sessionName: String,
         initialViewport: TmuxControlViewport = .default,
         traceFlowID: String? = nil,
-        sshRootKey: SSHTmuxAuthenticatedConnectionPoolKey? = nil
+        sshRootKey: RemuxSSHRootKey? = nil
     ) {
         self.host = host
         self.port = port
@@ -176,7 +176,7 @@ actor SSHTmuxControlTransport: TmuxControlTransport {
 
     private let configuration: SSHTmuxControlConfiguration
     private let inboundStream: SSHTmuxControlInboundStream
-    private let sshRootService: SSHTmuxAuthenticatedConnectionPool?
+    private let sshRootService: RemuxSSHRootService?
 
     private var resizeState: TmuxViewportResizeState
     private var pendingWrites: [Data] = []
@@ -187,7 +187,7 @@ actor SSHTmuxControlTransport: TmuxControlTransport {
 
     init(
         configuration: SSHTmuxControlConfiguration,
-        sshRootService: SSHTmuxAuthenticatedConnectionPool? = nil
+        sshRootService: RemuxSSHRootService? = nil
     ) {
         self.configuration = configuration
         self.sshRootService = sshRootService

@@ -4,7 +4,7 @@ import NIO
 import NIOConcurrencyHelpers
 @preconcurrency import NIOSSH
 
-struct SSHTmuxAuthenticatedConnectionPoolKey: Hashable, Sendable {
+struct RemuxSSHRootKey: Hashable, Sendable {
     let serverID: SavedServer.ID
     let host: String
     let port: Int
@@ -20,7 +20,7 @@ struct SSHTmuxAuthenticatedConnectionPoolKey: Hashable, Sendable {
     }
 }
 
-enum SSHTmuxAuthenticatedConnectionPoolEntryReadiness: Equatable, Sendable {
+enum RemuxSSHRootReadiness: Equatable, Sendable {
     case connecting
     case ready
 
@@ -34,10 +34,10 @@ enum SSHTmuxAuthenticatedConnectionPoolEntryReadiness: Equatable, Sendable {
     }
 }
 
-struct SSHTmuxAuthenticatedConnectionPoolSnapshot: Equatable, Sendable {
+struct RemuxSSHRootServiceSnapshot: Equatable, Sendable {
     struct Entry: Equatable, Sendable {
         let generation: UUID
-        let readiness: SSHTmuxAuthenticatedConnectionPoolEntryReadiness
+        let readiness: RemuxSSHRootReadiness
         let activeLeaseCount: Int
         let reservationCount: Int
         let isIdleCloseScheduled: Bool
@@ -47,13 +47,13 @@ struct SSHTmuxAuthenticatedConnectionPoolSnapshot: Equatable, Sendable {
     /// draining (multi-lease invalidation).
     let retiredCount: Int
 
-    fileprivate let entries: [SSHTmuxAuthenticatedConnectionPoolKey: Entry]
+    fileprivate let entries: [RemuxSSHRootKey: Entry]
 
     var entryCount: Int {
         entries.count
     }
 
-    func entry(for key: SSHTmuxAuthenticatedConnectionPoolKey) -> Entry? {
+    func entry(for key: RemuxSSHRootKey) -> Entry? {
         entries[key]
     }
 }
@@ -95,16 +95,16 @@ extension TmuxControlTransportCloseDisposition {
 fileprivate final class SSHTmuxAuthenticatedConnectionLease: @unchecked Sendable {
     private let connection: SSHTmuxAuthenticatedConnection
 
-    private let pool: SSHTmuxAuthenticatedConnectionPool
-    private let key: SSHTmuxAuthenticatedConnectionPoolKey
+    private let pool: RemuxSSHRootService
+    private let key: RemuxSSHRootKey
     private let generation: UUID
     private let lock = NIOLock()
     private var isReleased = false
 
     init(
         connection: SSHTmuxAuthenticatedConnection,
-        pool: SSHTmuxAuthenticatedConnectionPool,
-        key: SSHTmuxAuthenticatedConnectionPoolKey,
+        pool: RemuxSSHRootService,
+        key: RemuxSSHRootKey,
         generation: UUID
     ) {
         self.connection = connection
@@ -138,8 +138,8 @@ struct SSHTmuxPreparedConnection {
 
     fileprivate static func pooled(
         trace: SSHTmuxControlStartupTrace,
-        pool: SSHTmuxAuthenticatedConnectionPool,
-        key: SSHTmuxAuthenticatedConnectionPoolKey,
+        pool: RemuxSSHRootService,
+        key: RemuxSSHRootKey,
         generation: UUID,
         reservationID: UUID,
         task: Task<SSHTmuxAuthenticatedConnection, Error>
@@ -231,8 +231,8 @@ struct SSHTmuxPreparedConnection {
 private enum SSHTmuxPreparedConnectionOwnership {
     case dedicated
     case pooled(
-        pool: SSHTmuxAuthenticatedConnectionPool,
-        key: SSHTmuxAuthenticatedConnectionPoolKey,
+        pool: RemuxSSHRootService,
+        key: RemuxSSHRootKey,
         generation: UUID,
         reservationID: UUID
     )
@@ -263,14 +263,14 @@ struct SSHTmuxClaimedAuthenticatedConnection {
     }
 }
 
-actor SSHTmuxAuthenticatedConnectionPool {
+actor RemuxSSHRootService {
     private struct Entry {
         let generation: UUID
         let task: Task<SSHTmuxAuthenticatedConnection, Error>
         var activeLeaseCount: Int
         var reservationIDs: Set<UUID>
         var idleCloseTask: Task<Void, Never>?
-        var readiness: SSHTmuxAuthenticatedConnectionPoolEntryReadiness
+        var readiness: RemuxSSHRootReadiness
     }
 
     /// A root removed from the pool while sessions still lease it: no
@@ -288,7 +288,7 @@ actor SSHTmuxAuthenticatedConnectionPool {
         let generation: UUID
         let task: Task<SSHTmuxAuthenticatedConnection, Error>
         let didReuse: Bool
-        let readiness: SSHTmuxAuthenticatedConnectionPoolEntryReadiness
+        let readiness: RemuxSSHRootReadiness
         let reservationID: UUID?
     }
 
@@ -312,18 +312,18 @@ actor SSHTmuxAuthenticatedConnectionPool {
     static let maxConcurrentLeases = 4
 
     private let idleTimeout: Duration
-    private var entries: [SSHTmuxAuthenticatedConnectionPoolKey: Entry] = [:]
+    private var entries: [RemuxSSHRootKey: Entry] = [:]
     private var retiredEntries: [UUID: RetiredEntry] = [:]
 
     init(idleTimeout: Duration = .seconds(120)) {
         self.idleTimeout = idleTimeout
     }
 
-    func snapshot() -> SSHTmuxAuthenticatedConnectionPoolSnapshot {
-        SSHTmuxAuthenticatedConnectionPoolSnapshot(
+    func snapshot() -> RemuxSSHRootServiceSnapshot {
+        RemuxSSHRootServiceSnapshot(
             retiredCount: retiredEntries.count,
             entries: entries.mapValues { entry in
-                SSHTmuxAuthenticatedConnectionPoolSnapshot.Entry(
+                RemuxSSHRootServiceSnapshot.Entry(
                     generation: entry.generation,
                     readiness: entry.readiness,
                     activeLeaseCount: entry.activeLeaseCount,
@@ -335,7 +335,7 @@ actor SSHTmuxAuthenticatedConnectionPool {
     }
 
     func prewarmConnection(
-        for key: SSHTmuxAuthenticatedConnectionPoolKey,
+        for key: RemuxSSHRootKey,
         configuration: SSHTmuxControlConfiguration,
         trace: SSHTmuxControlStartupTrace,
         reason: String
@@ -382,7 +382,7 @@ actor SSHTmuxAuthenticatedConnectionPool {
     }
 
     func preparedConnection(
-        for key: SSHTmuxAuthenticatedConnectionPoolKey,
+        for key: RemuxSSHRootKey,
         configuration: SSHTmuxControlConfiguration,
         trace: SSHTmuxControlStartupTrace
     ) -> SSHTmuxPreparedConnection {
@@ -423,7 +423,7 @@ actor SSHTmuxAuthenticatedConnectionPool {
 
     fileprivate func leaseConnection(
         _ connection: SSHTmuxAuthenticatedConnection,
-        for key: SSHTmuxAuthenticatedConnectionPoolKey,
+        for key: RemuxSSHRootKey,
         generation: UUID,
         reservationID: UUID
     ) async throws -> SSHTmuxAuthenticatedConnectionLease {
@@ -447,7 +447,7 @@ actor SSHTmuxAuthenticatedConnectionPool {
 
     fileprivate func releaseConnection(
         _ connection: SSHTmuxAuthenticatedConnection,
-        for key: SSHTmuxAuthenticatedConnectionPoolKey,
+        for key: RemuxSSHRootKey,
         generation: UUID,
         disposition: SSHTmuxAuthenticatedConnectionLeaseDisposition
     ) async {
@@ -461,7 +461,7 @@ actor SSHTmuxAuthenticatedConnectionPool {
 
     @discardableResult
     private func leaseEntry(
-        for key: SSHTmuxAuthenticatedConnectionPoolKey,
+        for key: RemuxSSHRootKey,
         generation: UUID,
         reservationID: UUID
     ) -> LeaseEntryResult {
@@ -482,7 +482,7 @@ actor SSHTmuxAuthenticatedConnectionPool {
 
     @discardableResult
     private func releaseEntry(
-        for key: SSHTmuxAuthenticatedConnectionPoolKey,
+        for key: RemuxSSHRootKey,
         generation: UUID,
         disposition: SSHTmuxAuthenticatedConnectionLeaseDisposition
     ) -> ReleaseEntryResult {
@@ -525,7 +525,7 @@ actor SSHTmuxAuthenticatedConnectionPool {
     }
 
     func releaseReservation(
-        for key: SSHTmuxAuthenticatedConnectionPoolKey,
+        for key: RemuxSSHRootKey,
         generation: UUID,
         reservationID: UUID
     ) {
@@ -572,7 +572,7 @@ actor SSHTmuxAuthenticatedConnectionPool {
     }
 
     private func entrySnapshot(
-        for key: SSHTmuxAuthenticatedConnectionPoolKey,
+        for key: RemuxSSHRootKey,
         configuration: SSHTmuxControlConfiguration,
         trace: SSHTmuxControlStartupTrace
     ) -> EntrySnapshot {
@@ -609,7 +609,7 @@ actor SSHTmuxAuthenticatedConnectionPool {
     }
 
     private func reserveEntry(
-        for key: SSHTmuxAuthenticatedConnectionPoolKey,
+        for key: RemuxSSHRootKey,
         configuration: SSHTmuxControlConfiguration,
         trace: SSHTmuxControlStartupTrace
     ) -> EntrySnapshot? {
@@ -644,7 +644,7 @@ actor SSHTmuxAuthenticatedConnectionPool {
     }
 
     private func reserveExistingEntry(
-        for key: SSHTmuxAuthenticatedConnectionPoolKey,
+        for key: RemuxSSHRootKey,
         reservationID: UUID
     ) -> EntrySnapshot? {
         guard var existing = entries[key],
@@ -683,7 +683,7 @@ actor SSHTmuxAuthenticatedConnectionPool {
 
     private func observeAuthenticationResult(
         _ task: Task<SSHTmuxAuthenticatedConnection, Error>,
-        for key: SSHTmuxAuthenticatedConnectionPoolKey,
+        for key: RemuxSSHRootKey,
         generation: UUID
     ) {
         Task {
@@ -697,7 +697,7 @@ actor SSHTmuxAuthenticatedConnectionPool {
     }
 
     private func authenticationSucceeded(
-        for key: SSHTmuxAuthenticatedConnectionPoolKey,
+        for key: RemuxSSHRootKey,
         generation: UUID
     ) {
         guard var entry = entries[key], entry.generation == generation else { return }
@@ -707,7 +707,7 @@ actor SSHTmuxAuthenticatedConnectionPool {
     }
 
     private func authenticationFailed(
-        for key: SSHTmuxAuthenticatedConnectionPoolKey,
+        for key: RemuxSSHRootKey,
         generation: UUID
     ) {
         guard let entry = entries[key], entry.generation == generation else { return }
@@ -716,7 +716,7 @@ actor SSHTmuxAuthenticatedConnectionPool {
     }
 
     private func scheduleIdleCloseIfNeeded(
-        for key: SSHTmuxAuthenticatedConnectionPoolKey,
+        for key: RemuxSSHRootKey,
         generation: UUID
     ) {
         guard var entry = entries[key], entry.generation == generation else { return }
@@ -737,7 +737,7 @@ actor SSHTmuxAuthenticatedConnectionPool {
     }
 
     private func closeIdleEntry(
-        for key: SSHTmuxAuthenticatedConnectionPoolKey,
+        for key: RemuxSSHRootKey,
         generation: UUID
     ) {
         guard let entry = entries[key], entry.generation == generation else { return }
@@ -751,9 +751,9 @@ actor SSHTmuxAuthenticatedConnectionPool {
 #if DEBUG
     @discardableResult
     func insertEntryForTesting(
-        for key: SSHTmuxAuthenticatedConnectionPoolKey,
+        for key: RemuxSSHRootKey,
         generation: UUID = UUID(),
-        readiness: SSHTmuxAuthenticatedConnectionPoolEntryReadiness = .ready,
+        readiness: RemuxSSHRootReadiness = .ready,
         activeLeaseCount: Int = 0,
         reservationID: UUID? = nil,
         idleCloseScheduled: Bool = false
@@ -773,7 +773,7 @@ actor SSHTmuxAuthenticatedConnectionPool {
     }
 
     func leaseEntryForTesting(
-        for key: SSHTmuxAuthenticatedConnectionPoolKey,
+        for key: RemuxSSHRootKey,
         generation: UUID,
         reservationID: UUID
     ) throws {
@@ -783,7 +783,7 @@ actor SSHTmuxAuthenticatedConnectionPool {
     }
 
     func reserveEntryForTesting(
-        for key: SSHTmuxAuthenticatedConnectionPoolKey
+        for key: RemuxSSHRootKey
     ) -> UUID? {
         reserveExistingEntry(
             for: key,
@@ -792,7 +792,7 @@ actor SSHTmuxAuthenticatedConnectionPool {
     }
 
     func releaseReservationForTesting(
-        for key: SSHTmuxAuthenticatedConnectionPoolKey,
+        for key: RemuxSSHRootKey,
         generation: UUID,
         reservationID: UUID
     ) {
@@ -804,7 +804,7 @@ actor SSHTmuxAuthenticatedConnectionPool {
     }
 
     func releaseEntryForTesting(
-        for key: SSHTmuxAuthenticatedConnectionPoolKey,
+        for key: RemuxSSHRootKey,
         generation: UUID,
         disposition: TmuxControlTransportCloseDisposition
     ) {
@@ -816,14 +816,14 @@ actor SSHTmuxAuthenticatedConnectionPool {
     }
 
     func markAuthenticationSucceededForTesting(
-        for key: SSHTmuxAuthenticatedConnectionPoolKey,
+        for key: RemuxSSHRootKey,
         generation: UUID
     ) {
         authenticationSucceeded(for: key, generation: generation)
     }
 
     func markAuthenticationFailedForTesting(
-        for key: SSHTmuxAuthenticatedConnectionPoolKey,
+        for key: RemuxSSHRootKey,
         generation: UUID
     ) {
         authenticationFailed(for: key, generation: generation)
@@ -859,9 +859,9 @@ actor SSHTmuxAuthenticatedConnectionPool {
     }
 
     private func poolTraceFields(
-        key: SSHTmuxAuthenticatedConnectionPoolKey,
+        key: RemuxSSHRootKey,
         reason: String? = nil,
-        readiness: SSHTmuxAuthenticatedConnectionPoolEntryReadiness
+        readiness: RemuxSSHRootReadiness
     ) -> [String: String] {
         var fields = [
             "host": "\(key.host):\(key.port)",

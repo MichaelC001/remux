@@ -2067,12 +2067,12 @@ final class RemuxRootModelTests: XCTestCase {
         transportFactory: (@Sendable (
             TmuxConnectionTarget,
             TrustedHostStore,
-            SSHTmuxAuthenticatedConnectionPool
+            RemuxSSHRootService
         ) -> any TmuxControlTransport)? = nil,
         sshConnectionPrewarmer: (@Sendable (
             TmuxConnectionTarget,
             TrustedHostStore,
-            SSHTmuxAuthenticatedConnectionPool
+            RemuxSSHRootService
         ) async -> Void)? = nil,
         attachmentTransferServiceFactory: (@Sendable (
             TmuxConnectionTarget,

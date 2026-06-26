@@ -16,16 +16,16 @@ struct RemuxAppDependencies: Sendable {
     let shortcutRepository: any ShortcutRepository
     let credentialStore: any SSHCredentialStore
     let trustedHostStore: TrustedHostStore
-    private let sshRootService: SSHTmuxAuthenticatedConnectionPool
+    private let sshRootService: RemuxSSHRootService
     private let transportFactory: @Sendable (
         _ target: TmuxConnectionTarget,
         _ trustedHostStore: TrustedHostStore,
-        _ sshRootService: SSHTmuxAuthenticatedConnectionPool
+        _ sshRootService: RemuxSSHRootService
     ) -> any TmuxControlTransport
     private let sshConnectionPrewarmer: @Sendable (
         _ target: TmuxConnectionTarget,
         _ trustedHostStore: TrustedHostStore,
-        _ sshRootService: SSHTmuxAuthenticatedConnectionPool
+        _ sshRootService: RemuxSSHRootService
     ) async -> Void
     private let attachmentTransferServiceFactory: @Sendable (
         _ target: TmuxConnectionTarget,
@@ -42,16 +42,16 @@ struct RemuxAppDependencies: Sendable {
         shortcutRepository: any ShortcutRepository,
         credentialStore: any SSHCredentialStore,
         trustedHostStore: TrustedHostStore,
-        sshRootService: SSHTmuxAuthenticatedConnectionPool = SSHTmuxAuthenticatedConnectionPool(),
+        sshRootService: RemuxSSHRootService = RemuxSSHRootService(),
         transportFactory: @escaping @Sendable (
             _ target: TmuxConnectionTarget,
             _ trustedHostStore: TrustedHostStore,
-            _ sshRootService: SSHTmuxAuthenticatedConnectionPool
+            _ sshRootService: RemuxSSHRootService
         ) -> any TmuxControlTransport = RemuxAppDependencies.liveTransport,
         sshConnectionPrewarmer: @escaping @Sendable (
             _ target: TmuxConnectionTarget,
             _ trustedHostStore: TrustedHostStore,
-            _ sshRootService: SSHTmuxAuthenticatedConnectionPool
+            _ sshRootService: RemuxSSHRootService
         ) async -> Void = RemuxAppDependencies.liveSSHConnectionPrewarmer,
         attachmentTransferServiceFactory: @escaping @Sendable (
             _ target: TmuxConnectionTarget,
@@ -136,7 +136,7 @@ struct RemuxAppDependencies: Sendable {
     private static func liveTransport(
         target: TmuxConnectionTarget,
         trustedHostStore: TrustedHostStore,
-        sshRootService: SSHTmuxAuthenticatedConnectionPool
+        sshRootService: RemuxSSHRootService
     ) -> any TmuxControlTransport {
         SSHTmuxControlTransport(
             configuration: sshConfiguration(
@@ -151,7 +151,7 @@ struct RemuxAppDependencies: Sendable {
     private static func liveSSHConnectionPrewarmer(
         target: TmuxConnectionTarget,
         trustedHostStore: TrustedHostStore,
-        sshRootService: SSHTmuxAuthenticatedConnectionPool
+        sshRootService: RemuxSSHRootService
     ) async {
         let trace = SSHTmuxControlStartupTrace(flowID: nil)
         let configuration = sshConfiguration(
@@ -185,7 +185,7 @@ struct RemuxAppDependencies: Sendable {
             controlNoResponseTimeout: RemuxConnectionTimeouts.tmuxControlNoResponse,
             sessionName: target.workspace.sessionName,
             traceFlowID: traceFlowID,
-            sshRootKey: SSHTmuxAuthenticatedConnectionPoolKey(target: target)
+            sshRootKey: RemuxSSHRootKey(target: target)
         )
     }
 
