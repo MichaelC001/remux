@@ -171,6 +171,9 @@ if [[ -n "$private_key" ]]; then
   )
 elif [[ -n "$password" ]]; then
   ssh_askpass_secret="$password"
+  ssh_auth_args=(
+    -o PreferredAuthentications=password,keyboard-interactive
+  )
 else
   printf '%s must include password or privateKeyPEM.\n' "$config" >&2
   exit 2
