@@ -80,7 +80,7 @@ struct RemuxSSHRootServiceSnapshot: Equatable, Sendable {
     }
 }
 
-final class SSHTmuxAuthenticatedConnection: @unchecked Sendable {
+final class RemuxSSHRoot: @unchecked Sendable {
     let rootChannel: Channel
     let sshHandler: NIOSSHHandler
 
@@ -98,13 +98,13 @@ final class SSHTmuxAuthenticatedConnection: @unchecked Sendable {
     }
 }
 
-enum SSHTmuxAuthenticatedConnectionLeaseDisposition: Equatable, Sendable {
+enum RemuxSSHRootLeaseDisposition: Equatable, Sendable {
     case reusable
     case invalidated
 }
 
 extension TmuxControlTransportCloseDisposition {
-    var authenticatedConnectionLeaseDisposition: SSHTmuxAuthenticatedConnectionLeaseDisposition {
+    var sshRootLeaseDisposition: RemuxSSHRootLeaseDisposition {
         switch self {
         case .reusable:
             return .reusable
@@ -114,8 +114,8 @@ extension TmuxControlTransportCloseDisposition {
     }
 }
 
-fileprivate final class SSHTmuxAuthenticatedConnectionLease: @unchecked Sendable {
-    private let connection: SSHTmuxAuthenticatedConnection
+fileprivate final class RemuxSSHRootLease: @unchecked Sendable {
+    private let connection: RemuxSSHRoot
 
     private let pool: RemuxSSHRootService
     private let key: RemuxSSHRootKey
@@ -124,7 +124,7 @@ fileprivate final class SSHTmuxAuthenticatedConnectionLease: @unchecked Sendable
     private var isReleased = false
 
     init(
-        connection: SSHTmuxAuthenticatedConnection,
+        connection: RemuxSSHRoot,
         pool: RemuxSSHRootService,
         key: RemuxSSHRootKey,
         generation: UUID
@@ -135,7 +135,7 @@ fileprivate final class SSHTmuxAuthenticatedConnectionLease: @unchecked Sendable
         self.generation = generation
     }
 
-    func release(_ disposition: SSHTmuxAuthenticatedConnectionLeaseDisposition) async {
+    func release(_ disposition: RemuxSSHRootLeaseDisposition) async {
         let shouldRelease = lock.withLock {
             guard !isReleased else { return false }
             isReleased = true
@@ -152,11 +152,11 @@ fileprivate final class SSHTmuxAuthenticatedConnectionLease: @unchecked Sendable
     }
 }
 
-struct SSHTmuxPreparedConnection {
+struct RemuxSSHPreparedRoot {
     let trace: SSHTmuxControlStartupTrace
-    private let ownership: SSHTmuxPreparedConnectionOwnership
+    private let ownership: RemuxSSHPreparedRootOwnership
     private let cancelAuthenticationOnClose: Bool
-    private let task: Task<SSHTmuxAuthenticatedConnection, Error>
+    private let task: Task<RemuxSSHRoot, Error>
 
     fileprivate static func pooled(
         trace: SSHTmuxControlStartupTrace,
@@ -164,9 +164,9 @@ struct SSHTmuxPreparedConnection {
         key: RemuxSSHRootKey,
         generation: UUID,
         reservationID: UUID,
-        task: Task<SSHTmuxAuthenticatedConnection, Error>
-    ) -> SSHTmuxPreparedConnection {
-        SSHTmuxPreparedConnection(
+        task: Task<RemuxSSHRoot, Error>
+    ) -> RemuxSSHPreparedRoot {
+        RemuxSSHPreparedRoot(
             trace: trace,
             ownership: .pooled(
                 pool: pool,
@@ -182,8 +182,8 @@ struct SSHTmuxPreparedConnection {
     static func dedicated(
         configuration: RemuxSSHRootConfiguration,
         trace: SSHTmuxControlStartupTrace
-    ) -> SSHTmuxPreparedConnection {
-        SSHTmuxPreparedConnection(
+    ) -> RemuxSSHPreparedRoot {
+        RemuxSSHPreparedRoot(
             trace: trace,
             ownership: .dedicated,
             cancelAuthenticationOnClose: true,
@@ -191,32 +191,32 @@ struct SSHTmuxPreparedConnection {
         )
     }
 
-    func authenticatedConnection() async throws -> SSHTmuxAuthenticatedConnection {
+    func sshRoot() async throws -> RemuxSSHRoot {
         try await task.value
     }
 
     func claim(
-        _ authenticatedConnection: SSHTmuxAuthenticatedConnection,
+        _ sshRoot: RemuxSSHRoot,
         trace: SSHTmuxControlStartupTrace
-    ) async throws -> SSHTmuxClaimedAuthenticatedConnection {
+    ) async throws -> RemuxSSHClaimedRoot {
         switch ownership {
         case .dedicated:
-            return SSHTmuxClaimedAuthenticatedConnection(
-                authenticatedConnection: authenticatedConnection,
+            return RemuxSSHClaimedRoot(
+                sshRoot: sshRoot,
                 lease: nil
             )
 
         case .pooled(let pool, let key, let generation, let reservationID):
             let lease = try await trace.stage("sshRoot.pool.lease") {
                 try await pool.leaseConnection(
-                    authenticatedConnection,
+                    sshRoot,
                     for: key,
                     generation: generation,
                     reservationID: reservationID
                 )
             }
-            return SSHTmuxClaimedAuthenticatedConnection(
-                authenticatedConnection: authenticatedConnection,
+            return RemuxSSHClaimedRoot(
+                sshRoot: sshRoot,
                 lease: lease
             )
         }
@@ -240,8 +240,8 @@ struct SSHTmuxPreparedConnection {
 
         task.cancel()
         do {
-            let authenticatedConnection = try await task.value
-            await authenticatedConnection.close()
+            let sshRoot = try await task.value
+            await sshRoot.close()
         } catch is CancellationError {
             GhosttyRuntimeTrace.latency("transport.prepare.cleanup cancelled")
         } catch {
@@ -250,7 +250,7 @@ struct SSHTmuxPreparedConnection {
     }
 }
 
-private enum SSHTmuxPreparedConnectionOwnership {
+private enum RemuxSSHPreparedRootOwnership {
     case dedicated
     case pooled(
         pool: RemuxSSHRootService,
@@ -260,15 +260,15 @@ private enum SSHTmuxPreparedConnectionOwnership {
     )
 }
 
-struct SSHTmuxClaimedAuthenticatedConnection {
-    let authenticatedConnection: SSHTmuxAuthenticatedConnection
-    private let lease: SSHTmuxAuthenticatedConnectionLease?
+struct RemuxSSHClaimedRoot {
+    let sshRoot: RemuxSSHRoot
+    private let lease: RemuxSSHRootLease?
 
     fileprivate init(
-        authenticatedConnection: SSHTmuxAuthenticatedConnection,
-        lease: SSHTmuxAuthenticatedConnectionLease?
+        sshRoot: RemuxSSHRoot,
+        lease: RemuxSSHRootLease?
     ) {
-        self.authenticatedConnection = authenticatedConnection
+        self.sshRoot = sshRoot
         self.lease = lease
     }
 
@@ -276,11 +276,11 @@ struct SSHTmuxClaimedAuthenticatedConnection {
         await release(.invalidated)
     }
 
-    func release(_ disposition: SSHTmuxAuthenticatedConnectionLeaseDisposition) async {
+    func release(_ disposition: RemuxSSHRootLeaseDisposition) async {
         if let lease {
             await lease.release(disposition)
         } else {
-            await authenticatedConnection.close()
+            await sshRoot.close()
         }
     }
 }
@@ -288,7 +288,7 @@ struct SSHTmuxClaimedAuthenticatedConnection {
 actor RemuxSSHRootService {
     private struct Entry {
         let generation: UUID
-        let task: Task<SSHTmuxAuthenticatedConnection, Error>
+        let task: Task<RemuxSSHRoot, Error>
         var activeLeaseCount: Int
         var reservationIDs: Set<UUID>
         var idleCloseTask: Task<Void, Never>?
@@ -302,13 +302,13 @@ actor RemuxSSHRootService {
     /// sessions sharing the root; a genuinely dead root drains fast
     /// because every sibling errors out and releases.
     private struct RetiredEntry {
-        let task: Task<SSHTmuxAuthenticatedConnection, Error>
+        let task: Task<RemuxSSHRoot, Error>
         var activeLeaseCount: Int
     }
 
     private struct EntrySnapshot: Sendable {
         let generation: UUID
-        let task: Task<SSHTmuxAuthenticatedConnection, Error>
+        let task: Task<RemuxSSHRoot, Error>
         let didReuse: Bool
         let readiness: RemuxSSHRootReadiness
         let reservationID: UUID?
@@ -403,11 +403,11 @@ actor RemuxSSHRootService {
         }
     }
 
-    func preparedConnection(
+    func preparedRoot(
         for key: RemuxSSHRootKey,
         configuration: RemuxSSHRootConfiguration,
         trace: SSHTmuxControlStartupTrace
-    ) -> SSHTmuxPreparedConnection {
+    ) -> RemuxSSHPreparedRoot {
         guard let snapshot = reserveEntry(
             for: key,
             configuration: configuration,
@@ -417,7 +417,7 @@ actor RemuxSSHRootService {
                 "sshRoot.pool.busy",
                 fields: poolTraceFields(key: key, readiness: entries[key]?.readiness ?? .connecting)
             )
-            return dedicatedPreparedConnection(
+            return dedicatedPreparedRoot(
                 configuration: configuration,
                 trace: trace
             )
@@ -427,13 +427,13 @@ actor RemuxSSHRootService {
             fields: poolTraceFields(key: key, readiness: snapshot.readiness)
         )
         guard let reservationID = snapshot.reservationID else {
-            return dedicatedPreparedConnection(
+            return dedicatedPreparedRoot(
                 configuration: configuration,
                 trace: trace
             )
         }
 
-        return SSHTmuxPreparedConnection.pooled(
+        return RemuxSSHPreparedRoot.pooled(
             trace: trace,
             pool: self,
             key: key,
@@ -444,11 +444,11 @@ actor RemuxSSHRootService {
     }
 
     fileprivate func leaseConnection(
-        _ connection: SSHTmuxAuthenticatedConnection,
+        _ connection: RemuxSSHRoot,
         for key: RemuxSSHRootKey,
         generation: UUID,
         reservationID: UUID
-    ) async throws -> SSHTmuxAuthenticatedConnectionLease {
+    ) async throws -> RemuxSSHRootLease {
         switch leaseEntry(for: key, generation: generation, reservationID: reservationID) {
         case .leased:
             break
@@ -459,7 +459,7 @@ actor RemuxSSHRootService {
             throw SSHTmuxControlTransportError.closed
         }
 
-        return SSHTmuxAuthenticatedConnectionLease(
+        return RemuxSSHRootLease(
             connection: connection,
             pool: self,
             key: key,
@@ -468,10 +468,10 @@ actor RemuxSSHRootService {
     }
 
     fileprivate func releaseConnection(
-        _ connection: SSHTmuxAuthenticatedConnection,
+        _ connection: RemuxSSHRoot,
         for key: RemuxSSHRootKey,
         generation: UUID,
-        disposition: SSHTmuxAuthenticatedConnectionLeaseDisposition
+        disposition: RemuxSSHRootLeaseDisposition
     ) async {
         switch releaseEntry(for: key, generation: generation, disposition: disposition) {
         case .retained:
@@ -506,7 +506,7 @@ actor RemuxSSHRootService {
     private func releaseEntry(
         for key: RemuxSSHRootKey,
         generation: UUID,
-        disposition: SSHTmuxAuthenticatedConnectionLeaseDisposition
+        disposition: RemuxSSHRootLeaseDisposition
     ) -> ReleaseEntryResult {
         guard var entry = entries[key], entry.generation == generation else {
             // A retired root: drain, close with the last lease.
@@ -689,22 +689,22 @@ actor RemuxSSHRootService {
         )
     }
 
-    private func dedicatedPreparedConnection(
+    private func dedicatedPreparedRoot(
         configuration: RemuxSSHRootConfiguration,
         trace: SSHTmuxControlStartupTrace
-    ) -> SSHTmuxPreparedConnection {
-        SSHTmuxPreparedConnection.dedicated(configuration: configuration, trace: trace)
+    ) -> RemuxSSHPreparedRoot {
+        RemuxSSHPreparedRoot.dedicated(configuration: configuration, trace: trace)
     }
 
     private nonisolated func makeAuthenticationTask(
         configuration: RemuxSSHRootConfiguration,
         trace: SSHTmuxControlStartupTrace
-    ) -> Task<SSHTmuxAuthenticatedConnection, Error> {
-        SSHTmuxPreparedConnection.authenticationTask(configuration: configuration, trace: trace)
+    ) -> Task<RemuxSSHRoot, Error> {
+        RemuxSSHPreparedRoot.authenticationTask(configuration: configuration, trace: trace)
     }
 
     private func observeAuthenticationResult(
-        _ task: Task<SSHTmuxAuthenticatedConnection, Error>,
+        _ task: Task<RemuxSSHRoot, Error>,
         for key: RemuxSSHRootKey,
         generation: UUID
     ) {
@@ -783,7 +783,7 @@ actor RemuxSSHRootService {
         entries[key]?.idleCloseTask?.cancel()
         entries[key] = Entry(
             generation: generation,
-            task: Task<SSHTmuxAuthenticatedConnection, Error> {
+            task: Task<RemuxSSHRoot, Error> {
                 throw CancellationError()
             },
             activeLeaseCount: activeLeaseCount,
@@ -833,7 +833,7 @@ actor RemuxSSHRootService {
         releaseEntry(
             for: key,
             generation: generation,
-            disposition: disposition.authenticatedConnectionLeaseDisposition
+            disposition: disposition.sshRootLeaseDisposition
         )
     }
 
@@ -863,7 +863,7 @@ actor RemuxSSHRootService {
 #endif
 
     private nonisolated func closeEntryTask(
-        _ task: Task<SSHTmuxAuthenticatedConnection, Error>,
+        _ task: Task<RemuxSSHRoot, Error>,
         reason: String
     ) {
         task.cancel()
@@ -898,13 +898,13 @@ actor RemuxSSHRootService {
     }
 }
 
-private extension SSHTmuxPreparedConnection {
+private extension RemuxSSHPreparedRoot {
     static func authenticationTask(
         configuration: RemuxSSHRootConfiguration,
         trace: SSHTmuxControlStartupTrace
-    ) -> Task<SSHTmuxAuthenticatedConnection, Error> {
+    ) -> Task<RemuxSSHRoot, Error> {
         Task.detached(priority: .userInitiated) {
-            try await SSHTmuxAuthenticatedConnectionBootstrap.authenticate(
+            try await RemuxSSHRootBootstrap.authenticate(
                 using: configuration,
                 trace: trace
             )
@@ -912,18 +912,18 @@ private extension SSHTmuxPreparedConnection {
     }
 }
 
-private enum SSHTmuxAuthenticatedConnectionBootstrap {
+private enum RemuxSSHRootBootstrap {
     static func authenticate(
         using configuration: RemuxSSHRootConfiguration,
         trace: SSHTmuxControlStartupTrace
-    ) async throws -> SSHTmuxAuthenticatedConnection {
+    ) async throws -> RemuxSSHRoot {
         var rootChannel: Channel?
 
         do {
             trace.event("bootstrap.configure.begin")
             let bootstrap = ClientBootstrap(group: MultiThreadedEventLoopGroup.singleton)
                 .channelInitializer { channel in
-                    let handshake = SSHTmuxControlHandshakeHandler(
+                    let handshake = RemuxSSHRootHandshakeHandler(
                         eventLoop: channel.eventLoop,
                         timeout: configuration.connectTimeout
                     )
@@ -973,7 +973,7 @@ private enum SSHTmuxAuthenticatedConnectionBootstrap {
             rootChannel = channel
 
             let handshake = try await trace.stage("handshakeHandler.lookup") {
-                try await channel.pipeline.handler(type: SSHTmuxControlHandshakeHandler.self).get()
+                try await channel.pipeline.handler(type: RemuxSSHRootHandshakeHandler.self).get()
             }
             try await trace.stage("sshAuthentication") {
                 try await handshake.authenticated.get()
@@ -983,7 +983,7 @@ private enum SSHTmuxAuthenticatedConnectionBootstrap {
                 try await channel.pipeline.handler(type: NIOSSHHandler.self).get()
             }
 
-            return SSHTmuxAuthenticatedConnection(
+            return RemuxSSHRoot(
                 rootChannel: channel,
                 sshHandler: sshHandler
             )
@@ -996,7 +996,7 @@ private enum SSHTmuxAuthenticatedConnectionBootstrap {
     }
 }
 
-private final class SSHTmuxControlHandshakeHandler: ChannelInboundHandler, Sendable {
+private final class RemuxSSHRootHandshakeHandler: ChannelInboundHandler, Sendable {
     typealias InboundIn = Any
 
     private struct Disconnected: Error {}
