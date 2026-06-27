@@ -341,7 +341,7 @@ struct GhosttyAttachmentCitadelSFTPClientProvider: GhosttyAttachmentSFTPClientPr
             let leaseState = GhosttyAttachmentCitadelSFTPLeaseState(
                 sftp: sftp,
                 closeRoot: {
-                    await claimedRoot.release(.reusable)
+                    await claimedRoot.releaseAfterSFTPLease()
                 }
             )
             let client = GhosttyAttachmentCitadelSFTPClient(
@@ -357,8 +357,14 @@ struct GhosttyAttachmentCitadelSFTPClientProvider: GhosttyAttachmentSFTPClientPr
                 }
             )
         } catch {
-            await claimedRoot.release(.reusable)
+            await claimedRoot.releaseAfterSFTPLease()
             throw error
         }
+    }
+}
+
+private extension RemuxSSHClaimedRoot {
+    func releaseAfterSFTPLease() async {
+        await release(sshRoot.rootChannel.isActive ? .reusable : .invalidated)
     }
 }

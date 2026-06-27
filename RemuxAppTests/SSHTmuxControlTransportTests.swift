@@ -479,6 +479,42 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         await pool.closeAllConnections()
     }
 
+    func testSSHRootServiceClosedIdleRootIsEvicted() async {
+        let pool = RemuxSSHRootService()
+        let key = makeSSHRootKey()
+        let generation = await pool.insertEntryForTesting(for: key)
+
+        await pool.markRootChannelClosedForTesting(for: key, generation: generation)
+
+        let snapshot = await pool.snapshot()
+        XCTAssertNil(snapshot.entry(for: key))
+        XCTAssertEqual(snapshot.retiredCount, 0)
+    }
+
+    func testSSHRootServiceClosedActiveRootRetiresUntilLeaseReleases() async {
+        let pool = RemuxSSHRootService()
+        let key = makeSSHRootKey()
+        let generation = await pool.insertEntryForTesting(
+            for: key,
+            activeLeaseCount: 1
+        )
+
+        await pool.markRootChannelClosedForTesting(for: key, generation: generation)
+
+        var snapshot = await pool.snapshot()
+        XCTAssertNil(snapshot.entry(for: key))
+        XCTAssertEqual(snapshot.retiredCount, 1)
+
+        await pool.releaseEntryForTesting(
+            for: key,
+            generation: generation,
+            disposition: .reusable
+        )
+
+        snapshot = await pool.snapshot()
+        XCTAssertEqual(snapshot.retiredCount, 0)
+    }
+
     func testSSHRootServiceGenerationMismatchDoesNotMutateCurrentEntry() async {
         let pool = RemuxSSHRootService()
         let key = makeSSHRootKey()

@@ -710,8 +710,13 @@ actor RemuxSSHRootService {
     ) {
         Task {
             do {
-                _ = try await task.value
+                let root = try await task.value
                 self.authenticationSucceeded(for: key, generation: generation)
+                root.rootChannel.closeFuture.whenComplete { _ in
+                    Task {
+                        await self.rootChannelClosed(for: key, generation: generation)
+                    }
+                }
             } catch {
                 self.authenticationFailed(for: key, generation: generation)
             }
@@ -735,6 +740,21 @@ actor RemuxSSHRootService {
         guard let entry = entries[key], entry.generation == generation else { return }
         entry.idleCloseTask?.cancel()
         entries.removeValue(forKey: key)
+    }
+
+    private func rootChannelClosed(
+        for key: RemuxSSHRootKey,
+        generation: UUID
+    ) {
+        guard let entry = entries[key], entry.generation == generation else { return }
+        entry.idleCloseTask?.cancel()
+        entries.removeValue(forKey: key)
+
+        guard entry.activeLeaseCount > 0 else { return }
+        retiredEntries[generation] = RetiredEntry(
+            task: entry.task,
+            activeLeaseCount: entry.activeLeaseCount
+        )
     }
 
     private func scheduleIdleCloseIfNeeded(
@@ -849,6 +869,13 @@ actor RemuxSSHRootService {
         generation: UUID
     ) {
         authenticationFailed(for: key, generation: generation)
+    }
+
+    func markRootChannelClosedForTesting(
+        for key: RemuxSSHRootKey,
+        generation: UUID
+    ) {
+        rootChannelClosed(for: key, generation: generation)
     }
 
     private static func testingIdleCloseTask() -> Task<Void, Never> {
