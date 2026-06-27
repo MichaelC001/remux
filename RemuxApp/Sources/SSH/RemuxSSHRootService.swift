@@ -260,7 +260,7 @@ private enum RemuxSSHPreparedRootOwnership {
     )
 }
 
-struct RemuxSSHClaimedRoot {
+struct RemuxSSHClaimedRoot: Sendable {
     let sshRoot: RemuxSSHRoot
     private let lease: RemuxSSHRootLease?
 

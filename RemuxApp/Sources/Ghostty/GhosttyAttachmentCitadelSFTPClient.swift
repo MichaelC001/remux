@@ -186,16 +186,16 @@ private final class GhosttyAttachmentCitadelSFTPFileBox: @unchecked Sendable {
 
 private actor GhosttyAttachmentCitadelSFTPLeaseState {
     private let sftp: SFTPClient
-    private let ssh: SSHClient
+    private let closeRoot: @Sendable () async throws -> Void
     private var timedOut = false
     private var closeTask: Task<Void, Error>?
 
     init(
         sftp: SFTPClient,
-        ssh: SSHClient
+        closeRoot: @escaping @Sendable () async throws -> Void
     ) {
         self.sftp = sftp
-        self.ssh = ssh
+        self.closeRoot = closeRoot
     }
 
     func checkActive() throws {
@@ -233,7 +233,7 @@ private actor GhosttyAttachmentCitadelSFTPLeaseState {
         }
 
         let sftp = sftp
-        let ssh = ssh
+        let closeRoot = closeRoot
 
         let task = Task {
             var closeFailure: Error?
@@ -245,12 +245,12 @@ private actor GhosttyAttachmentCitadelSFTPLeaseState {
             }
 
             do {
-                try await ssh.close()
+                try await closeRoot()
             } catch {
                 if closeFailure == nil {
                     closeFailure = error
                 } else {
-                    NSLog("Remux attachment SSH close failed after SFTP close failure: %@", String(describing: error))
+                    NSLog("Remux attachment SFTP root release failed after SFTP close failure: %@", String(describing: error))
                 }
             }
 
@@ -264,36 +264,14 @@ private actor GhosttyAttachmentCitadelSFTPLeaseState {
     }
 }
 
-struct GhosttyAttachmentCitadelSFTPConnectionConfiguration: Sendable {
-    let host: String
-    let port: Int
-    let authenticationMethod: @Sendable () throws -> SSHAuthenticationMethod
-    let hostKeyValidator: SSHHostKeyValidator
-    let connectTimeout: TimeAmount
-    let operationTimeout: TimeAmount
-
-    init(
-        host: String,
-        port: Int = 22,
-        authenticationMethod: @escaping @Sendable () throws -> SSHAuthenticationMethod,
-        hostKeyValidator: SSHHostKeyValidator,
-        connectTimeout: TimeAmount = .seconds(30),
-        operationTimeout: TimeAmount = .seconds(15)
-    ) {
-        self.host = host
-        self.port = port
-        self.authenticationMethod = authenticationMethod
-        self.hostKeyValidator = hostKeyValidator
-        self.connectTimeout = connectTimeout
-        self.operationTimeout = operationTimeout
-    }
-}
-
 struct GhosttyAttachmentCitadelSFTPClientProvider: GhosttyAttachmentSFTPClientProvider {
     private let provider: GhosttyAttachmentShortLivedSFTPClientProvider<GhosttyAttachmentCitadelSFTPClient>
 
     init(
-        configuration: GhosttyAttachmentCitadelSFTPConnectionConfiguration,
+        sshRootService: RemuxSSHRootService,
+        rootKey: RemuxSSHRootKey,
+        rootConfiguration: RemuxSSHRootConfiguration,
+        operationTimeout: TimeAmount,
         chunkSize: Int = 4 * 1024 * 1024,
         closeFailureHandler: @escaping @Sendable (Error) -> Void = { error in
             NSLog("Remux attachment Citadel SFTP lease close failed: %@", String(describing: error))
@@ -302,7 +280,10 @@ struct GhosttyAttachmentCitadelSFTPClientProvider: GhosttyAttachmentSFTPClientPr
         self.provider = GhosttyAttachmentShortLivedSFTPClientProvider(
             openLease: {
                 try await Self.openLease(
-                    configuration: configuration,
+                    sshRootService: sshRootService,
+                    rootKey: rootKey,
+                    rootConfiguration: rootConfiguration,
+                    operationTimeout: operationTimeout,
                     chunkSize: chunkSize
                 )
             },
@@ -317,35 +298,56 @@ struct GhosttyAttachmentCitadelSFTPClientProvider: GhosttyAttachmentSFTPClientPr
     }
 
     private static func openLease(
-        configuration: GhosttyAttachmentCitadelSFTPConnectionConfiguration,
+        sshRootService: RemuxSSHRootService,
+        rootKey: RemuxSSHRootKey,
+        rootConfiguration: RemuxSSHRootConfiguration,
+        operationTimeout: TimeAmount,
         chunkSize: Int
     ) async throws -> GhosttyAttachmentSFTPClientLease<GhosttyAttachmentCitadelSFTPClient> {
-        let ssh = try await SSHClient.connect(
-            host: configuration.host,
-            port: configuration.port,
-            authenticationMethod: try configuration.authenticationMethod(),
-            hostKeyValidator: configuration.hostKeyValidator,
-            reconnect: .never,
-            connectTimeout: configuration.connectTimeout
+        let trace = SSHTmuxControlStartupTrace(flowID: nil)
+        let preparedRoot = await sshRootService.preparedRoot(
+            for: rootKey,
+            configuration: rootConfiguration,
+            trace: trace
         )
+
+        let sshRoot: RemuxSSHRoot
+        do {
+            sshRoot = try await trace.stage("sshRoot.ready") {
+                try await preparedRoot.sshRoot()
+            }
+        } catch {
+            await preparedRoot.cancelAndCleanup()
+            throw error
+        }
+
+        let claimedRoot: RemuxSSHClaimedRoot
+        do {
+            claimedRoot = try await preparedRoot.claim(sshRoot, trace: trace)
+        } catch {
+            await preparedRoot.cancelAndCleanup()
+            throw error
+        }
 
         do {
             let sftpOpenStartedAt = GhosttyRuntimeTrace.latencyEnabled ? GhosttyRuntimeTrace.nowNanos() : nil
-            GhosttyRuntimeTrace.latency("sftp.open begin host=\(configuration.host):\(configuration.port)")
-            let sftp = try await ssh.openSFTP()
+            GhosttyRuntimeTrace.latency("sftp.open begin host=\(rootConfiguration.host):\(rootConfiguration.port)")
+            let sftp = try await SFTPClient.open(overAuthenticatedSSHChannel: claimedRoot.sshRoot.rootChannel)
             if let sftpOpenStartedAt {
                 GhosttyRuntimeTrace.latency(
-                    "sftp.open end host=\(configuration.host):\(configuration.port) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: sftpOpenStartedAt))"
+                    "sftp.open end host=\(rootConfiguration.host):\(rootConfiguration.port) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: sftpOpenStartedAt))"
                 )
             }
             let leaseState = GhosttyAttachmentCitadelSFTPLeaseState(
                 sftp: sftp,
-                ssh: ssh
+                closeRoot: {
+                    await claimedRoot.release(.reusable)
+                }
             )
             let client = GhosttyAttachmentCitadelSFTPClient(
                 sftp: sftp,
                 chunkSize: chunkSize,
-                operationTimeout: configuration.operationTimeout,
+                operationTimeout: operationTimeout,
                 leaseState: leaseState
             )
             return GhosttyAttachmentSFTPClientLease(
@@ -355,7 +357,7 @@ struct GhosttyAttachmentCitadelSFTPClientProvider: GhosttyAttachmentSFTPClientPr
                 }
             )
         } catch {
-            try? await ssh.close()
+            await claimedRoot.release(.reusable)
             throw error
         }
     }

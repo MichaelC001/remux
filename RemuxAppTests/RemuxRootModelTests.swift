@@ -2076,7 +2076,8 @@ final class RemuxRootModelTests: XCTestCase {
         ) async -> Void)? = nil,
         attachmentTransferServiceFactory: (@Sendable (
             TmuxConnectionTarget,
-            TrustedHostStore
+            TrustedHostStore,
+            RemuxSSHRootService
         ) -> any GhosttyAttachmentTransferService)? = nil,
         terminalScreenModelFactory: RemuxRootModel.TerminalScreenModelFactory? = nil
     ) -> RemuxRootModelHarness {
@@ -2098,7 +2099,7 @@ final class RemuxRootModelTests: XCTestCase {
             DeterministicTmuxControlTransport(chunks: [])
         }
         let resolvedSSHConnectionPrewarmer = sshConnectionPrewarmer ?? { _, _, _ in }
-        let resolvedAttachmentTransferServiceFactory = attachmentTransferServiceFactory ?? { _, _ in
+        let resolvedAttachmentTransferServiceFactory = attachmentTransferServiceFactory ?? { _, _, _ in
             FailingGhosttyAttachmentTransferService()
         }
         let resolvedTerminalScreenModelFactory = terminalScreenModelFactory ?? makeTestTerminalScreenModel
@@ -2285,8 +2286,8 @@ private final class RecordingTerminalScreenModelFactory: @unchecked Sendable {
 private final class RecordingAttachmentTransferServiceFactory: @unchecked Sendable {
     private(set) var targets: [TmuxConnectionTarget] = []
 
-    var factory: @Sendable (TmuxConnectionTarget, TrustedHostStore) -> any GhosttyAttachmentTransferService {
-        { target, _ in
+    var factory: @Sendable (TmuxConnectionTarget, TrustedHostStore, RemuxSSHRootService) -> any GhosttyAttachmentTransferService {
+        { target, _, _ in
             self.targets.append(target)
             return FailingGhosttyAttachmentTransferService()
         }

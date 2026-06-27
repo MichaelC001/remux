@@ -6,7 +6,6 @@ import NIOCore
 private enum RemuxConnectionTimeouts {
     static let terminalSSHConnect: TimeAmount = .seconds(10)
     static let tmuxControlNoResponse: TimeAmount = .seconds(15)
-    static let sftpConnect: TimeAmount = .seconds(15)
     static let sftpOperation: TimeAmount = .seconds(15)
 }
 
@@ -29,7 +28,8 @@ struct RemuxAppDependencies: Sendable {
     ) async -> Void
     private let attachmentTransferServiceFactory: @Sendable (
         _ target: TmuxConnectionTarget,
-        _ trustedHostStore: TrustedHostStore
+        _ trustedHostStore: TrustedHostStore,
+        _ sshRootService: RemuxSSHRootService
     ) -> any GhosttyAttachmentTransferService
     private let debugConnectionSeeder: @Sendable (
         _ profileRepository: any ConnectionProfileRepository,
@@ -55,7 +55,8 @@ struct RemuxAppDependencies: Sendable {
         ) async -> Void = RemuxAppDependencies.liveSSHConnectionPrewarmer,
         attachmentTransferServiceFactory: @escaping @Sendable (
             _ target: TmuxConnectionTarget,
-            _ trustedHostStore: TrustedHostStore
+            _ trustedHostStore: TrustedHostStore,
+            _ sshRootService: RemuxSSHRootService
         ) -> any GhosttyAttachmentTransferService = RemuxAppDependencies.liveAttachmentTransferService,
         debugConnectionSeeder: @escaping @Sendable (
             _ profileRepository: any ConnectionProfileRepository,
@@ -124,7 +125,7 @@ struct RemuxAppDependencies: Sendable {
     }
 
     func makeAttachmentTransferService(for target: TmuxConnectionTarget) -> any GhosttyAttachmentTransferService {
-        attachmentTransferServiceFactory(target, trustedHostStore)
+        attachmentTransferServiceFactory(target, trustedHostStore, sshRootService)
     }
 
     func closeIdleSSHConnections(forServerID serverID: SavedServer.ID) {
@@ -191,19 +192,20 @@ struct RemuxAppDependencies: Sendable {
 
     private static func liveAttachmentTransferService(
         target: TmuxConnectionTarget,
-        trustedHostStore: TrustedHostStore
+        trustedHostStore: TrustedHostStore,
+        sshRootService: RemuxSSHRootService
     ) -> any GhosttyAttachmentTransferService {
-        let configuration = GhosttyAttachmentCitadelSFTPConnectionConfiguration(
-            host: target.server.host,
-            port: target.server.port,
-            authenticationMethod: {
-                try authenticationMethod(for: target.sshAuth)
-            },
-            hostKeyValidator: trustedHostStore.validator(for: target.server),
-            connectTimeout: RemuxConnectionTimeouts.sftpConnect,
+        let configuration = sshConfiguration(
+            for: target,
+            trustedHostStore: trustedHostStore,
+            traceFlowID: nil
+        )
+        let provider = GhosttyAttachmentCitadelSFTPClientProvider(
+            sshRootService: sshRootService,
+            rootKey: RemuxSSHRootKey(target: target),
+            rootConfiguration: configuration.sshRootConfiguration,
             operationTimeout: RemuxConnectionTimeouts.sftpOperation
         )
-        let provider = GhosttyAttachmentCitadelSFTPClientProvider(configuration: configuration)
         return GhosttyAttachmentSFTPClientProviderTransferService(provider: provider)
     }
 
