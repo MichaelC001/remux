@@ -14,48 +14,11 @@ from typing import Callable, Iterable
 
 FLOW_RE = re.compile(
     r"Remux flow t=(?P<timestamp>\d+) "
-    r"flow=(?P<flow>[^ ]+) "
+    r"flow=(?P<flow>tmux\.(?:newWindow|splitPane)) "
     r"event=(?P<event>[^ ]+) "
     r"since_ms=(?P<since>[0-9.]+)"
     r"(?P<fields>.*)$"
 )
-
-TRACE_POINT_RE = re.compile(
-    r"Remux (?P<category>latency|perf) t=(?P<timestamp>\d+) "
-    r"(?P<message>.*)$"
-)
-
-BYTES_FIELD_RE = re.compile(r"\bbytes=(?P<bytes>\d+)\b")
-ACCEPTED_TRUE_RE = re.compile(r"\baccepted=true\b")
-ACCEPTED_FALSE_RE = re.compile(r"\baccepted=false\b")
-
-FLOW_REPORT_ORDER = (
-    "terminal.input",
-    "tmux.newWindow",
-    "tmux.splitPane",
-    "tmux.closeWindow",
-    "tmux.closePane",
-    "tmux.selectWindow",
-    "tmux.selectPane",
-    "tmux.windowSwipe",
-    "tmux.showWindows",
-    "tmux.showPanes",
-    "tmux.dismissSelectionSheet",
-)
-
-FLOW_TERMINAL_EVENTS = {
-    "interactive.ready",
-    "ui.keyboard.didHide",
-    "ui.keyboard.didShow",
-    "ui.sheet.presented",
-    "ui.sheet.dismissed",
-    "ui.tap.surface.end",
-    "ui.showWindows.rejected",
-    "ui.showPanes.rejected",
-    "ui.selectWindow.rejected",
-    "ui.selectPane.rejected",
-    "ui.topologyAction.rejected",
-}
 
 NATIVE_SURFACE_INIT_RE = re.compile(
     r"Ghostty surfaceInit t=(?P<timestamp>-?\d+) "
@@ -88,14 +51,6 @@ class NativeSurfaceInitEvent:
     duration_ms: float
     context: str
     backing: str
-    source: str
-
-
-@dataclass(frozen=True)
-class TracePoint:
-    timestamp: int
-    category: str
-    message: str
     source: str
 
 
@@ -253,10 +208,6 @@ def process_output_end(instance: FlowInstance) -> FlowEvent | None:
 
 def tmux_response(instance: FlowInstance) -> FlowEvent | None:
     return first_event(instance, prefix("tmux.response."))
-
-
-def flow_start(instance: FlowInstance) -> FlowEvent | None:
-    return instance.events[0] if instance.events else None
 
 
 QUERY_KINDS = (
@@ -651,283 +602,7 @@ def overlay_add_snapshot_end(instance: FlowInstance) -> FlowEvent | None:
     )
 
 
-def topology_action_begin(instance: FlowInstance) -> FlowEvent | None:
-    return first_event(instance, exact("ui.topologyAction.begin"))
-
-
-def topology_action_end(instance: FlowInstance) -> FlowEvent | None:
-    return first_event(instance, exact("ui.topologyAction.end"))
-
-
-def selection_model_returned(instance: FlowInstance) -> FlowEvent | None:
-    return first_event(
-        instance,
-        any_of("ui.selectWindow.modelReturned", "ui.selectPane.modelReturned"),
-    )
-
-
-def action_roundtrip_anchor(instance: FlowInstance) -> FlowEvent | None:
-    return topology_action_end(instance) or selection_model_returned(instance) or flow_start(instance)
-
-
-def is_tmux_signal_event(event: str) -> bool:
-    return event.startswith("tmux.signal.ssh.channelRead.") or event.startswith(
-        "tmux.signal.transport.emit."
-    )
-
-
-def first_tmux_signal_after_action(instance: FlowInstance) -> FlowEvent | None:
-    anchor = action_roundtrip_anchor(instance)
-    if anchor is None:
-        return None
-    return first_event_after(instance, anchor, is_tmux_signal_event)
-
-
-def first_ssh_signal_after_action(instance: FlowInstance) -> FlowEvent | None:
-    anchor = action_roundtrip_anchor(instance)
-    if anchor is None:
-        return None
-    return first_event_after(instance, anchor, prefix("tmux.signal.ssh.channelRead."))
-
-
-def first_transport_signal_after_action(instance: FlowInstance) -> FlowEvent | None:
-    anchor = action_roundtrip_anchor(instance)
-    if anchor is None:
-        return None
-    return first_event_after(instance, anchor, prefix("tmux.signal.transport.emit."))
-
-
-def after_first_tmux_signal(
-    predicate: Callable[[str], bool],
-) -> Callable[[FlowInstance], FlowEvent | None]:
-    def find(instance: FlowInstance) -> FlowEvent | None:
-        signal = first_tmux_signal_after_action(instance)
-        if signal is None:
-            return None
-        return first_event_after(instance, signal, predicate)
-
-    return find
-
-
-def latest_after_first_tmux_signal(
-    predicate: Callable[[str], bool],
-) -> Callable[[FlowInstance], FlowEvent | None]:
-    def find(instance: FlowInstance) -> FlowEvent | None:
-        signal = first_tmux_signal_after_action(instance)
-        if signal is None:
-            return None
-        return latest_event_after(instance, signal, predicate)
-
-    return find
-
-
-post_signal_update_begin = after_first_tmux_signal(exact("ui.updateUIView.begin"))
-post_signal_tree_sync_begin = after_first_tmux_signal(exact("ui.tree.sync.begin"))
-post_signal_tree_sync_end = after_first_tmux_signal(exact("ui.tree.sync.end"))
-post_signal_update_end = after_first_tmux_signal(exact("ui.updateUIView.end"))
-post_signal_layout_visible_begin = after_first_tmux_signal(exact("ui.tree.layoutVisible.begin"))
-post_signal_managed_update_display_begin = after_first_tmux_signal(
-    exact("managed.updateDisplay.begin")
-)
-post_signal_managed_update_display_end = after_first_tmux_signal(
-    exact("managed.updateDisplay.end")
-)
-post_signal_record_presentation_end = after_first_tmux_signal(
-    exact("ui.recordSurfacePresentation.end")
-)
-latest_post_signal_record_presentation_end = latest_after_first_tmux_signal(
-    exact("ui.recordSurfacePresentation.end")
-)
-latest_post_signal_layout_visible_end = latest_after_first_tmux_signal(
-    exact("ui.tree.layoutVisible.end")
-)
-latest_post_signal_app_tick_end = latest_after_first_tmux_signal(
-    exact("runtime.wakeup.appTick.end")
-)
-interactive_ready = lambda flow: first_event(flow, exact("interactive.ready"))
-
-
 SEGMENTS = [
-    Segment(
-        "flow_start->responder_update",
-        flow_start,
-        lambda flow: first_event(flow, exact("responder.update")),
-    ),
-    Segment(
-        "flow_start->become_first_responder",
-        flow_start,
-        lambda flow: first_event(flow, exact("responder.becomeFirstResponder.result")),
-    ),
-    Segment(
-        "flow_start->resign_first_responder",
-        flow_start,
-        lambda flow: first_event(flow, exact("responder.resignFirstResponder.result")),
-    ),
-    Segment(
-        "flow_start->keyboard_did_show",
-        flow_start,
-        lambda flow: first_event(flow, exact("ui.keyboard.didShow")),
-    ),
-    Segment(
-        "flow_start->keyboard_did_hide",
-        flow_start,
-        lambda flow: first_event(flow, exact("ui.keyboard.didHide")),
-    ),
-    Segment(
-        "flow_start->send_text_begin",
-        flow_start,
-        lambda flow: first_event(flow, exact("ui.sendTerminalText.begin")),
-    ),
-    Segment(
-        "send_text_begin->send_text_end",
-        lambda flow: first_event(flow, exact("ui.sendTerminalText.begin")),
-        lambda flow: first_event(flow, exact("ui.sendTerminalText.end")),
-    ),
-    Segment(
-        "flow_start->send_text_end",
-        flow_start,
-        lambda flow: first_event(flow, exact("ui.sendTerminalText.end")),
-    ),
-    Segment(
-        "flow_start->topology_action_begin",
-        flow_start,
-        topology_action_begin,
-    ),
-    Segment(
-        "topology_action_begin->topology_action_end",
-        topology_action_begin,
-        topology_action_end,
-    ),
-    Segment(
-        "flow_start->topology_action_end",
-        flow_start,
-        topology_action_end,
-    ),
-    Segment(
-        "flow_start->selection_model_returned",
-        flow_start,
-        selection_model_returned,
-    ),
-    Segment(
-        "topology_action_end->first_tmux_signal",
-        topology_action_end,
-        first_tmux_signal_after_action,
-    ),
-    Segment(
-        "selection_model_returned->first_tmux_signal",
-        selection_model_returned,
-        first_tmux_signal_after_action,
-    ),
-    Segment(
-        "topology_action_end->first_ssh_signal",
-        topology_action_end,
-        first_ssh_signal_after_action,
-    ),
-    Segment(
-        "first_ssh_signal->first_transport_signal",
-        first_ssh_signal_after_action,
-        first_transport_signal_after_action,
-    ),
-    Segment(
-        "first_tmux_signal->first_updateUIView_begin",
-        first_tmux_signal_after_action,
-        post_signal_update_begin,
-    ),
-    Segment(
-        "first_updateUIView_begin->first_tree_sync_begin",
-        post_signal_update_begin,
-        post_signal_tree_sync_begin,
-    ),
-    Segment(
-        "first_tree_sync_begin->first_tree_sync_end",
-        post_signal_tree_sync_begin,
-        post_signal_tree_sync_end,
-    ),
-    Segment(
-        "first_updateUIView_begin->first_updateUIView_end",
-        post_signal_update_begin,
-        post_signal_update_end,
-    ),
-    Segment(
-        "first_tmux_signal->first_layout_visible_begin",
-        first_tmux_signal_after_action,
-        post_signal_layout_visible_begin,
-    ),
-    Segment(
-        "first_tmux_signal->managed_update_display_begin",
-        first_tmux_signal_after_action,
-        post_signal_managed_update_display_begin,
-    ),
-    Segment(
-        "managed_update_display_begin->managed_update_display_end",
-        post_signal_managed_update_display_begin,
-        post_signal_managed_update_display_end,
-    ),
-    Segment(
-        "first_tmux_signal->record_presentation_end",
-        first_tmux_signal_after_action,
-        post_signal_record_presentation_end,
-    ),
-    Segment(
-        "first_tmux_signal->latest_record_presentation_end",
-        first_tmux_signal_after_action,
-        latest_post_signal_record_presentation_end,
-    ),
-    Segment(
-        "first_tmux_signal->latest_layout_visible_end",
-        first_tmux_signal_after_action,
-        latest_post_signal_layout_visible_end,
-    ),
-    Segment(
-        "first_tmux_signal->latest_app_tick_end",
-        first_tmux_signal_after_action,
-        latest_post_signal_app_tick_end,
-    ),
-    Segment(
-        "flow_start->interactive_ready",
-        flow_start,
-        interactive_ready,
-    ),
-    Segment(
-        "first_tmux_signal->interactive_ready",
-        first_tmux_signal_after_action,
-        interactive_ready,
-    ),
-    Segment(
-        "flow_start->sheet_apply_begin",
-        flow_start,
-        lambda flow: first_event(flow, exact("ui.sheet.apply.begin")),
-    ),
-    Segment(
-        "sheet_apply_begin->sheet_apply_end",
-        lambda flow: first_event(flow, exact("ui.sheet.apply.begin")),
-        lambda flow: first_event(flow, exact("ui.sheet.apply.end")),
-    ),
-    Segment(
-        "flow_start->sheet_presented",
-        flow_start,
-        lambda flow: first_event(flow, exact("ui.sheet.presented")),
-    ),
-    Segment(
-        "flow_start->sheet_dismissed",
-        flow_start,
-        lambda flow: first_event(flow, exact("ui.sheet.dismissed")),
-    ),
-    Segment(
-        "flow_start->swipe_model_returned",
-        flow_start,
-        lambda flow: first_event(flow, exact("ui.swipe.modelReturned")),
-    ),
-    Segment(
-        "swipe_model_returned->swipe_handler_returned",
-        lambda flow: first_event(flow, exact("ui.swipe.modelReturned")),
-        lambda flow: first_event(flow, exact("ui.swipe.handlerReturned")),
-    ),
-    Segment(
-        "flow_start->swipe_handler_returned",
-        flow_start,
-        lambda flow: first_event(flow, exact("ui.swipe.handlerReturned")),
-    ),
     Segment(
         "send_end->ssh_channel_read",
         lambda flow: first_event(flow, exact("host.write.send.end")),
@@ -1574,310 +1249,6 @@ def native_surface_init_event(
     )
 
 
-def parse_trace_points(paths: Iterable[Path]) -> list[TracePoint]:
-    points: dict[tuple[int, str, str, str], TracePoint] = {}
-    for path in paths:
-        for line in path.read_text(errors="replace").splitlines():
-            match = TRACE_POINT_RE.search(line)
-            if match is None:
-                continue
-            point = TracePoint(
-                timestamp=int(match.group("timestamp")),
-                category=match.group("category"),
-                message=match.group("message"),
-                source=str(path),
-            )
-            points[(point.timestamp, point.category, point.message, point.source)] = point
-
-    return sorted(points.values(), key=lambda point: point.timestamp)
-
-
-def point_bytes(point: TracePoint) -> int | None:
-    match = BYTES_FIELD_RE.search(point.message)
-    if match is None:
-        return None
-    return int(match.group("bytes"))
-
-
-def point_accepted(point: TracePoint) -> bool:
-    return ACCEPTED_TRUE_RE.search(point.message) is not None
-
-
-def point_rejected(point: TracePoint) -> bool:
-    return ACCEPTED_FALSE_RE.search(point.message) is not None
-
-
-def find_point_after(
-    points: list[TracePoint],
-    anchor: TracePoint,
-    predicate: Callable[[TracePoint], bool],
-) -> TracePoint | None:
-    for point in points:
-        if point.timestamp <= anchor.timestamp:
-            continue
-        if predicate(point):
-            return point
-    return None
-
-
-def nth_point_after(
-    points: list[TracePoint],
-    anchor: TracePoint,
-    predicate: Callable[[TracePoint], bool],
-    index: int,
-) -> TracePoint | None:
-    seen = 0
-    for point in points:
-        if point.timestamp <= anchor.timestamp:
-            continue
-        if not predicate(point):
-            continue
-        seen += 1
-        if seen == index:
-            return point
-    return None
-
-
-def key_echo_probe_instances(
-    points: list[TracePoint],
-) -> list[dict[str, TracePoint | None]]:
-    by_source: dict[str, list[TracePoint]] = {}
-    for point in points:
-        by_source.setdefault(point.source, []).append(point)
-
-    instances: list[dict[str, TracePoint | None]] = []
-    for source_points in by_source.values():
-        submits = [
-            point
-            for point in source_points
-            if point.message.startswith("debugLatencyProbe.keyEcho submit")
-        ]
-        for index, submit in enumerate(submits):
-            next_submit = submits[index + 1] if index + 1 < len(submits) else None
-            instance_points = [
-                point
-                for point in source_points
-                if point.timestamp >= submit.timestamp
-                and (next_submit is None or point.timestamp < next_submit.timestamp)
-            ]
-            marker_control_begin = find_point_after(
-                instance_points,
-                submit,
-                lambda point: point.message.startswith("control.sendInput begin")
-                and point_bytes(point) == 2,
-            )
-            marker_control_end = (
-                find_point_after(
-                    instance_points,
-                    marker_control_begin,
-                    lambda point: point.message.startswith("control.sendInput end"),
-                )
-                if marker_control_begin is not None
-                else None
-            )
-            marker_input_end = find_point_after(
-                instance_points,
-                submit,
-                lambda point: " input.sendText " in point.message
-                and point_bytes(point) == 2,
-            )
-            marker_transport_begin = find_point_after(
-                instance_points,
-                submit,
-                lambda point: point.message.startswith("transport.send begin"),
-            )
-            marker_transport_bytes = (
-                point_bytes(marker_transport_begin)
-                if marker_transport_begin is not None
-                else None
-            )
-            marker_write_begin = (
-                find_point_after(
-                    instance_points,
-                    marker_transport_begin,
-                    lambda point: point.message.startswith("ssh.writeAndFlush begin")
-                    and point_bytes(point) == marker_transport_bytes,
-                )
-                if marker_transport_begin is not None
-                else None
-            )
-            marker_write_end = (
-                find_point_after(
-                    instance_points,
-                    marker_write_begin,
-                    lambda point: point.message.startswith("ssh.writeAndFlush end")
-                    and point_bytes(point) == marker_transport_bytes,
-                )
-                if marker_write_begin is not None
-                else None
-            )
-            marker_transport_end = (
-                find_point_after(
-                    instance_points,
-                    marker_transport_begin,
-                    lambda point: point.message.startswith("transport.send end")
-                    and point_bytes(point) == marker_transport_bytes,
-                )
-                if marker_transport_begin is not None
-                else None
-            )
-            first_read = (
-                nth_point_after(
-                    instance_points,
-                    marker_transport_end,
-                    lambda point: point.message.startswith("ssh.channelRead"),
-                    1,
-                )
-                if marker_transport_end is not None
-                else None
-            )
-            first_emit = (
-                find_point_after(
-                    instance_points,
-                    first_read,
-                    lambda point: point.message.startswith("transport.emit"),
-                )
-                if first_read is not None
-                else None
-            )
-            first_pump = (
-                find_point_after(
-                    instance_points,
-                    first_read,
-                    lambda point: " tmuxPump " in point.message,
-                )
-                if first_read is not None
-                else None
-            )
-            second_read = (
-                nth_point_after(
-                    instance_points,
-                    marker_transport_end,
-                    lambda point: point.message.startswith("ssh.channelRead"),
-                    2,
-                )
-                if marker_transport_end is not None
-                else None
-            )
-            second_emit = (
-                find_point_after(
-                    instance_points,
-                    second_read,
-                    lambda point: point.message.startswith("transport.emit"),
-                )
-                if second_read is not None
-                else None
-            )
-            second_pump = (
-                find_point_after(
-                    instance_points,
-                    second_read,
-                    lambda point: " tmuxPump " in point.message,
-                )
-                if second_read is not None
-                else None
-            )
-            instances.append(
-                {
-                    "submit": submit,
-                    "marker_control_begin": marker_control_begin,
-                    "marker_control_end": marker_control_end,
-                    "marker_input_end": marker_input_end,
-                    "marker_transport_begin": marker_transport_begin,
-                    "marker_write_begin": marker_write_begin,
-                    "marker_write_end": marker_write_end,
-                    "marker_transport_end": marker_transport_end,
-                    "first_read": first_read,
-                    "first_emit": first_emit,
-                    "first_pump": first_pump,
-                    "second_read": second_read,
-                    "second_emit": second_emit,
-                    "second_pump": second_pump,
-                }
-            )
-
-    return instances
-
-
-KEY_ECHO_SEGMENTS: tuple[tuple[str, str, str], ...] = (
-    ("probe_submit->control_input_begin", "submit", "marker_control_begin"),
-    ("control_input_begin->control_input_end", "marker_control_begin", "marker_control_end"),
-    ("probe_submit->input_sendText_end", "submit", "marker_input_end"),
-    ("input_sendText_end->transport_send_begin", "marker_input_end", "marker_transport_begin"),
-    ("transport_send_begin->ssh_write_begin", "marker_transport_begin", "marker_write_begin"),
-    ("ssh_write_begin->ssh_write_end", "marker_write_begin", "marker_write_end"),
-    ("transport_send_begin->transport_send_end", "marker_transport_begin", "marker_transport_end"),
-    ("transport_send_end->first_ssh_channelRead", "marker_transport_end", "first_read"),
-    ("first_ssh_channelRead->first_transport_emit", "first_read", "first_emit"),
-    ("first_ssh_channelRead->first_tmuxPump", "first_read", "first_pump"),
-    ("transport_send_end->second_ssh_channelRead", "marker_transport_end", "second_read"),
-    ("second_ssh_channelRead->second_transport_emit", "second_read", "second_emit"),
-    ("second_ssh_channelRead->second_tmuxPump", "second_read", "second_pump"),
-    ("probe_submit->first_ssh_channelRead", "submit", "first_read"),
-    ("probe_submit->second_ssh_channelRead", "submit", "second_read"),
-)
-
-
-def report_key_echo_probes(points: list[TracePoint]) -> str:
-    instances = key_echo_probe_instances(points)
-    if not instances:
-        return ""
-
-    accepted_instances = [
-        instance
-        for instance in instances
-        if instance["marker_input_end"] is not None
-        and point_accepted(instance["marker_input_end"])
-    ]
-    rejected_count = sum(
-        1
-        for instance in instances
-        if instance["marker_input_end"] is not None
-        and point_rejected(instance["marker_input_end"])
-    )
-    incomplete_count = len(instances) - len(accepted_instances) - rejected_count
-
-    header = f"[keyEchoProbe] n={len(accepted_instances)}"
-    if rejected_count:
-        header += f" rejected={rejected_count}"
-    if incomplete_count:
-        header += f" incomplete={incomplete_count}"
-
-    lines = [header]
-    for name, start_key, end_key in KEY_ECHO_SEGMENTS:
-        values: list[float] = []
-        missing = 0
-        out_of_order = 0
-        for instance in accepted_instances:
-            start = instance[start_key]
-            end = instance[end_key]
-            if start is None or end is None:
-                missing += 1
-                continue
-            if end.timestamp < start.timestamp:
-                out_of_order += 1
-                continue
-            values.append((end.timestamp - start.timestamp) / 1_000_000)
-
-        if values:
-            line = (
-                f"{name}: "
-                f"n={len(values)} "
-                f"p50_ms={statistics.median(values):.3f} "
-                f"p95_ms={percentile(values, 0.95):.3f} "
-                f"max_ms={max(values):.3f}"
-            )
-            if missing:
-                line += f" missing={missing}"
-            if out_of_order:
-                line += f" out_of_order={out_of_order}"
-            lines.append(line)
-        else:
-            lines.append(f"{name}: n=0 missing={missing} out_of_order={out_of_order}")
-
-    return "\n".join(lines)
-
-
 def fill_native_surface_context(
     events: list[NativeSurfaceInitEvent],
 ) -> list[NativeSurfaceInitEvent]:
@@ -1933,14 +1304,16 @@ def dedupe_native_surface_events(
 
 
 def group_flow_instances(events: Iterable[FlowEvent]) -> list[FlowInstance]:
+    start_events = {
+        "tmux.newWindow": "ui.tap.newWindow",
+        "tmux.splitPane": "ui.tap.splitPane",
+    }
     active: dict[str, FlowInstance] = {}
     completed: list[FlowInstance] = []
 
     for event in events:
-        if is_flow_start_event(event):
-            existing = active.pop(event.flow, None)
-            if existing is not None and existing.events:
-                completed.append(existing)
+        start_event = start_events.get(event.flow)
+        if start_event is not None and event.event == start_event:
             active[event.flow] = FlowInstance(
                 flow=event.flow,
                 started_at=event.timestamp,
@@ -1961,29 +1334,11 @@ def group_flow_instances(events: Iterable[FlowEvent]) -> list[FlowInstance]:
                 continue
 
         instance.events.append(event)
-        if event.event in FLOW_TERMINAL_EVENTS:
+        if event.event == "interactive.ready":
             completed.append(instance)
             del active[event.flow]
 
-    completed.extend(
-        sorted(
-            (instance for instance in active.values() if instance.events),
-            key=lambda instance: instance.started_at,
-        )
-    )
     return completed
-
-
-def is_flow_start_event(event: FlowEvent) -> bool:
-    if event.event == "ui.swipe.threshold":
-        return True
-    if event.event.startswith("ui.tap."):
-        return True
-    if event.event.startswith("ui.dismiss."):
-        return True
-    if event.event.startswith("debugLatencyProbe."):
-        return True
-    return False
 
 
 def is_query_event(event: FlowEvent) -> bool:
@@ -2022,13 +1377,6 @@ def percentile(values: list[float], percentile_value: float) -> float:
 
 def segment_duration_ms(start: FlowEvent, end: FlowEvent) -> float:
     return (end.timestamp - start.timestamp) / 1_000_000
-
-
-def is_rejected_instance(instance: FlowInstance) -> bool:
-    return any(
-        event.event in FLOW_TERMINAL_EVENTS and event.event.endswith(".rejected")
-        for event in instance.events
-    )
 
 
 def count_events_between(
@@ -2128,30 +1476,14 @@ def report_native_surface_init(events: list[NativeSurfaceInitEvent]) -> str:
 
 def report(instances: list[FlowInstance]) -> str:
     lines = [f"distinct_action_flows={len(instances)}"]
-    present_flows = {instance.flow for instance in instances}
-    ordered_flows = [
-        flow
-        for flow in FLOW_REPORT_ORDER
-        if flow in present_flows
-    ]
-    ordered_flows.extend(sorted(present_flows - set(ordered_flows)))
-    for flow in ordered_flows:
+    for flow in ("tmux.newWindow", "tmux.splitPane"):
         flow_instances = [instance for instance in instances if instance.flow == flow]
-        rejected_instances = [
-            instance for instance in flow_instances if is_rejected_instance(instance)
-        ]
-        measured_instances = [
-            instance for instance in flow_instances if not is_rejected_instance(instance)
-        ]
-        header = f"[{flow}] n={len(measured_instances)}"
-        if rejected_instances:
-            header += f" rejected={len(rejected_instances)}"
-        lines.append(header)
+        lines.append(f"[{flow}] n={len(flow_instances)}")
         for segment in SEGMENTS:
             values: list[float] = []
             missing = 0
             out_of_order = 0
-            for instance in measured_instances:
+            for instance in flow_instances:
                 event_pairs = (
                     segment.pairs(instance)
                     if segment.pairs is not None
@@ -2188,7 +1520,7 @@ def report(instances: list[FlowInstance]) -> str:
             counts: list[int] = []
             missing = 0
             out_of_order = 0
-            for instance in measured_instances:
+            for instance in flow_instances:
                 start = metric.start(instance)
                 end = metric.end(instance)
                 if start is None or end is None:
@@ -2343,29 +1675,6 @@ Remux flow t=28000000 flow=tmux.splitPane event=registry.topology.installed sinc
 Remux flow t=29000000 flow=tmux.splitPane event=registry.runtimePresentation.ready since_ms=9.000
 Remux flow t=30000000 flow=tmux.splitPane event=ui.viewPresentation.ready since_ms=10.000
 Remux flow t=31000000 flow=tmux.splitPane event=interactive.ready since_ms=11.000
-Remux flow t=40000000 flow=tmux.windowSwipe event=ui.swipe.threshold since_ms=0.000 direction=next
-Remux flow t=40100000 flow=tmux.windowSwipe event=ui.swipe.modelReturned since_ms=0.100 direction=next elapsed_ms=0.050
-Remux flow t=40200000 flow=tmux.windowSwipe event=ui.swipe.handlerReturned since_ms=0.200 elapsed_ms=0.200
-Remux flow t=40300000 flow=tmux.windowSwipe event=host.write.send.end since_ms=0.300 bytes=21 command=select-window
-Remux flow t=40400000 flow=tmux.windowSwipe event=tmux.signal.ssh.channelRead.session-window-changed since_ms=0.400
-Remux flow t=40500000 flow=tmux.windowSwipe event=tmux.signal.host.pump.receive.session-window-changed since_ms=0.500
-Remux flow t=40600000 flow=tmux.windowSwipe event=tmux.signal.sequencer.enqueue.session-window-changed since_ms=0.600
-Remux flow t=40700000 flow=tmux.windowSwipe event=tmux.signal.sequencer.drain.session-window-changed since_ms=0.700
-Remux flow t=40800000 flow=tmux.windowSwipe event=tmux.response.session-window-changed since_ms=0.800
-Remux flow t=40900000 flow=tmux.windowSwipe event=interactive.ready since_ms=0.900
-Remux flow t=50000000 flow=tmux.closePane event=debugLatencyProbe.closePane since_ms=0.000
-Remux flow t=50100000 flow=tmux.closePane event=ui.topologyAction.begin since_ms=0.100 action=closePane
-Remux flow t=50200000 flow=tmux.closePane event=ui.topologyAction.end since_ms=0.200 action=closePane outcome=missingTarget
-Remux flow t=50300000 flow=tmux.closePane event=ui.topologyAction.rejected since_ms=0.300 action=closePane outcome=missingTarget
-Remux flow t=60000000 flow=tmux.selectWindow event=debugLatencyProbe.selectWindow since_ms=0.000
-Remux flow t=60100000 flow=tmux.selectWindow event=ui.selectWindow.modelReturned since_ms=0.100 handled=true outcome=handled target=abcd
-Remux flow t=60300000 flow=tmux.selectWindow event=tmux.signal.ssh.channelRead.session-window-changed since_ms=0.300
-Remux flow t=60400000 flow=tmux.selectWindow event=tmux.signal.transport.emit.session-window-changed since_ms=0.400
-Remux flow t=60900000 flow=tmux.selectWindow event=interactive.ready since_ms=0.900
-Remux flow t=70000000 flow=terminal.input event=ui.tap.keyboardToggle since_ms=0.000 inputAvailable=true mode=hidden
-Remux flow t=70100000 flow=terminal.input event=responder.update since_ms=0.100 enabled=true firstResponder=false hasWindow=true
-Remux flow t=70200000 flow=terminal.input event=responder.becomeFirstResponder.result since_ms=0.200 firstResponder=true result=true
-Remux flow t=70500000 flow=terminal.input event=ui.keyboard.didShow since_ms=0.500
 Remux flow t=1000000 flow=tmux.newWindow event=ui.tap.newWindow since_ms=0.000
 """.strip()
     events = []
@@ -2407,18 +1716,7 @@ Remux flow t=1000000 flow=tmux.newWindow event=ui.tap.newWindow since_ms=0.000
     )
     native_events = dedupe_native_surface_events(fill_native_surface_context(native_events))
     native_output = report_native_surface_init(native_events)
-    assert "distinct_action_flows=7" in output
-    assert "[terminal.input] n=1" in output
-    assert "flow_start->keyboard_did_show: n=1 p50_ms=0.500" in output
-    assert "flow_start->become_first_responder: n=1 p50_ms=0.200" in output
-    assert "[tmux.newWindow] n=2" in output
-    assert "[tmux.closePane] n=0 rejected=1" in output
-    assert "[tmux.selectWindow] n=1" in output
-    assert "flow_start->selection_model_returned: n=1 p50_ms=0.100" in output
-    assert "selection_model_returned->first_tmux_signal: n=1 p50_ms=0.200" in output
-    assert "[tmux.windowSwipe] n=1" in output
-    assert "flow_start->swipe_model_returned: n=1 p50_ms=0.100" in output
-    assert "swipe_model_returned->swipe_handler_returned: n=1 p50_ms=0.100" in output
+    assert "distinct_action_flows=2" in output
     assert "send_end->ssh_channel_read: n=1 p50_ms=1.000" in output
     assert "processOutput_end->runtime_callback_entry: n=1 p50_ms=0.400" in output
     assert "query.list_windows.send->response_receive: n=1 p50_ms=5.500" in output
@@ -2525,111 +1823,6 @@ Remux flow t=1000000 flow=tmux.newWindow event=ui.tap.newWindow since_ms=0.000
     assert "native.coreSurface.renderer.init: n=1 p50_ms=0.500" in native_output
     assert "native.coreSurface.termio.init: n=1 p50_ms=2.000" in native_output
     assert "native.coreSurface.assignState: n=2 p50_ms=0.150" in native_output
-    key_echo_output = report_key_echo_probes(
-        [
-            TracePoint(
-                timestamp=500000,
-                category="latency",
-                message="debugLatencyProbe.keyEcho submit marker=§ characters=1 bytes=2",
-                source="self-test-keyecho",
-            ),
-            TracePoint(
-                timestamp=600000,
-                category="perf",
-                message="thread=main input.sendText bytes=2 result=noFocusedSurface accepted=false elapsed_ms=0.100",
-                source="self-test-keyecho",
-            ),
-            TracePoint(
-                timestamp=1000000,
-                category="latency",
-                message="debugLatencyProbe.keyEcho submit marker=§ characters=1 bytes=2",
-                source="self-test-keyecho",
-            ),
-            TracePoint(
-                timestamp=1100000,
-                category="latency",
-                message="control.sendInput begin handle=0x1 bytes=2",
-                source="self-test-keyecho",
-            ),
-            TracePoint(
-                timestamp=1200000,
-                category="latency",
-                message="control.sendInput end accepted=true elapsed_ms=0.100",
-                source="self-test-keyecho",
-            ),
-            TracePoint(
-                timestamp=1300000,
-                category="perf",
-                message="thread=main input.sendText bytes=2 result=accepted accepted=true elapsed_ms=0.300",
-                source="self-test-keyecho",
-            ),
-            TracePoint(
-                timestamp=1500000,
-                category="latency",
-                message="transport.send begin bytes=26",
-                source="self-test-keyecho",
-            ),
-            TracePoint(
-                timestamp=1700000,
-                category="latency",
-                message="ssh.writeAndFlush begin bytes=26",
-                source="self-test-keyecho",
-            ),
-            TracePoint(
-                timestamp=2200000,
-                category="latency",
-                message="ssh.writeAndFlush end bytes=26 elapsed_ms=0.500",
-                source="self-test-keyecho",
-            ),
-            TracePoint(
-                timestamp=2300000,
-                category="latency",
-                message="transport.send end bytes=26 elapsed_ms=0.800",
-                source="self-test-keyecho",
-            ),
-            TracePoint(
-                timestamp=6000000,
-                category="latency",
-                message="ssh.channelRead bytes=104",
-                source="self-test-keyecho",
-            ),
-            TracePoint(
-                timestamp=6100000,
-                category="latency",
-                message="transport.emit bytes=104",
-                source="self-test-keyecho",
-            ),
-            TracePoint(
-                timestamp=6200000,
-                category="perf",
-                message="thread= tmuxPump bytes=104 wait_ms=0.010 apply_ms=0.100",
-                source="self-test-keyecho",
-            ),
-            TracePoint(
-                timestamp=9000000,
-                category="latency",
-                message="ssh.channelRead bytes=308",
-                source="self-test-keyecho",
-            ),
-            TracePoint(
-                timestamp=9100000,
-                category="latency",
-                message="transport.emit bytes=308",
-                source="self-test-keyecho",
-            ),
-            TracePoint(
-                timestamp=9300000,
-                category="perf",
-                message="thread= tmuxPump bytes=308 wait_ms=0.020 apply_ms=0.200",
-                source="self-test-keyecho",
-            ),
-        ]
-    )
-    assert "[keyEchoProbe] n=1 rejected=1" in key_echo_output
-    assert "probe_submit->input_sendText_end: n=1 p50_ms=0.300" in key_echo_output
-    assert "ssh_write_begin->ssh_write_end: n=1 p50_ms=0.500" in key_echo_output
-    assert "transport_send_end->first_ssh_channelRead: n=1 p50_ms=3.700" in key_echo_output
-    assert "probe_submit->second_ssh_channelRead: n=1 p50_ms=8.000" in key_echo_output
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -2666,10 +1859,6 @@ def main(argv: list[str]) -> int:
     if native_report != "native_surface_init_traces=0":
         print()
         print(native_report)
-    key_echo_report = report_key_echo_probes(parse_trace_points(args.logs))
-    if key_echo_report:
-        print()
-        print(key_echo_report)
     return 0
 
 

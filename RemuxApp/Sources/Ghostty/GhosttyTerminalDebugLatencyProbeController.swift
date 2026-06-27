@@ -6,7 +6,6 @@ final class GhosttyTerminalDebugLatencyProbeController {
     struct SubmissionResult: Equatable {
         let statusMessage: String?
         let didSubmit: Bool
-        let shouldRetry: Bool
     }
 
     typealias DelayScheduler = @MainActor (
@@ -26,42 +25,6 @@ final class GhosttyTerminalDebugLatencyProbeController {
     ) {
         self.probe = probe
         self.delayScheduler = delayScheduler
-    }
-
-    @discardableResult
-    func update(
-        readiness: TerminalReadinessSnapshot,
-        onDelaySatisfied: @escaping @MainActor () -> Void,
-        sendInput: @MainActor (String) -> FocusedTerminalInputSubmissionResult,
-        split: @MainActor (ghostty_action_split_direction_e) -> GhosttyTmuxModelActionOutcome,
-        newWindow: @MainActor () -> GhosttyTmuxModelActionOutcome,
-        showWindows: @MainActor () -> Bool,
-        showPanes: @MainActor () -> Bool,
-        showWindowsThenDismiss: @MainActor () -> Bool,
-        showPanesThenDismiss: @MainActor () -> Bool,
-        selectWindow: @MainActor () -> Bool = { false },
-        selectPane: @MainActor () -> Bool = { false },
-        closeWindow: @MainActor () -> Bool = { false },
-        closePane: @MainActor () -> Bool = { false }
-    ) -> SubmissionResult? {
-        _ = scheduleIfNeeded(
-            readiness: readiness,
-            onDelaySatisfied: onDelaySatisfied
-        )
-        return submitIfReady(
-            readiness: readiness,
-            sendInput: sendInput,
-            split: split,
-            newWindow: newWindow,
-            showWindows: showWindows,
-            showPanes: showPanes,
-            showWindowsThenDismiss: showWindowsThenDismiss,
-            showPanesThenDismiss: showPanesThenDismiss,
-            selectWindow: selectWindow,
-            selectPane: selectPane,
-            closeWindow: closeWindow,
-            closePane: closePane
-        )
     }
 
     @discardableResult
@@ -92,15 +55,7 @@ final class GhosttyTerminalDebugLatencyProbeController {
         readiness: TerminalReadinessSnapshot,
         sendInput: @MainActor (String) -> FocusedTerminalInputSubmissionResult,
         split: @MainActor (ghostty_action_split_direction_e) -> GhosttyTmuxModelActionOutcome,
-        newWindow: @MainActor () -> GhosttyTmuxModelActionOutcome,
-        showWindows: @MainActor () -> Bool,
-        showPanes: @MainActor () -> Bool,
-        showWindowsThenDismiss: @MainActor () -> Bool,
-        showPanesThenDismiss: @MainActor () -> Bool,
-        selectWindow: @MainActor () -> Bool = { false },
-        selectPane: @MainActor () -> Bool = { false },
-        closeWindow: @MainActor () -> Bool = { false },
-        closePane: @MainActor () -> Bool = { false }
+        newWindow: @MainActor () -> GhosttyTmuxModelActionOutcome
     ) -> SubmissionResult? {
         guard var probe else { return nil }
         guard delaySatisfied else { return nil }
@@ -112,7 +67,6 @@ final class GhosttyTerminalDebugLatencyProbeController {
         }
 
         let statusMessage: String?
-        var shouldRetry = false
         switch submission.action {
         case .input:
             guard let marker = submission.marker, let text = submission.text else {
@@ -133,7 +87,6 @@ final class GhosttyTerminalDebugLatencyProbeController {
                 statusMessage = "debug latency input probe sent"
             } else {
                 probe.markRejected()
-                shouldRetry = true
                 statusMessage = nil
             }
 
@@ -157,7 +110,6 @@ final class GhosttyTerminalDebugLatencyProbeController {
                 statusMessage = "debug latency key echo probe sent"
             } else {
                 probe.markRejected()
-                shouldRetry = true
                 statusMessage = nil
             }
 
@@ -165,7 +117,6 @@ final class GhosttyTerminalDebugLatencyProbeController {
             GhosttyRuntimeTrace.latency("debugLatencyProbe.splitRight submit")
             if !split(GHOSTTY_SPLIT_DIRECTION_RIGHT).isQueued {
                 probe.markRejected()
-                shouldRetry = true
             }
             statusMessage = nil
 
@@ -173,7 +124,6 @@ final class GhosttyTerminalDebugLatencyProbeController {
             GhosttyRuntimeTrace.latency("debugLatencyProbe.splitDown submit")
             if !split(GHOSTTY_SPLIT_DIRECTION_DOWN).isQueued {
                 probe.markRejected()
-                shouldRetry = true
             }
             statusMessage = nil
 
@@ -181,81 +131,12 @@ final class GhosttyTerminalDebugLatencyProbeController {
             GhosttyRuntimeTrace.latency("debugLatencyProbe.newWindow submit")
             if !newWindow().isQueued {
                 probe.markRejected()
-                shouldRetry = true
-            }
-            statusMessage = nil
-
-        case .showWindows:
-            GhosttyRuntimeTrace.latency("debugLatencyProbe.showWindows submit")
-            if !showWindows() {
-                probe.markRejected()
-                shouldRetry = true
-            }
-            statusMessage = nil
-
-        case .showPanes:
-            GhosttyRuntimeTrace.latency("debugLatencyProbe.showPanes submit")
-            if !showPanes() {
-                probe.markRejected()
-                shouldRetry = true
-            }
-            statusMessage = nil
-
-        case .showWindowsDismiss:
-            GhosttyRuntimeTrace.latency("debugLatencyProbe.showWindowsDismiss submit")
-            if !showWindowsThenDismiss() {
-                probe.markRejected()
-                shouldRetry = true
-            }
-            statusMessage = nil
-
-        case .showPanesDismiss:
-            GhosttyRuntimeTrace.latency("debugLatencyProbe.showPanesDismiss submit")
-            if !showPanesThenDismiss() {
-                probe.markRejected()
-                shouldRetry = true
-            }
-            statusMessage = nil
-
-        case .selectWindow:
-            GhosttyRuntimeTrace.latency("debugLatencyProbe.selectWindow submit")
-            if !selectWindow() {
-                probe.markRejected()
-                shouldRetry = true
-            }
-            statusMessage = nil
-
-        case .selectPane:
-            GhosttyRuntimeTrace.latency("debugLatencyProbe.selectPane submit")
-            if !selectPane() {
-                probe.markRejected()
-                shouldRetry = true
-            }
-            statusMessage = nil
-
-        case .closeWindow:
-            GhosttyRuntimeTrace.latency("debugLatencyProbe.closeWindow submit")
-            if !closeWindow() {
-                probe.markRejected()
-                shouldRetry = true
-            }
-            statusMessage = nil
-
-        case .closePane:
-            GhosttyRuntimeTrace.latency("debugLatencyProbe.closePane submit")
-            if !closePane() {
-                probe.markRejected()
-                shouldRetry = true
             }
             statusMessage = nil
         }
 
         self.probe = probe
-        return SubmissionResult(
-            statusMessage: statusMessage,
-            didSubmit: true,
-            shouldRetry: shouldRetry
-        )
+        return SubmissionResult(statusMessage: statusMessage, didSubmit: true)
     }
 
     func cancel() {
@@ -294,14 +175,6 @@ struct DebugLatencyProbeCommand: Equatable {
         case splitRight
         case splitDown
         case newWindow
-        case showWindows
-        case showPanes
-        case showWindowsDismiss
-        case showPanesDismiss
-        case selectWindow
-        case selectPane
-        case closeWindow
-        case closePane
     }
 
     struct Submission: Equatable {
@@ -347,22 +220,6 @@ struct DebugLatencyProbeCommand: Equatable {
             self.init(action: .splitDown, probeID: probeID, delayMilliseconds: delayMilliseconds)
         case "new-window", "new_window", "window":
             self.init(action: .newWindow, probeID: probeID, delayMilliseconds: delayMilliseconds)
-        case "show-windows", "show_windows", "showwindows", "windows":
-            self.init(action: .showWindows, probeID: probeID, delayMilliseconds: delayMilliseconds)
-        case "show-panes", "show_panes", "showpanes", "panes":
-            self.init(action: .showPanes, probeID: probeID, delayMilliseconds: delayMilliseconds)
-        case "show-windows-dismiss", "show_windows_dismiss", "windows-dismiss", "windows_dismiss":
-            self.init(action: .showWindowsDismiss, probeID: probeID, delayMilliseconds: delayMilliseconds)
-        case "show-panes-dismiss", "show_panes_dismiss", "panes-dismiss", "panes_dismiss":
-            self.init(action: .showPanesDismiss, probeID: probeID, delayMilliseconds: delayMilliseconds)
-        case "select-window", "select_window", "selectwindow":
-            self.init(action: .selectWindow, probeID: probeID, delayMilliseconds: delayMilliseconds)
-        case "select-pane", "select_pane", "selectpane":
-            self.init(action: .selectPane, probeID: probeID, delayMilliseconds: delayMilliseconds)
-        case "close-window", "close_window", "closewindow":
-            self.init(action: .closeWindow, probeID: probeID, delayMilliseconds: delayMilliseconds)
-        case "close-pane", "close_pane", "closepane":
-            self.init(action: .closePane, probeID: probeID, delayMilliseconds: delayMilliseconds)
         default:
             return nil
         }
@@ -401,17 +258,7 @@ struct DebugLatencyProbeCommand: Equatable {
                 marker: keyEchoMarker,
                 text: keyEchoMarker
             )
-        case .splitRight,
-             .splitDown,
-             .newWindow,
-             .showWindows,
-             .showPanes,
-             .showWindowsDismiss,
-             .showPanesDismiss,
-             .selectWindow,
-             .selectPane,
-             .closeWindow,
-             .closePane:
+        case .splitRight, .splitDown, .newWindow:
             return Submission(
                 action: action,
                 marker: nil,

@@ -65,11 +65,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var attachmentTransferUploadCount = 0
     @State private var attachmentTransferProgress: GhosttyAttachmentTransferProgress?
     @State private var attachmentNotice: GhosttyAttachmentNotice?
-#if DEBUG
-    @State private var debugLatencyProbeController: GhosttyTerminalDebugLatencyProbeController?
-    @State private var debugLatencyProbeDismissTask: Task<Void, Never>?
-    @State private var debugLatencyProbeRetryTask: Task<Void, Never>?
-#endif
 
     private let onReconnect: () -> Void
     private let onEditConnection: () -> Void
@@ -280,21 +275,17 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         )
                     }
                     .onChange(of: selectionSheet?.id) { _, newValue in
-                        let isPresented = newValue != nil
-                        let isPresentedValue = isPresented ? "true" : "false"
-                        let traceFields: [String: String] = ["isPresented": isPresentedValue]
                         traceTerminalViewportSnapshot(
                             event: "selectionSheet.changed",
                             liveSize: liveTerminalViewportSize,
                             effectiveSize: terminalViewportSize,
                             context: viewportTraceContext,
-                            extra: traceFields
+                            extra: ["isPresented": "\(newValue != nil)"]
                         )
                         updateSelectionSheetViewportHold(
-                            isPresented: isPresented,
+                            isPresented: newValue != nil,
                             liveSize: liveTerminalViewportSize
                         )
-                        handleSelectionSheetPresentationChange(isPresented: isPresented)
                     }
                 }
             }
@@ -324,8 +315,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     isAttachmentControlEnabled: !hasPendingAttachments,
                     pendingAttachmentCount: pendingAttachments.count,
                     onShowHome: onEditConnection,
-                    onShowWindows: handleShowWindows,
-                    onShowPanes: handleShowPanes,
+                    onShowWindows: showWindows,
+                    onShowPanes: showPanes,
                     onShowAttachments: toggleAttachmentTray,
                     onToggleKeyboard: toggleKeyboardChrome,
                     onToggleControl: toggleControlModifier,
@@ -469,19 +460,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 handleTmuxCommandFailureEvent(event)
             }
 #if DEBUG
-            .onAppear {
-                updateDebugLatencyProbe(readiness: readiness)
-            }
-            .onChange(of: readiness) { _, readiness in
-                updateDebugLatencyProbe(readiness: readiness)
-            }
-            .onDisappear {
-                debugLatencyProbeController?.cancel()
-                debugLatencyProbeDismissTask?.cancel()
-                debugLatencyProbeRetryTask?.cancel()
-                debugLatencyProbeDismissTask = nil
-                debugLatencyProbeRetryTask = nil
-            }
             .task {
                 if CommandLine.arguments.contains("--open-panes-after-warmup") {
                     for _ in 0..<60 {
@@ -534,12 +512,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private var selectionSheetBinding: Binding<GhosttySurfaceSelectionSheet?> {
         Binding(
             get: { selectionSheet },
-            set: { newValue in
-                if selectionSheet != nil, newValue == nil {
-                    beginSelectionSheetDismissTrace(reason: "binding")
-                }
-                applySelectionSheetPresentation(newValue, reason: "binding")
-            }
+            set: { applySelectionSheetPresentation($0) }
         )
     }
 
@@ -714,57 +687,15 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @discardableResult
     private func performTopologyActionInteraction(
         _ actionEffect: GhosttyTmuxTopologyActionInteractionEffect,
-        flow: String? = nil,
-        actionName: String? = nil,
         action: () -> GhosttyTmuxModelActionOutcome
     ) -> GhosttyTmuxModelActionOutcome {
-        let startedAt = GhosttyRuntimeTrace.flowTraceEnabled ? GhosttyRuntimeTrace.nowNanos() : nil
-        if let flow, let actionName, let startedAt {
-            GhosttyRuntimeTrace.flowEventIfActive(
-                flow,
-                event: "ui.topologyAction.begin",
-                fields: topologyActionTraceFields(
-                    actionName: actionName,
-                    actionEffect: actionEffect,
-                    extra: [:]
-                ),
-                at: startedAt
-            )
-        }
-
-        let outcome = topologyActionInputRefocusCoordinator.perform(
+        topologyActionInputRefocusCoordinator.perform(
             actionEffect: actionEffect,
             activeLeafID: model.terminalInteractionProjection.selectedActiveLeafID,
             keyboardMode: inputCoordinator.keyboardMode,
             apply: applyTopologyInputRefocusEffect,
             action: action
         )
-
-        if let flow, let actionName, let startedAt {
-            let fields = topologyActionTraceFields(
-                actionName: actionName,
-                actionEffect: actionEffect,
-                extra: [
-                    "elapsed_ms": GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt),
-                    "outcome": String(describing: outcome),
-                    "queued": "\(outcome.isQueued)",
-                ]
-            )
-            GhosttyRuntimeTrace.flowEventIfActive(
-                flow,
-                event: "ui.topologyAction.end",
-                fields: fields
-            )
-            if !outcome.isQueued {
-                GhosttyRuntimeTrace.flowEndIfActive(
-                    flow,
-                    event: "ui.topologyAction.rejected",
-                    fields: fields
-                )
-            }
-        }
-
-        return outcome
     }
 
     private func handleActiveLeafChange(_ activeLeafID: UUID?) {
@@ -1315,52 +1246,15 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
     }
 
-    @discardableResult
-    private func showWindows() -> Bool {
-        let startedAt = GhosttyRuntimeTrace.flowTraceEnabled ? GhosttyRuntimeTrace.nowNanos() : nil
-        if let startedAt {
-            GhosttyRuntimeTrace.flowBegin(
-                "tmux.showWindows",
-                event: "ui.tap.showWindows",
-                fields: selectionSheetTraceFields(sheet: selectionSheet, extra: [
-                    "topLevels": "\(model.terminalInteractionProjection.windowCount)",
-                ]),
-                startedAt: startedAt
-            )
-        }
-        guard let projection = model.windowSheetPresentationProjection() else {
-            GhosttyRuntimeTrace.flowEndIfActive(
-                "tmux.showWindows",
-                event: "ui.showWindows.rejected",
-                fields: selectionSheetTraceFields(sheet: selectionSheet, extra: [
-                    "reason": "missingProjection",
-                ])
-            )
-            return false
-        }
+    private func showWindows() {
+        guard let projection = model.windowSheetPresentationProjection() else { return }
         GhosttyRuntimeTrace.flowEventIfActive("tmux.newWindow", event: "ui.showWindows")
         captureSelectionSheetBottomReplacementHeight()
         applySelectionSheetPresentation(
             .windows(
                 makeWindowPreviewSession(leafIDs: projection.previewLeafIDs)
-            ),
-            reason: "showWindows"
-        )
-        if let startedAt {
-            GhosttyRuntimeTrace.flowEventIfActive(
-                "tmux.showWindows",
-                event: "ui.showWindows.handlerReturned",
-                fields: selectionSheetTraceFields(sheet: selectionSheet, extra: [
-                    "elapsed_ms": GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt),
-                    "previewLeafs": "\(projection.previewLeafIDs.count)",
-                ])
             )
-        }
-        return true
-    }
-
-    private func handleShowWindows() {
-        _ = showWindows()
+        )
     }
 
     private func makeWindowPreviewSession(leafIDs: [UUID]) -> GhosttyPanePreviewSession {
@@ -1370,45 +1264,17 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         )
     }
 
-    private func dismissSelectionSheet(reason: String = "programmatic") {
-        beginSelectionSheetDismissTrace(reason: reason)
-        applySelectionSheetPresentation(nil, reason: reason)
+    private func dismissSelectionSheet() {
+        applySelectionSheetPresentation(nil)
     }
 
-    private func applySelectionSheetPresentation(
-        _ newValue: GhosttySurfaceSelectionSheet?,
-        reason: String = "direct"
-    ) {
-        let previous = selectionSheet
-        let startedAt = GhosttyRuntimeTrace.flowTraceEnabled ? GhosttyRuntimeTrace.nowNanos() : nil
-        if let startedAt {
-            traceActiveSelectionSheetFlows(
-                event: "ui.sheet.apply.begin",
-                fields: selectionSheetTraceFields(sheet: newValue, extra: [
-                    "previous": previous.traceLabel,
-                    "reason": reason,
-                ]),
-                at: startedAt
-            )
-        }
-
+    private func applySelectionSheetPresentation(_ newValue: GhosttySurfaceSelectionSheet?) {
         let change = selectionSheetPresentationState.apply(nextKind: newValue?.presentationKind)
         if change.shouldCancelCurrentPreviewSession {
             cancelSelectionSheetPreviewSession(selectionSheet)
         }
 
         selectionSheet = newValue
-
-        if let startedAt {
-            traceActiveSelectionSheetFlows(
-                event: "ui.sheet.apply.end",
-                fields: selectionSheetTraceFields(sheet: newValue, extra: [
-                    "elapsed_ms": GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt),
-                    "previous": previous.traceLabel,
-                    "reason": reason,
-                ])
-            )
-        }
     }
 
     private func cancelSelectionSheetPreviewSession(_ sheet: GhosttySurfaceSelectionSheet?) {
@@ -1458,30 +1324,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
     }
 
-    @discardableResult
-    private func showPanes() -> Bool {
-        let startedAt = GhosttyRuntimeTrace.flowTraceEnabled ? GhosttyRuntimeTrace.nowNanos() : nil
-        if let startedAt {
-            GhosttyRuntimeTrace.flowBegin(
-                "tmux.showPanes",
-                event: "ui.tap.showPanes",
-                fields: selectionSheetTraceFields(sheet: selectionSheet, extra: [
-                    "panes": "\(model.terminalInteractionProjection.paneCount)",
-                    "topLevels": "\(model.terminalInteractionProjection.windowCount)",
-                ]),
-                startedAt: startedAt
-            )
-        }
-        guard let projection = model.selectedPaneSheetPresentationProjection() else {
-            GhosttyRuntimeTrace.flowEndIfActive(
-                "tmux.showPanes",
-                event: "ui.showPanes.rejected",
-                fields: selectionSheetTraceFields(sheet: selectionSheet, extra: [
-                    "reason": "missingProjection",
-                ])
-            )
-            return false
-        }
+    private func showPanes() {
+        guard let projection = model.selectedPaneSheetPresentationProjection() else { return }
         GhosttyRuntimeTrace.flowEventIfActive("tmux.splitPane", event: "ui.showPanes")
 
         // Carry the preview session in the sheet payload itself so the pane
@@ -1495,57 +1339,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     leafIDs: projection.previewLeafIDs,
                     previewSizing: .paneGridForCurrentScreen
                 )
-            ),
-            reason: "showPanes"
-        )
-        if let startedAt {
-            GhosttyRuntimeTrace.flowEventIfActive(
-                "tmux.showPanes",
-                event: "ui.showPanes.handlerReturned",
-                fields: selectionSheetTraceFields(sheet: selectionSheet, extra: [
-                    "elapsed_ms": GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt),
-                    "previewLeafs": "\(projection.previewLeafIDs.count)",
-                ])
             )
-        }
-        return true
-    }
-
-    private func handleShowPanes() {
-        _ = showPanes()
-    }
-
-    private func beginSelectionSheetDismissTrace(reason: String) {
-        guard !GhosttyRuntimeTrace.isFlowActive("tmux.dismissSelectionSheet") else { return }
-        GhosttyRuntimeTrace.flowBegin(
-            "tmux.dismissSelectionSheet",
-            event: "ui.dismiss.selectionSheet",
-            fields: selectionSheetTraceFields(sheet: selectionSheet, extra: ["reason": reason])
         )
-    }
-
-    private func handleSelectionSheetPresentationChange(isPresented: Bool) {
-        if isPresented {
-            let fields = selectionSheetTraceFields(sheet: selectionSheet, extra: ["isPresented": "true"])
-            GhosttyRuntimeTrace.flowEndIfActive("tmux.showWindows", event: "ui.sheet.presented", fields: fields)
-            GhosttyRuntimeTrace.flowEndIfActive("tmux.showPanes", event: "ui.sheet.presented", fields: fields)
-        } else {
-            GhosttyRuntimeTrace.flowEndIfActive(
-                "tmux.dismissSelectionSheet",
-                event: "ui.sheet.dismissed",
-                fields: selectionSheetTraceFields(sheet: selectionSheet, extra: ["isPresented": "false"])
-            )
-        }
-    }
-
-    private func traceActiveSelectionSheetFlows(
-        event: String,
-        fields: [String: String],
-        at timestamp: UInt64? = nil
-    ) {
-        for flow in ["tmux.showWindows", "tmux.showPanes", "tmux.dismissSelectionSheet"] {
-            GhosttyRuntimeTrace.flowEventIfActive(flow, event: event, fields: fields, at: timestamp)
-        }
     }
 
     private func updateSelectionSheetViewportHold(
@@ -1624,188 +1419,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
         return result.isAccepted
     }
-
-#if DEBUG
-    private func updateDebugLatencyProbe(readiness: TerminalReadinessSnapshot) {
-        guard let controller = resolvedDebugLatencyProbeController() else { return }
-        let result = controller.update(
-            readiness: readiness,
-            onDelaySatisfied: {
-                updateDebugLatencyProbe(
-                    readiness: model.terminalScreenPresentationProjection.readiness
-                )
-            },
-            sendInput: submitTerminalTextForDebugProbe(_:),
-            split: submitDebugProbeSplit(_:),
-            newWindow: submitDebugProbeNewWindow,
-            showWindows: submitDebugProbeShowWindows,
-            showPanes: submitDebugProbeShowPanes,
-            showWindowsThenDismiss: submitDebugProbeShowWindowsThenDismiss,
-            showPanesThenDismiss: submitDebugProbeShowPanesThenDismiss,
-            selectWindow: submitDebugProbeSelectWindow,
-            selectPane: submitDebugProbeSelectPane,
-            closeWindow: submitDebugProbeCloseWindow,
-            closePane: submitDebugProbeClosePane
-        )
-        guard let result, result.didSubmit else { return }
-        if result.shouldRetry {
-            scheduleDebugLatencyProbeRetry()
-        } else {
-            debugLatencyProbeRetryTask?.cancel()
-            debugLatencyProbeRetryTask = nil
-        }
-        if let statusMessage = result.statusMessage {
-            GhosttyRuntimeTrace.perf("debugLatencyProbe.status \(statusMessage)")
-        }
-    }
-
-    private func resolvedDebugLatencyProbeController() -> GhosttyTerminalDebugLatencyProbeController? {
-        if let debugLatencyProbeController {
-            return debugLatencyProbeController
-        }
-        guard let probe = DebugLatencyProbeCommand.fromEnvironment() else {
-            return nil
-        }
-        let controller = GhosttyTerminalDebugLatencyProbeController(probe: probe)
-        debugLatencyProbeController = controller
-        return controller
-    }
-
-    private func submitTerminalTextForDebugProbe(_ text: String) -> FocusedTerminalInputSubmissionResult {
-        submitTerminalText(text) ? .accepted : .surfaceRejected
-    }
-
-    private func submitDebugProbeSplit(
-        _ direction: ghostty_action_split_direction_e
-    ) -> GhosttyTmuxModelActionOutcome {
-        GhosttyRuntimeTrace.flowBegin(
-            "tmux.splitPane",
-            event: "debugLatencyProbe.split",
-            fields: [
-                "direction": "\(direction.rawValue)",
-                "workspaceID": presentation.workspaceID.uuidString,
-            ]
-        )
-        let effect = model.splitFocusedTmuxPaneInteractionEffect()
-        return performTopologyActionInteraction(effect, flow: "tmux.splitPane", actionName: "splitPane") {
-            model.splitFocusedTmuxPane(direction)
-        }
-    }
-
-    private func submitDebugProbeNewWindow() -> GhosttyTmuxModelActionOutcome {
-        GhosttyRuntimeTrace.flowBegin(
-            "tmux.newWindow",
-            event: "debugLatencyProbe.newWindow",
-            fields: [
-                "topLevelsBefore": "\(model.terminalInteractionProjection.windowCount)",
-                "workspaceID": presentation.workspaceID.uuidString,
-            ]
-        )
-        let effect = model.createTmuxWindowInteractionEffect()
-        return performTopologyActionInteraction(effect, flow: "tmux.newWindow", actionName: "newWindow") {
-            model.createTmuxWindow()
-        }
-    }
-
-    private func submitDebugProbeShowWindows() -> Bool {
-        showWindows()
-    }
-
-    private func submitDebugProbeShowPanes() -> Bool {
-        showPanes()
-    }
-
-    private func submitDebugProbeShowWindowsThenDismiss() -> Bool {
-        guard showWindows() else { return false }
-        scheduleDebugLatencyProbeSelectionSheetDismiss(reason: "debugLatencyProbe.showWindowsDismiss")
-        return true
-    }
-
-    private func submitDebugProbeShowPanesThenDismiss() -> Bool {
-        guard showPanes() else { return false }
-        scheduleDebugLatencyProbeSelectionSheetDismiss(reason: "debugLatencyProbe.showPanesDismiss")
-        return true
-    }
-
-    private func submitDebugProbeSelectWindow() -> Bool {
-        let projection = model.windowSelectionSheetRenderProjection()
-        guard let target = projection.windows.first(where: { !$0.isSelected }) else {
-            return false
-        }
-        return selectTmuxWindowFromSelectionSheet(
-            target.id,
-            event: "debugLatencyProbe.selectWindow"
-        )
-    }
-
-    private func submitDebugProbeSelectPane() -> Bool {
-        guard let topLevelID = model.terminalScreenPresentationProjection.tree.topLevel?.id else {
-            return false
-        }
-        let projection = model.paneSelectionSheetRenderProjection(topLevelID: topLevelID)
-        guard let target = projection.panes.first(where: { !$0.isSelected }) else {
-            return false
-        }
-        return selectTmuxPaneFromSelectionSheet(
-            target.id,
-            event: "debugLatencyProbe.selectPane"
-        )
-    }
-
-    private func submitDebugProbeCloseWindow() -> Bool {
-        let projection = model.windowSelectionSheetRenderProjection()
-        guard let target = projection.windows.first(where: { !$0.isSelected }) else {
-            return false
-        }
-        return closeTmuxWindowFromSelectionSheet(
-            target.id,
-            event: "debugLatencyProbe.closeWindow"
-        ).isQueued
-    }
-
-    private func submitDebugProbeClosePane() -> Bool {
-        guard let topLevelID = model.terminalScreenPresentationProjection.tree.topLevel?.id else {
-            return false
-        }
-        let projection = model.paneSelectionSheetRenderProjection(topLevelID: topLevelID)
-        guard let target = projection.panes.first(where: { !$0.isSelected }) else {
-            return false
-        }
-        return closeTmuxPaneFromSelectionSheet(
-            target.id,
-            topLevelID: topLevelID,
-            event: "debugLatencyProbe.closePane"
-        ).isQueued
-    }
-
-    private func scheduleDebugLatencyProbeSelectionSheetDismiss(reason: String) {
-        debugLatencyProbeDismissTask?.cancel()
-        debugLatencyProbeDismissTask = Task { @MainActor in
-            do {
-                try await Task.sleep(for: .milliseconds(250))
-            } catch {
-                return
-            }
-            guard !Task.isCancelled else { return }
-            dismissSelectionSheet(reason: reason)
-        }
-    }
-
-    private func scheduleDebugLatencyProbeRetry() {
-        debugLatencyProbeRetryTask?.cancel()
-        debugLatencyProbeRetryTask = Task { @MainActor in
-            do {
-                try await Task.sleep(for: .milliseconds(150))
-            } catch {
-                return
-            }
-            guard !Task.isCancelled else { return }
-            updateDebugLatencyProbe(
-                readiness: model.terminalScreenPresentationProjection.readiness
-            )
-        }
-    }
-#endif
 
     private func scheduleTmuxPrefixInputFlush(token: UInt64) {
         Task { @MainActor in
@@ -2184,42 +1797,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         return fields
     }
 
-    private func selectionSheetTraceFields(
-        sheet: GhosttySurfaceSelectionSheet?,
-        extra: [String: String] = [:]
-    ) -> [String: String] {
-        var fields = [
-            "keyboardMode": "\(inputCoordinator.keyboardMode)",
-            "sheet": sheet.traceLabel,
-            "workspaceID": presentation.workspaceID.uuidString,
-        ]
-        for (key, value) in extra {
-            fields[key] = value
-        }
-        return fields
-    }
-
-    private func topologyActionTraceFields(
-        actionName: String,
-        actionEffect: GhosttyTmuxTopologyActionInteractionEffect,
-        extra: [String: String]
-    ) -> [String: String] {
-        let interactionProjection = model.terminalInteractionProjection
-        var fields = [
-            "action": actionName,
-            "activeLeaf": ghosttyDiagnosticShortID(interactionProjection.selectedActiveLeafID),
-            "effect": String(describing: actionEffect),
-            "keyboardMode": "\(inputCoordinator.keyboardMode)",
-            "panes": "\(interactionProjection.paneCount)",
-            "topLevels": "\(interactionProjection.windowCount)",
-            "workspaceID": presentation.workspaceID.uuidString,
-        ]
-        for (key, value) in extra {
-            fields[key] = value
-        }
-        return fields
-    }
-
     private func createTmuxWindowFromSelectionSheet() {
         GhosttyRuntimeTrace.flowBegin(
             "tmux.newWindow",
@@ -2230,64 +1807,20 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             ]
         )
         let effect = model.createTmuxWindowInteractionEffect()
-        performTopologyActionInteraction(effect, flow: "tmux.newWindow", actionName: "newWindow") {
+        performTopologyActionInteraction(effect) {
             model.createTmuxWindow()
         }
     }
 
-    @discardableResult
-    private func selectTmuxWindowFromSelectionSheet(
-        _ id: UUID,
-        event: String = "ui.tap.selectWindow"
-    ) -> Bool {
-        GhosttyRuntimeTrace.flowBegin(
-            "tmux.selectWindow",
-            event: event,
-            fields: selectionSheetTraceFields(sheet: selectionSheet, extra: [
-                "target": ghosttyDiagnosticShortID(id),
-                "topLevels": "\(model.terminalInteractionProjection.windowCount)",
-            ])
-        )
-        let outcome = model.focusTmuxTopLevel(id)
-        GhosttyRuntimeTrace.flowEventIfActive(
-            "tmux.selectWindow",
-            event: "ui.selectWindow.modelReturned",
-            fields: selectionSheetTraceFields(sheet: selectionSheet, extra: [
-                "handled": "\(outcome.isHandled)",
-                "outcome": String(describing: outcome),
-                "target": ghosttyDiagnosticShortID(id),
-            ])
-        )
-        guard outcome.isHandled else {
-            GhosttyRuntimeTrace.flowEndIfActive(
-                "tmux.selectWindow",
-                event: "ui.selectWindow.rejected",
-                fields: ["target": ghosttyDiagnosticShortID(id)]
-            )
-            return false
-        }
-        if selectionSheet != nil {
-            dismissSelectionSheet(reason: "selectWindow")
-        }
+    private func selectTmuxWindowFromSelectionSheet(_ id: UUID) {
+        guard model.focusTmuxTopLevel(id).isHandled else { return }
+        dismissSelectionSheet()
         refocusSystemKeyboardIfActive()
-        return true
     }
 
-    @discardableResult
-    private func closeTmuxWindowFromSelectionSheet(
-        _ id: UUID,
-        event: String = "ui.tap.closeWindow"
-    ) -> GhosttyTmuxModelActionOutcome {
-        GhosttyRuntimeTrace.flowBegin(
-            "tmux.closeWindow",
-            event: event,
-            fields: selectionSheetTraceFields(sheet: selectionSheet, extra: [
-                "target": ghosttyDiagnosticShortID(id),
-                "topLevelsBefore": "\(model.terminalInteractionProjection.windowCount)",
-            ])
-        )
+    private func closeTmuxWindowFromSelectionSheet(_ id: UUID) {
         let effect = model.closeTmuxWindowInteractionEffect(id)
-        return performTopologyActionInteraction(effect, flow: "tmux.closeWindow", actionName: "closeWindow") {
+        performTopologyActionInteraction(effect) {
             model.closeTmuxWindow(id)
         }
     }
@@ -2306,65 +1839,20 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             ]
         )
         let effect = model.splitFocusedTmuxPaneInteractionEffect()
-        performTopologyActionInteraction(effect, flow: "tmux.splitPane", actionName: "splitPane") {
+        performTopologyActionInteraction(effect) {
             model.splitFocusedTmuxPane(direction)
         }
     }
 
-    @discardableResult
-    private func selectTmuxPaneFromSelectionSheet(
-        _ id: UUID,
-        event: String = "ui.tap.selectPane"
-    ) -> Bool {
-        GhosttyRuntimeTrace.flowBegin(
-            "tmux.selectPane",
-            event: event,
-            fields: selectionSheetTraceFields(sheet: selectionSheet, extra: [
-                "panes": "\(model.terminalInteractionProjection.paneCount)",
-                "target": ghosttyDiagnosticShortID(id),
-            ])
-        )
-        let outcome = model.focusTmuxPane(id)
-        GhosttyRuntimeTrace.flowEventIfActive(
-            "tmux.selectPane",
-            event: "ui.selectPane.modelReturned",
-            fields: selectionSheetTraceFields(sheet: selectionSheet, extra: [
-                "handled": "\(outcome.isHandled)",
-                "outcome": String(describing: outcome),
-                "target": ghosttyDiagnosticShortID(id),
-            ])
-        )
-        guard outcome.isHandled else {
-            GhosttyRuntimeTrace.flowEndIfActive(
-                "tmux.selectPane",
-                event: "ui.selectPane.rejected",
-                fields: ["target": ghosttyDiagnosticShortID(id)]
-            )
-            return false
-        }
-        if selectionSheet != nil {
-            dismissSelectionSheet(reason: "selectPane")
-        }
+    private func selectTmuxPaneFromSelectionSheet(_ id: UUID) {
+        guard model.focusTmuxPane(id).isHandled else { return }
+        dismissSelectionSheet()
         refocusSystemKeyboardIfActive()
-        return true
     }
 
-    @discardableResult
-    private func closeTmuxPaneFromSelectionSheet(
-        _ id: UUID,
-        topLevelID: UUID,
-        event: String = "ui.tap.closePane"
-    ) -> GhosttyTmuxModelActionOutcome {
-        GhosttyRuntimeTrace.flowBegin(
-            "tmux.closePane",
-            event: event,
-            fields: selectionSheetTraceFields(sheet: selectionSheet, extra: [
-                "panesBefore": "\(model.paneSheetDetentPaneCount(topLevelID: topLevelID))",
-                "target": ghosttyDiagnosticShortID(id),
-            ])
-        )
+    private func closeTmuxPaneFromSelectionSheet(_ id: UUID, topLevelID: UUID) {
         let effect = model.closeTmuxPaneInteractionEffect(id, inTopLevel: topLevelID)
-        return performTopologyActionInteraction(effect, flow: "tmux.closePane", actionName: "closePane") {
+        performTopologyActionInteraction(effect) {
             model.closeTmuxPane(id)
         }
     }
@@ -2378,8 +1866,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 projection: model.windowSelectionSheetRenderProjection(),
                 sessionName: presentation.sessionName,
                 onCreateWindow: createTmuxWindowFromSelectionSheet,
-                onSelect: { _ = selectTmuxWindowFromSelectionSheet($0) },
-                onRemoveWindow: { _ = closeTmuxWindowFromSelectionSheet($0) }
+                onSelect: selectTmuxWindowFromSelectionSheet,
+                onRemoveWindow: closeTmuxWindowFromSelectionSheet
             )
 
         case .panes(let topLevelID, let session):
@@ -2400,9 +1888,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         event: "ui.tap.stackPane"
                     )
                 },
-                onSelect: { _ = selectTmuxPaneFromSelectionSheet($0) },
+                onSelect: selectTmuxPaneFromSelectionSheet,
                 onRemovePane: { id in
-                    _ = closeTmuxPaneFromSelectionSheet(id, topLevelID: topLevelID)
+                    closeTmuxPaneFromSelectionSheet(id, topLevelID: topLevelID)
                 }
             )
         }

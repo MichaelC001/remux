@@ -60,67 +60,6 @@ enum GhosttyTerminalScreenViewComponent: Hashable, Sendable {
     case surfaceTree
 }
 
-struct DebugAutoOpenSessionRequest: Equatable, Sendable {
-    enum Selection: Equatable, Sendable {
-        case latest
-        case sessionName(String)
-    }
-
-    private static let environmentKey = "REMUX_DEBUG_AUTO_OPEN_SESSION"
-
-    let selection: Selection
-
-    static func fromEnvironment(
-        _ environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> DebugAutoOpenSessionRequest? {
-#if DEBUG
-        guard let rawValue = environment[environmentKey] else { return nil }
-        let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty else { return nil }
-
-        switch normalized.lowercased() {
-        case "0", "false", "no", "off":
-            return nil
-        case "1", "true", "yes", "on", "latest":
-            return DebugAutoOpenSessionRequest(selection: .latest)
-        default:
-            return DebugAutoOpenSessionRequest(selection: .sessionName(normalized))
-        }
-#else
-        _ = environment
-        return nil
-#endif
-    }
-
-    func workspace(in snapshot: ConnectionLibrarySnapshot) -> SavedWorkspace? {
-        switch selection {
-        case .latest:
-            return snapshot.latestProfile?.1
-
-        case .sessionName(let sessionName):
-            return snapshot.workspaces
-                .filter { $0.sessionName == sessionName }
-                .sorted { lhs, rhs in
-                    if lhs.lastOpenedAt != rhs.lastOpenedAt {
-                        return lhs.lastOpenedAt > rhs.lastOpenedAt
-                    }
-
-                    return lhs.id.uuidString < rhs.id.uuidString
-                }
-                .first
-        }
-    }
-
-    var traceSelection: String {
-        switch selection {
-        case .latest:
-            return "latest"
-        case .sessionName(let sessionName):
-            return "session:\(sessionName)"
-        }
-    }
-}
-
 struct ActiveTerminalScreenEntry: Identifiable {
     let id: SavedWorkspace.ID
     let instanceID: UUID
@@ -214,14 +153,12 @@ final class RemuxRootModel: ObservableObject {
     private let preparedTransportCoordinator: RemuxPreparedTransportCoordinator
     private let librarySSHPrewarmCoordinator: RemuxLibrarySSHPrewarmCoordinator
     private let terminalScreenModelFactory: TerminalScreenModelFactory
-    private let debugAutoOpenSessionRequest: DebugAutoOpenSessionRequest?
     private var terminalScreenModels: [TerminalRuntimeAttemptKey: TmuxScreenModel] = [:]
     private var currentAppLifecyclePhase: GhosttyAppLifecyclePhase?
 
     init(
         dependencies: RemuxAppDependencies,
-        terminalScreenModelFactory: TerminalScreenModelFactory? = nil,
-        debugAutoOpenSessionRequest: DebugAutoOpenSessionRequest? = DebugAutoOpenSessionRequest.fromEnvironment()
+        terminalScreenModelFactory: TerminalScreenModelFactory? = nil
     ) {
         self.dependencies = dependencies
         self.preparedTransportCoordinator = RemuxPreparedTransportCoordinator { target in
@@ -239,7 +176,6 @@ final class RemuxRootModel: ObservableObject {
             }
         )
         self.terminalScreenModelFactory = terminalScreenModelFactory ?? Self.makeDefaultTerminalScreenModel
-        self.debugAutoOpenSessionRequest = debugAutoOpenSessionRequest
     }
 
     deinit {
@@ -257,9 +193,6 @@ final class RemuxRootModel: ObservableObject {
             terminalSettings = try await dependencies.settingsRepository.loadSettings()
             library = try await dependencies.profileRepository.loadSnapshot()
             state = .library
-            if await connectToDebugAutoOpenSessionIfRequested() {
-                return
-            }
             scheduleLibrarySSHPrewarm(snapshot: library)
         } catch {
             transitionToFailed(error)
@@ -1305,37 +1238,6 @@ final class RemuxRootModel: ObservableObject {
 
     private func cancelLibrarySSHPrewarm() {
         librarySSHPrewarmCoordinator.cancel()
-    }
-
-    private func connectToDebugAutoOpenSessionIfRequested() async -> Bool {
-        guard let request = debugAutoOpenSessionRequest else { return false }
-        guard let workspace = request.workspace(in: library) else {
-            GhosttyRuntimeTrace.latency(
-                "debugAutoOpenSession.skipped reason=missingWorkspace selection=\(request.traceSelection)"
-            )
-            NSLog(
-                "Remux debug auto-open skipped: no saved workspace matched %@",
-                request.traceSelection
-            )
-            return false
-        }
-
-        var fields = [
-            "selection": request.traceSelection,
-            "session": workspace.sessionName,
-            "workspaceID": workspace.id.uuidString,
-        ]
-        if let server = library.server(id: workspace.serverID) {
-            fields["server"] = server.displayName
-            fields["host"] = server.host
-        }
-        GhosttyRuntimeTrace.flowBegin(
-            sessionOpenFlowID(workspace.id),
-            event: "debug.autoOpenSession",
-            fields: fields
-        )
-        await connect(to: workspace.id)
-        return true
     }
 
     private func sessionOpenFlowID(_ workspaceID: SavedWorkspace.ID) -> String {
