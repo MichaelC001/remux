@@ -5,6 +5,10 @@ private func diagnosticRect(_ rect: CGRect) -> String {
     ghosttyDiagnosticRect(rect)
 }
 
+private func diagnosticPoint(_ point: CGPoint) -> String {
+    "\(Int(point.x)),\(Int(point.y))"
+}
+
 struct GhosttyRuntimePaneTreeView: View {
     let materializationContext: GhosttyRuntimeSurfaceMaterializationContext
     let projection: GhosttyTerminalTreePresentationProjection
@@ -903,6 +907,9 @@ private final class GhosttySurfaceTreeContainerUIView: UIView, UIGestureRecogniz
 
         guard let surfaceID = surfaceIDsByView[ObjectIdentifier(view)] else { return }
         let mouseCaptured = isMouseCaptured(surfaceID)
+        GhosttyRuntimeTrace.perf(
+            "tree.tap.surface recognized surface=\(ghosttyDiagnosticShortID(surfaceID)) state=\(recognizer.state.rawValue) point=\(diagnosticPoint(recognizer.location(in: view))) mouseCaptured=\(mouseCaptured)"
+        )
         _ = selectSurface(surfaceID, "tree.handleSurfaceTap")
 
         // A tap that caught a scroll fling is the catch, not a click:
@@ -945,6 +952,9 @@ private final class GhosttySurfaceTreeContainerUIView: UIView, UIGestureRecogniz
             return
         }
 
+        GhosttyRuntimeTrace.perf(
+            "tree.tap.inputActivation recognized surface=\(ghosttyDiagnosticShortID(surfaceID)) point=\(diagnosticPoint(recognizer.location(in: self)))"
+        )
         onSurfaceTap?(surfaceID)
     }
 

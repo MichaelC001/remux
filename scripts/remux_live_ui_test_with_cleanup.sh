@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  scripts/remux_live_ui_test_with_cleanup.sh --only-testing <test-id> [--only-testing <test-id> ...]
+  scripts/remux_live_ui_test_with_cleanup.sh [--scheme <scheme>] [--xcconfig <path>] [--allow-provisioning-updates] --only-testing <test-id> [--only-testing <test-id> ...]
   scripts/remux_live_ui_test_with_cleanup.sh --dry-run-cleanup <manifest-file>
 
 Runs selected Remux live SSH UI tests using /tmp/remux-live-ssh.json and
@@ -18,6 +18,9 @@ USAGE
 
 config="/tmp/remux-live-ssh.json"
 destination="platform=iOS Simulator,name=iPhone 17,OS=latest"
+scheme="RemuxUIOnly"
+xcconfig=""
+allow_provisioning_updates=0
 declare -a only_testing=()
 dry_run_manifest=""
 
@@ -36,6 +39,20 @@ while [[ $# -gt 0 ]]; do
       destination="${2:-}"
       [[ -n "$destination" ]] || { usage; exit 2; }
       shift 2
+      ;;
+    --scheme)
+      scheme="${2:-}"
+      [[ -n "$scheme" ]] || { usage; exit 2; }
+      shift 2
+      ;;
+    --xcconfig)
+      xcconfig="${2:-}"
+      [[ -n "$xcconfig" ]] || { usage; exit 2; }
+      shift 2
+      ;;
+    --allow-provisioning-updates)
+      allow_provisioning_updates=1
+      shift
       ;;
     --only-testing)
       test_id="${2:-}"
@@ -684,10 +701,18 @@ trap finish EXIT
 declare -a xcode_args=(
   test
   -project Remux.xcodeproj
-  -scheme RemuxUIOnly
+  -scheme "$scheme"
   -destination "$destination"
   -resultBundlePath "$result_bundle"
 )
+
+if [[ -n "$xcconfig" ]]; then
+  xcode_args+=(-xcconfig "$xcconfig")
+fi
+
+if [[ "$allow_provisioning_updates" -eq 1 ]]; then
+  xcode_args+=(-allowProvisioningUpdates)
+fi
 
 for target in "${only_testing[@]}"; do
   xcode_args+=("-only-testing:$target")

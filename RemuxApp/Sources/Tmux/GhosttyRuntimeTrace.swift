@@ -274,6 +274,11 @@ enum GhosttyTmuxActionTrace {
     enum Action: Equatable, Sendable {
         case newWindow
         case splitPane
+        case windowSwipe
+        case selectWindow
+        case selectPane
+        case closeWindow
+        case closePane
 
         var flow: String {
             switch self {
@@ -281,6 +286,16 @@ enum GhosttyTmuxActionTrace {
                 "tmux.newWindow"
             case .splitPane:
                 "tmux.splitPane"
+            case .windowSwipe:
+                "tmux.windowSwipe"
+            case .selectWindow:
+                "tmux.selectWindow"
+            case .selectPane:
+                "tmux.selectPane"
+            case .closeWindow:
+                "tmux.closeWindow"
+            case .closePane:
+                "tmux.closePane"
             }
         }
 
@@ -290,6 +305,35 @@ enum GhosttyTmuxActionTrace {
                 "new-window"
             case .splitPane:
                 "split-window"
+            case .windowSwipe, .selectWindow:
+                "select-window"
+            case .selectPane:
+                "select-pane"
+            case .closeWindow:
+                "kill-window"
+            case .closePane:
+                "kill-pane"
+            }
+        }
+
+        var commandBytes: [UInt8] {
+            Array(command.utf8)
+        }
+
+        var inboundSignals: [InboundSignal] {
+            switch self {
+            case .newWindow:
+                [.windowAdd, .sessionWindowChanged]
+            case .splitPane:
+                [.windowPaneChanged, .layoutChange]
+            case .windowSwipe, .selectWindow:
+                [.sessionWindowChanged]
+            case .selectPane:
+                [.windowPaneChanged]
+            case .closeWindow:
+                [.windowClose, .sessionWindowChanged]
+            case .closePane:
+                [.paneExited, .windowPaneChanged, .layoutChange]
             }
         }
     }
@@ -320,18 +364,11 @@ enum GhosttyTmuxActionTrace {
 
     enum InboundSignal: String, Equatable, Sendable {
         case windowAdd = "window-add"
+        case windowClose = "window-close"
+        case paneExited = "pane-exited"
         case sessionWindowChanged = "session-window-changed"
         case windowPaneChanged = "window-pane-changed"
         case layoutChange = "layout-change"
-
-        var action: Action {
-            switch self {
-            case .windowAdd, .sessionWindowChanged:
-                .newWindow
-            case .windowPaneChanged, .layoutChange:
-                .splitPane
-            }
-        }
 
         var event: String {
             eventName(prefix: "tmux.response")
@@ -343,13 +380,11 @@ enum GhosttyTmuxActionTrace {
     }
 
     static func outboundAction(for data: Data) -> Action? {
-        if containsCommand(Self.newWindowCommand, in: data) {
-            return .newWindow
-        }
-        if containsCommand(Self.splitWindowCommand, in: data) {
-            return .splitPane
-        }
-        return nil
+        outboundActions(for: data).first
+    }
+
+    static func outboundActions(for data: Data) -> [Action] {
+        topologyActions.filter { containsCommand($0.commandBytes, in: data) }
     }
 
     static func inboundSignals(in data: Data) -> [InboundSignal] {
@@ -366,22 +401,19 @@ enum GhosttyTmuxActionTrace {
         fields: @autoclosure () -> [String: String] = [:],
         at timestamp: UInt64? = nil
     ) {
-        guard GhosttyRuntimeTrace.flowTraceEnabled,
-              let action = outboundAction(for: data),
-              GhosttyRuntimeTrace.isFlowActive(action.flow)
-        else {
-            return
-        }
+        guard GhosttyRuntimeTrace.flowTraceEnabled else { return }
 
-        var eventFields = fields()
-        eventFields["bytes"] = "\(data.count)"
-        eventFields["command"] = action.command
-        GhosttyRuntimeTrace.flowEventIfActive(
-            action.flow,
-            event: event,
-            fields: eventFields,
-            at: timestamp
-        )
+        for action in outboundActions(for: data) where GhosttyRuntimeTrace.isFlowActive(action.flow) {
+            var eventFields = fields()
+            eventFields["bytes"] = "\(data.count)"
+            eventFields["command"] = action.command
+            GhosttyRuntimeTrace.flowEventIfActive(
+                action.flow,
+                event: event,
+                fields: eventFields,
+                at: timestamp
+            )
+        }
     }
 
     @discardableResult
@@ -424,20 +456,21 @@ enum GhosttyTmuxActionTrace {
         guard GhosttyRuntimeTrace.flowTraceEnabled else { return }
 
         for signal in inboundSignals(in: data) {
-            let action = signal.action
-            guard GhosttyRuntimeTrace.isFlowActive(action.flow) else { continue }
+            for action in topologyActions where action.inboundSignals.contains(signal) {
+                guard GhosttyRuntimeTrace.isFlowActive(action.flow) else { continue }
 
-            GhosttyRuntimeTrace.flowEventIfActive(
-                action.flow,
-                event: signal.eventName(prefix: eventPrefix),
-                fields: [
-                    "bytes": "\(data.count)",
-                    "chunks": "\(chunkCount)",
-                    "signal": signal.rawValue,
-                    "source": source,
-                ],
-                at: timestamp
-            )
+                GhosttyRuntimeTrace.flowEventIfActive(
+                    action.flow,
+                    event: signal.eventName(prefix: eventPrefix),
+                    fields: [
+                        "bytes": "\(data.count)",
+                        "chunks": "\(chunkCount)",
+                        "signal": signal.rawValue,
+                        "source": source,
+                    ],
+                    at: timestamp
+                )
+            }
         }
     }
 
@@ -497,7 +530,7 @@ enum GhosttyTmuxActionTrace {
         guard GhosttyRuntimeTrace.flowTraceEnabled else { return }
 
         var resolvedFields: [String: String]?
-        for action in [Action.newWindow, .splitPane] where GhosttyRuntimeTrace.isFlowActive(action.flow) {
+        for action in topologyActions where GhosttyRuntimeTrace.isFlowActive(action.flow) {
             if resolvedFields == nil {
                 resolvedFields = fields()
             }
@@ -531,7 +564,8 @@ enum GhosttyTmuxActionTrace {
     }
 
     private static func activeTopologyFlows() -> [FlowContext] {
-        [Action.newWindow.flow, Action.splitPane.flow].compactMap { flow in
+        topologyActions.compactMap { action in
+            let flow = action.flow
             guard let startedAt = GhosttyRuntimeTrace.flowStartIfActive(flow) else { return nil }
             return FlowContext(name: flow, startedAt: startedAt)
         }
@@ -603,11 +637,20 @@ enum GhosttyTmuxActionTrace {
         return String(firstToken)
     }
 
-    private static let newWindowCommand = Array("new-window".utf8)
-    private static let splitWindowCommand = Array("split-window".utf8)
+    private static let topologyActions: [Action] = [
+        .newWindow,
+        .splitPane,
+        .windowSwipe,
+        .selectWindow,
+        .selectPane,
+        .closeWindow,
+        .closePane,
+    ]
     private static let commandTraceStore = GhosttyTmuxCommandTraceStore()
     private static let inboundSignalPatterns: [(signal: InboundSignal, pattern: Data)] = [
         (.windowAdd, Data("%window-add".utf8)),
+        (.windowClose, Data("%window-close".utf8)),
+        (.paneExited, Data("%pane-exited".utf8)),
         (.sessionWindowChanged, Data("%session-window-changed".utf8)),
         (.windowPaneChanged, Data("%window-pane-changed".utf8)),
         (.layoutChange, Data("%layout-change".utf8)),

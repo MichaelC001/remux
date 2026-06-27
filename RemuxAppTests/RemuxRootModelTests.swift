@@ -94,6 +94,99 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(harness.model.library.workspaces, [workspace])
     }
 
+    func testLoadAutoOpensLatestSavedProfileWhenDebugRequested() async throws {
+        let now = Date()
+        let server = SavedServer(
+            displayName: "Build Host",
+            host: "build.example.test",
+            username: "builder"
+        )
+        let olderWorkspace = SavedWorkspace(
+            serverID: server.id,
+            sessionName: "base",
+            lastOpenedAt: now.addingTimeInterval(-120)
+        )
+        let latestWorkspace = SavedWorkspace(
+            serverID: server.id,
+            sessionName: "logs",
+            lastOpenedAt: now
+        )
+        let harness = makeHarness(
+            servers: [server],
+            workspaces: [olderWorkspace, latestWorkspace],
+            debugAutoOpenSessionRequest: DebugAutoOpenSessionRequest(selection: .latest)
+        )
+        try await harness.credentialHelper.savePassword("demo-password", for: server.id)
+
+        await harness.model.load()
+
+        guard
+            case .terminal(let activeWorkspaceID) = harness.model.state,
+            let activeSession = harness.model.activeSessions.first
+        else {
+            XCTFail("expected terminal state")
+            return
+        }
+
+        XCTAssertEqual(activeWorkspaceID, latestWorkspace.id)
+        XCTAssertEqual(activeSession.target.workspace.id, latestWorkspace.id)
+        XCTAssertEqual(activeSession.target.workspace.sessionName, "logs")
+        XCTAssertEqual(activeSession.target.sshAuth.credential, .password("demo-password"))
+    }
+
+    func testLoadAutoOpensNamedSavedProfileWhenDebugRequested() async throws {
+        let now = Date()
+        let server = SavedServer(
+            displayName: "Build Host",
+            host: "build.example.test",
+            username: "builder"
+        )
+        let baseWorkspace = SavedWorkspace(
+            serverID: server.id,
+            sessionName: "base",
+            lastOpenedAt: now.addingTimeInterval(-120)
+        )
+        let logsWorkspace = SavedWorkspace(
+            serverID: server.id,
+            sessionName: "logs",
+            lastOpenedAt: now
+        )
+        let harness = makeHarness(
+            servers: [server],
+            workspaces: [baseWorkspace, logsWorkspace],
+            debugAutoOpenSessionRequest: DebugAutoOpenSessionRequest(selection: .sessionName("base"))
+        )
+        try await harness.credentialHelper.savePassword("demo-password", for: server.id)
+
+        await harness.model.load()
+
+        guard
+            case .terminal(let activeWorkspaceID) = harness.model.state,
+            let activeSession = harness.model.activeSessions.first
+        else {
+            XCTFail("expected terminal state")
+            return
+        }
+
+        XCTAssertEqual(activeWorkspaceID, baseWorkspace.id)
+        XCTAssertEqual(activeSession.target.workspace.id, baseWorkspace.id)
+        XCTAssertEqual(activeSession.target.workspace.sessionName, "base")
+    }
+
+    func testDebugAutoOpenSessionRequestParsesEnvironment() {
+        XCTAssertEqual(
+            DebugAutoOpenSessionRequest.fromEnvironment(["REMUX_DEBUG_AUTO_OPEN_SESSION": "1"]),
+            DebugAutoOpenSessionRequest(selection: .latest)
+        )
+        XCTAssertEqual(
+            DebugAutoOpenSessionRequest.fromEnvironment(["REMUX_DEBUG_AUTO_OPEN_SESSION": "base"]),
+            DebugAutoOpenSessionRequest(selection: .sessionName("base"))
+        )
+        XCTAssertNil(
+            DebugAutoOpenSessionRequest.fromEnvironment(["REMUX_DEBUG_AUTO_OPEN_SESSION": "false"])
+        )
+    }
+
     func testLoadPrewarmsLatestSSHWorkspacePerRecentServer() async throws {
         let now = Date()
         let firstServer = SavedServer(
@@ -2079,7 +2172,8 @@ final class RemuxRootModelTests: XCTestCase {
             TrustedHostStore,
             RemuxSSHRootService
         ) -> any GhosttyAttachmentTransferService)? = nil,
-        terminalScreenModelFactory: RemuxRootModel.TerminalScreenModelFactory? = nil
+        terminalScreenModelFactory: RemuxRootModel.TerminalScreenModelFactory? = nil,
+        debugAutoOpenSessionRequest: DebugAutoOpenSessionRequest? = nil
     ) -> RemuxRootModelHarness {
         let profileRepository = TestConnectionProfileRepository(
             servers: servers,
@@ -2118,7 +2212,8 @@ final class RemuxRootModelTests: XCTestCase {
         return RemuxRootModelHarness(
             model: RemuxRootModel(
                 dependencies: dependencies,
-                terminalScreenModelFactory: resolvedTerminalScreenModelFactory
+                terminalScreenModelFactory: resolvedTerminalScreenModelFactory,
+                debugAutoOpenSessionRequest: debugAutoOpenSessionRequest
             ),
             profileRepository: profileRepository,
             settingsRepository: settingsRepository,
