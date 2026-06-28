@@ -10,6 +10,7 @@ struct GhosttySurfaceScreenPresentation: Equatable {
     let workspaceID: SavedWorkspace.ID
     let sessionName: String
     let terminalTheme: TerminalTheme
+    let loadingTitle: String
 }
 
 struct GhosttyAttachmentInputOwnerProjection: Equatable {
@@ -244,6 +245,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     .overlay {
                         GhosttySurfaceStatusOverlay(
                             projection: screenProjection.statusOverlay,
+                            loadingTitle: presentation.loadingTitle,
                             onReconnect: onReconnect,
                             onUpdateCredentials: onUpdateCredentials,
                             onEditServer: onEditServer,
@@ -2120,6 +2122,7 @@ private struct GhosttySurfaceStatusOverlay: View {
     @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
 
     let projection: GhosttyTerminalStatusOverlayProjection
+    let loadingTitle: String
     let onReconnect: () -> Void
     let onUpdateCredentials: () -> Void
     let onEditServer: () -> Void
@@ -2183,7 +2186,7 @@ private struct GhosttySurfaceStatusOverlay: View {
     }
 
     private func openingSessionOverlay(accessibilityIdentifier: String) -> some View {
-        ProgressView("Opening session")
+        ProgressView(loadingTitle)
             .font(.system(size: 15, weight: .medium, design: .rounded))
             .foregroundStyle(GhosttySheetPalette.secondary)
             .tint(GhosttySheetPalette.secondary)

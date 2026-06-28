@@ -1058,33 +1058,24 @@ private struct ServerLibraryRow: View {
 private struct RuntimeStateIndicator: View {
     let state: TerminalRuntimeState
 
+    private var presentation: TerminalRuntimeStatusPresentation {
+        TerminalRuntimeStatusPresentation.projection(for: state)
+    }
+
     var body: some View {
         HStack(spacing: 4) {
             Circle()
                 .fill(color)
                 .frame(width: 6, height: 6)
-            Text(label)
+            Text(presentation.label)
                 .font(.caption.weight(.medium))
         }
         .foregroundStyle(color)
         .accessibilityElement(children: .combine)
     }
 
-    private var label: String {
-        switch state {
-        case .connecting:
-            "Connecting"
-        case .reconnecting:
-            "Reconnecting"
-        case .connected:
-            "Connected"
-        case .disconnected:
-            "Disconnected"
-        }
-    }
-
     private var color: Color {
-        switch state {
+        switch presentation.tone {
         case .connecting:
             .blue
         case .reconnecting:

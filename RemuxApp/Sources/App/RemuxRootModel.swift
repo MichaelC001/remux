@@ -79,7 +79,10 @@ struct ActiveTerminalScreenEntry: Identifiable {
         self.presentation = GhosttySurfaceScreenPresentation(
             workspaceID: session.target.workspace.id,
             sessionName: session.target.workspace.sessionName,
-            terminalTheme: session.target.terminalSettings.theme
+            terminalTheme: session.target.terminalSettings.theme,
+            loadingTitle: TerminalRuntimeStatusPresentation.projection(
+                for: session.runtimeState
+            ).loadingTitle ?? TerminalRuntimeStatusPresentation.defaultLoadingTitle
         )
         self.model = model
         self.attachmentTransferServiceFactory = attachmentTransferServiceFactory
