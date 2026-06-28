@@ -15,6 +15,14 @@ final class TerminalRuntimeStatusPresentationTests: XCTestCase {
         XCTAssertEqual(
             TerminalRuntimeStatusPresentation.projection(for: .reconnecting(.foreground)),
             TerminalRuntimeStatusPresentation(
+                label: "Restoring",
+                tone: .reconnecting,
+                loadingTitle: "Restoring session"
+            )
+        )
+        XCTAssertEqual(
+            TerminalRuntimeStatusPresentation.projection(for: .reconnecting(.transportLoss)),
+            TerminalRuntimeStatusPresentation(
                 label: "Reconnecting",
                 tone: .reconnecting,
                 loadingTitle: "Reconnecting"

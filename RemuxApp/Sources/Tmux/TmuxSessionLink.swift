@@ -22,6 +22,8 @@ actor TmuxSessionLink {
     private var writeTask: Task<Void, Never>?
     private let outbound: AsyncStream<Data>
     private let outboundContinuation: AsyncStream<Data>.Continuation
+    private var transportClosed = false
+    private var transportCloseDisposition = TmuxControlTransportCloseDisposition.reusable
 
     /// The controller outlives links: reconnecting builds a new link
     /// (new transport) around the same controller, whose session state
@@ -57,13 +59,12 @@ actor TmuxSessionLink {
         }
 
         // Single ordered writer for the session's wire bytes.
-        writeTask = Task { [transport, outbound, controller] in
+        writeTask = Task { [weak self, transport, outbound] in
             for await data in outbound {
                 do {
                     try await transport.send(data)
                 } catch {
-                    await transport.close(disposition: .invalidated)
-                    controller.disconnect()
+                    await self?.invalidateTransportAfterWriteFailure()
                     break
                 }
             }
@@ -91,15 +92,15 @@ actor TmuxSessionLink {
         }
     }
 
-    func sshControlChannelIsActive() async -> Bool? {
-        guard let transport = transport as? any SSHTmuxControlChannelActiveChecking else {
+    func controlChannelIsActive() async -> Bool? {
+        guard let transport = transport as? any TmuxControlTransportLivenessChecking else {
             return nil
         }
-        return await transport.isSSHControlChannelActive()
+        return await transport.isControlChannelActive()
     }
 
     func invalidateTransport() async {
-        await transport.close(disposition: .invalidated)
+        await closeTransport(disposition: .invalidated)
         controller.disconnect()
     }
 
@@ -113,6 +114,21 @@ actor TmuxSessionLink {
         outboundContinuation.finish()
         writeTask = nil
         controller.disconnect()
-        await transport.close(disposition: .reusable)
+        await closeTransport(disposition: .reusable)
+    }
+
+    private func invalidateTransportAfterWriteFailure() async {
+        await closeTransport(disposition: .invalidated)
+        controller.disconnect()
+    }
+
+    private func closeTransport(disposition: TmuxControlTransportCloseDisposition) async {
+        if disposition == .invalidated {
+            transportCloseDisposition = .invalidated
+        }
+        guard !transportClosed else { return }
+
+        transportClosed = true
+        await transport.close(disposition: transportCloseDisposition)
     }
 }

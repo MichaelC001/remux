@@ -17,25 +17,32 @@ struct TerminalRuntimeStatusPresentation: Equatable, Sendable {
     static func projection(for state: TerminalRuntimeState) -> TerminalRuntimeStatusPresentation {
         switch state {
         case .connecting:
-            TerminalRuntimeStatusPresentation(
+            return TerminalRuntimeStatusPresentation(
                 label: "Connecting",
                 tone: .connecting,
                 loadingTitle: defaultLoadingTitle
             )
-        case .reconnecting:
-            TerminalRuntimeStatusPresentation(
+        case .reconnecting(let source):
+            if source == .foreground {
+                return TerminalRuntimeStatusPresentation(
+                    label: "Restoring",
+                    tone: .reconnecting,
+                    loadingTitle: "Restoring session"
+                )
+            }
+            return TerminalRuntimeStatusPresentation(
                 label: "Reconnecting",
                 tone: .reconnecting,
                 loadingTitle: "Reconnecting"
             )
         case .connected:
-            TerminalRuntimeStatusPresentation(
+            return TerminalRuntimeStatusPresentation(
                 label: "Connected",
                 tone: .connected,
                 loadingTitle: nil
             )
         case .disconnected(let reason):
-            TerminalRuntimeStatusPresentation(
+            return TerminalRuntimeStatusPresentation(
                 label: disconnectedLabel(for: reason),
                 tone: .disconnected,
                 loadingTitle: nil

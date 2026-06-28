@@ -30,6 +30,8 @@ final class TmuxSessionLinkWriteFailureTests: XCTestCase {
         }
 
         await link.stop()
+        let closeDispositions = await transport.closeDispositions()
+        XCTAssertEqual(closeDispositions, [.invalidated])
         await withCheckedContinuation { continuation in
             controller.shutdown { continuation.resume() }
         }

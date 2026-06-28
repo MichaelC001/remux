@@ -40,8 +40,8 @@ protocol TmuxControlTransport: Sendable {
     func close(disposition: TmuxControlTransportCloseDisposition) async
 }
 
-protocol SSHTmuxControlChannelActiveChecking: Sendable {
-    func isSSHControlChannelActive() async -> Bool
+protocol TmuxControlTransportLivenessChecking: Sendable {
+    func isControlChannelActive() async -> Bool
 }
 
 enum TmuxControlTransportCloseDisposition: Equatable, Sendable {

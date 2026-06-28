@@ -171,7 +171,7 @@ final class TmuxScreenModel: ObservableObject {
         guard !stopped else { return }
         if let session,
            case .ready = session.state,
-           let reason = await session.invalidateInactiveSSHTransportOnForeground(
+           let reason = await session.invalidateInactiveTransportOnForeground(
                willInvalidate: { reason in
                    pendingForegroundInactiveReason = reason
                }
@@ -191,13 +191,29 @@ final class TmuxScreenModel: ObservableObject {
         // disconnected state with the foreground source so the root's
         // auto-reconnect policy can act on it (the report tracker
         // re-reports foreground disconnects even when unchanged).
-        let state: TerminalRuntimeState = if let session {
-            currentRuntimeState(for: session.state, connecting: false)
-        } else {
-            .disconnected(Self.runtimeStartFailureReason)
-        }
-        if state.disconnectedReason != nil {
+        if let state = foregroundDisconnectedState() {
             report(state, source: .foreground)
+        }
+    }
+
+    private func foregroundDisconnectedState() -> TerminalRuntimeState? {
+        guard let session else {
+            return .disconnected(Self.runtimeStartFailureReason)
+        }
+
+        switch session.state {
+        case .attaching, .syncing, .ready:
+            return nil
+        case .detached(let reason):
+            if let reason {
+                return .disconnected(reason.terminalDisconnectReason)
+            }
+            guard let failure = session.transportFailure else {
+                return nil
+            }
+            return .disconnected(failure)
+        case .closed(let reason):
+            return .disconnected(reason.terminalDisconnectReason)
         }
     }
 

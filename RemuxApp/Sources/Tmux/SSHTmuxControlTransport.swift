@@ -181,7 +181,7 @@ enum SSHTmuxControlTransportError: LocalizedError, Equatable, CustomStringConver
     }
 }
 
-actor SSHTmuxControlTransport: TmuxControlTransport, SSHTmuxControlChannelActiveChecking {
+actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenessChecking {
     nonisolated let receivedBytes: AsyncThrowingStream<Data, Error>
 
     private let configuration: SSHTmuxControlConfiguration
@@ -323,7 +323,7 @@ actor SSHTmuxControlTransport: TmuxControlTransport, SSHTmuxControlChannelActive
         )
     }
 
-    func isSSHControlChannelActive() async -> Bool {
+    func isControlChannelActive() async -> Bool {
         guard !isClosed, let connection else { return false }
         return connection.isSSHControlChannelActive
     }
