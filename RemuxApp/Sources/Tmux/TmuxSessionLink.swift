@@ -57,12 +57,13 @@ actor TmuxSessionLink {
         }
 
         // Single ordered writer for the session's wire bytes.
-        writeTask = Task { [transport, outbound] in
+        writeTask = Task { [transport, outbound, controller] in
             for await data in outbound {
                 do {
                     try await transport.send(data)
                 } catch {
-                    // The read side surfaces the loss; stop writing.
+                    await transport.close(disposition: .invalidated)
+                    controller.disconnect()
                     break
                 }
             }
