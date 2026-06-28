@@ -91,6 +91,18 @@ actor TmuxSessionLink {
         }
     }
 
+    func sshControlChannelIsActive() async -> Bool? {
+        guard let transport = transport as? any SSHTmuxControlChannelActiveChecking else {
+            return nil
+        }
+        return await transport.isSSHControlChannelActive()
+    }
+
+    func invalidateTransport() async {
+        await transport.close(disposition: .invalidated)
+        controller.disconnect()
+    }
+
     /// Tear the link down. The controller survives (its session state
     /// is retained for a future link); bindings stay valid per the
     /// session contract.

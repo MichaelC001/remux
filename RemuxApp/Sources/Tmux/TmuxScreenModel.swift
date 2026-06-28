@@ -52,6 +52,7 @@ final class TmuxScreenModel: ObservableObject {
     private var currentTerminalSettings: TerminalSettings
     private var reportTracker = TerminalRuntimeStateReportTracker()
     private var pendingReconnectSource: TerminalReconnectSource?
+    private var pendingForegroundInactiveReason: TerminalDisconnectReason?
     private var stateObservation: AnyCancellable?
     private var transportFailureObservation: AnyCancellable?
     private var stopped = false
@@ -155,11 +156,41 @@ final class TmuxScreenModel: ObservableObject {
         // (visibility-resume full damage); here we gate drawing.
         session?.paneSurface?.setVisible(phase == .active)
 
+        guard phase == .active else { return }
+        guard let session, case .ready = session.state else {
+            reportForegroundDisconnectedStateIfNeeded()
+            return
+        }
+
+        Task { [weak self] in
+            await self?.handleForegroundActivation()
+        }
+    }
+
+    private func handleForegroundActivation() async {
+        guard !stopped else { return }
+        if let session,
+           case .ready = session.state,
+           let reason = await session.invalidateInactiveSSHTransportOnForeground(
+               willInvalidate: { reason in
+                   pendingForegroundInactiveReason = reason
+               }
+           ) {
+            if pendingForegroundInactiveReason != nil {
+                pendingForegroundInactiveReason = nil
+                report(.disconnected(reason), source: .foreground)
+            }
+            return
+        }
+
+        reportForegroundDisconnectedStateIfNeeded()
+    }
+
+    private func reportForegroundDisconnectedStateIfNeeded() {
         // Foreground is a reconnect opportunity: re-surface a
         // disconnected state with the foreground source so the root's
         // auto-reconnect policy can act on it (the report tracker
         // re-reports foreground disconnects even when unchanged).
-        guard phase == .active else { return }
         let state: TerminalRuntimeState = if let session {
             currentRuntimeState(for: session.state, connecting: false)
         } else {
@@ -196,7 +227,16 @@ final class TmuxScreenModel: ObservableObject {
     // MARK: Domain state reporting
 
     private func handleSessionState(_ state: TmuxSessionController.SessionState) {
-        if case .ready = state { pendingReconnectSource = nil }
+        if case .ready = state {
+            pendingReconnectSource = nil
+            pendingForegroundInactiveReason = nil
+        }
+        if case .detached = state,
+           let reason = pendingForegroundInactiveReason {
+            pendingForegroundInactiveReason = nil
+            report(.disconnected(reason), source: .foreground)
+            return
+        }
         report(currentRuntimeState(for: state, connecting: false))
     }
 

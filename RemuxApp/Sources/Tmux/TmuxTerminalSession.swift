@@ -191,6 +191,21 @@ final class TmuxTerminalSession: ObservableObject {
         await link.stop()
     }
 
+    func invalidateInactiveSSHTransportOnForeground(
+        willInvalidate: (TerminalDisconnectReason) -> Void
+    ) async -> TerminalDisconnectReason? {
+        guard let link else { return nil }
+        guard let isActive = await link.sshControlChannelIsActive() else {
+            return nil
+        }
+        guard !isActive else { return nil }
+
+        let reason = GhosttyTerminalDisconnectReasonClassifier.foregroundMissingHost()
+        willInvalidate(reason)
+        await link.invalidateTransport()
+        return reason
+    }
+
     /// Full teardown, in contract order: fence new work, drain any
     /// in-flight pane-surface creation, then pane surface (surface free →
     /// unbind), then the link, then the controller. Idempotent.

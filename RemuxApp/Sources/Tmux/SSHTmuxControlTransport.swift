@@ -181,7 +181,7 @@ enum SSHTmuxControlTransportError: LocalizedError, Equatable, CustomStringConver
     }
 }
 
-actor SSHTmuxControlTransport: TmuxControlTransport {
+actor SSHTmuxControlTransport: TmuxControlTransport, SSHTmuxControlChannelActiveChecking {
     nonisolated let receivedBytes: AsyncThrowingStream<Data, Error>
 
     private let configuration: SSHTmuxControlConfiguration
@@ -321,6 +321,11 @@ actor SSHTmuxControlTransport: TmuxControlTransport {
         GhosttyRuntimeTrace.latency(
             "transport.send end bytes=\(data.count) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
         )
+    }
+
+    func isSSHControlChannelActive() async -> Bool {
+        guard !isClosed, let connection else { return false }
+        return connection.isSSHControlChannelActive
     }
 
     func resize(columns: UInt16, rows: UInt16, width: UInt32, height: UInt32) async throws {
@@ -497,6 +502,10 @@ private final class SSHTmuxControlConnection: @unchecked Sendable {
         self.claimedConnection = claimedConnection
         self.sessionChannel = sessionChannel
         self.viewportTraceState = viewportTraceState
+    }
+
+    var isSSHControlChannelActive: Bool {
+        claimedConnection.sshRoot.rootChannel.isActive && sessionChannel.isActive
     }
 
     func write(_ data: Data) async throws {
