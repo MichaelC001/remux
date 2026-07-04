@@ -162,8 +162,7 @@ final class TmuxPaneSurface {
             }
             if linefeed { bytes.append(0x0D) }
             guard !bytes.isEmpty else { return true }
-            box.controller.sendInput(paneID: box.paneID, bytes)
-            return true
+            return box.controller.sendInput(paneID: box.paneID, bytes)
         }
         config.manual_resize = { userdata, columns, rows, _, _ in
             guard let userdata else { return false }

@@ -490,11 +490,13 @@ final class TmuxSessionController: @unchecked Sendable {
 
     // MARK: Input, size, requests (writer queue)
 
-    func sendInput(paneID: UInt64, _ bytes: Data) {
-        queue.async { [self] in
-            guard let session else { return }
-            bytes.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                _ = ghostty_tmux_session_send_input(
+    func sendInput(paneID: UInt64, _ bytes: Data) -> Bool {
+        guard !bytes.isEmpty else { return true }
+
+        return queue.sync { [self] in
+            guard let session else { return false }
+            let result = bytes.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                ghostty_tmux_session_send_input(
                     session,
                     paneID,
                     raw.bindMemory(to: UInt8.self).baseAddress,
@@ -502,6 +504,7 @@ final class TmuxSessionController: @unchecked Sendable {
                 )
             }
             drainOutbound()
+            return result == GHOSTTY_TMUX_RESULT_OK
         }
     }
 
