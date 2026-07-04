@@ -17,7 +17,8 @@ and controls.
 ## Current Scope
 
 The app can save SSH connection details, store terminal settings, and open
-tmux control-mode sessions over SSH. Ghostty handles terminal rendering and
+tmux control-mode sessions over SSH. Ghostty owns tmux command generation,
+control-mode parsing, reconciliation, pane projection, terminal rendering, and
 input.
 
 Mosh is planned, but it is not implemented yet.
