@@ -3,15 +3,6 @@ import NIOCore
 @testable import Remux
 
 final class GhosttyTerminalDisconnectReasonClassifierTests: XCTestCase {
-    func testRuntimeFailureMapsToRuntimeReason() {
-        let reason = GhosttyTerminalDisconnectReasonClassifier.runtimeFailure(
-            DescribedError("runtime exploded")
-        )
-
-        XCTAssertEqual(reason.kind, .runtime)
-        XCTAssertEqual(reason.message, "runtime exploded")
-    }
-
     func testTransportStartFailureMapsKnownBoundaryErrors() {
         let hostKeyChange = SSHHostKeyChange(
             serverID: UUID(),
@@ -116,45 +107,13 @@ final class GhosttyTerminalDisconnectReasonClassifierTests: XCTestCase {
         XCTAssertEqual(reason.message, "connection fizzled")
     }
 
-    func testTransportWriteFailureUsesCurrentTransportIOMessage() {
-        let reason = GhosttyTerminalDisconnectReasonClassifier.transportWriteFailure(
-            DescribedError("write failed")
-        )
-
-        XCTAssertEqual(reason.kind, .transportIO)
-        XCTAssertEqual(reason.message, "tmux transport write failed: write failed")
-    }
-
-    func testTransportResizeFailureUsesResizeSpecificTransportIOMessage() {
-        let reason = GhosttyTerminalDisconnectReasonClassifier.transportResizeFailure(
-            DescribedError("resize failed")
-        )
-
-        XCTAssertEqual(reason.kind, .transportIO)
-        XCTAssertEqual(reason.message, "tmux transport resize failed: resize failed")
-    }
-
-
-    func testForegroundReasonBuildersUseCurrentMessages() {
+    func testForegroundMissingHostUsesCurrentMessage() {
         XCTAssertEqual(
             GhosttyTerminalDisconnectReasonClassifier.foregroundMissingHost(),
             TerminalDisconnectReason(
                 kind: .transportIO,
                 message: "tmux transport unavailable after foreground"
             )
-        )
-        XCTAssertEqual(
-            GhosttyTerminalDisconnectReasonClassifier.foregroundEnded(
-                lastError: DescribedError("network gone")
-            ),
-            TerminalDisconnectReason(
-                kind: .transportIO,
-                message: "tmux transport ended before foreground: network gone"
-            )
-        )
-        XCTAssertEqual(
-            GhosttyTerminalDisconnectReasonClassifier.foregroundEnded(lastError: nil),
-            GhosttyTerminalDisconnectReasonClassifier.foregroundMissingHost()
         )
     }
 }

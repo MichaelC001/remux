@@ -2,19 +2,7 @@ import Foundation
 import NIOCore
 import NIOPosix
 
-struct GhosttyTerminalTransportCompletionClassification: Equatable, Sendable {
-    let reason: TerminalDisconnectReason
-    let closeDisposition: TmuxControlTransportCloseDisposition
-}
-
 enum GhosttyTerminalDisconnectReasonClassifier {
-    static func runtimeFailure(_ error: any Error) -> TerminalDisconnectReason {
-        TerminalDisconnectReason(
-            kind: .runtime,
-            message: String(describing: error)
-        )
-    }
-
     static func transportStartFailure(_ error: any Error) -> TerminalDisconnectReason {
         let message = String(describing: error)
 
@@ -73,36 +61,10 @@ enum GhosttyTerminalDisconnectReasonClassifier {
         return false
     }
 
-    static func transportWriteFailure(_ error: any Error) -> TerminalDisconnectReason {
-        TerminalDisconnectReason(
-            kind: .transportIO,
-            message: "tmux transport write failed: \(String(describing: error))"
-        )
-    }
-
-    static func transportResizeFailure(_ error: any Error) -> TerminalDisconnectReason {
-        TerminalDisconnectReason(
-            kind: .transportIO,
-            message: "tmux transport resize failed: \(String(describing: error))"
-        )
-    }
-
-
     static func foregroundMissingHost() -> TerminalDisconnectReason {
         TerminalDisconnectReason(
             kind: .transportIO,
             message: "tmux transport unavailable after foreground"
         )
-    }
-
-    static func foregroundEnded(lastError: (any Error)?) -> TerminalDisconnectReason {
-        if let lastError {
-            return TerminalDisconnectReason(
-                kind: .transportIO,
-                message: "tmux transport ended before foreground: \(String(describing: lastError))"
-            )
-        }
-
-        return foregroundMissingHost()
     }
 }

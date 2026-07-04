@@ -732,7 +732,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         guard let effect = topologyActionInputRefocusCoordinator.cancelForCommandFailure() else { return }
 
         GhosttyRuntimeTrace.perf(
-            "topology.refocus cancel reason=tmuxCommandFailure token=\(event.token) failureReason=\(event.reason.traceLabel)"
+            "topology.refocus cancel reason=tmuxCommandFailure token=\(event.token)"
         )
         _ = applyTopologyInputRefocusEffect(effect)
     }
@@ -1980,17 +1980,6 @@ private extension Optional where Wrapped == GhosttySurfaceSelectionSheet {
             return "panes"
         case .none:
             return "none"
-        }
-    }
-}
-
-private extension TmuxControlCommandFailureReason {
-    var traceLabel: String {
-        switch self {
-        case .noSpaceForNewPane:
-            return "noSpaceForNewPane"
-        case .tmuxError:
-            return "tmuxError"
         }
     }
 }

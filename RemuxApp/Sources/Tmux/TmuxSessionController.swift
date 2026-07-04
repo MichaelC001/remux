@@ -222,12 +222,16 @@ final class TmuxSessionController: @unchecked Sendable {
     // MARK: Transport plumbing (writer queue)
 
     /// Start (or restart, after a detach) a connection attempt. The
-    /// caller is responsible for having an SSH channel running
-    /// `tmux -CC new-session -A` whose bytes flow through `pump`.
+    /// caller is responsible for having a control-mode channel running
+    /// `tmux -C new-session -A` whose bytes flow through `pump`.
     func connect() {
         queue.async { [self] in
             guard let session else { return }
-            _ = ghostty_tmux_session_connect(session, Self.nowMS())
+            guard ghostty_tmux_session_connect(session, Self.nowMS()) else {
+                let state = readState()
+                DispatchQueue.main.async { self.callbacks.onState(state) }
+                return
+            }
             startTick()
             drainOutbound()
         }
@@ -553,13 +557,14 @@ final class TmuxSessionController: @unchecked Sendable {
         }
         queue.async { [self] in
             guard let session else { return }
-            _ = ghostty_tmux_session_set_client_size(session, cols, rows)
+            let result = ghostty_tmux_session_set_client_size(session, cols, rows)
             drainOutbound()
+            reportImmediateRequestFailureIfNeeded(result, request: .setClientSize)
         }
     }
 
     func requestNewWindow() {
-        submit { ghostty_tmux_session_request_new_window($0) }
+        submit(request: .newWindow) { ghostty_tmux_session_request_new_window($0) }
     }
 
     func requestSplit(paneID: UInt64, direction: SplitDirection, zoom: Bool) {
@@ -569,31 +574,31 @@ final class TmuxSessionController: @unchecked Sendable {
         case .up: GHOSTTY_TMUX_SPLIT_DIRECTION_UP
         case .down: GHOSTTY_TMUX_SPLIT_DIRECTION_DOWN
         }
-        submit { ghostty_tmux_session_request_split($0, paneID, cDirection, zoom) }
+        submit(request: .splitPane) { ghostty_tmux_session_request_split($0, paneID, cDirection, zoom) }
     }
 
     func requestClosePane(paneID: UInt64) {
-        submit { ghostty_tmux_session_request_close_pane($0, paneID) }
+        submit(request: .closePane) { ghostty_tmux_session_request_close_pane($0, paneID) }
     }
 
     func requestCloseWindow(windowID: UInt64) {
-        submit { ghostty_tmux_session_request_close_window($0, windowID) }
+        submit(request: .closeWindow) { ghostty_tmux_session_request_close_window($0, windowID) }
     }
 
     func requestSelectWindow(windowID: UInt64) {
-        submit { ghostty_tmux_session_request_select_window($0, windowID) }
+        submit(request: .selectWindow) { ghostty_tmux_session_request_select_window($0, windowID) }
     }
 
     func requestSelectPane(paneID: UInt64) {
-        submit { ghostty_tmux_session_request_select_pane($0, paneID) }
+        submit(request: .selectPane) { ghostty_tmux_session_request_select_pane($0, paneID) }
     }
 
     func requestZoomPane(paneID: UInt64) {
-        submit { ghostty_tmux_session_request_zoom_pane($0, paneID) }
+        submit(request: .zoomPane) { ghostty_tmux_session_request_zoom_pane($0, paneID) }
     }
 
     func requestCopyMode(paneID: UInt64) {
-        submit { ghostty_tmux_session_request_copy_mode($0, paneID) }
+        submit(request: .copyMode) { ghostty_tmux_session_request_copy_mode($0, paneID) }
     }
 
     func renderPanePreviewImageAsync(
@@ -627,13 +632,23 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     private func submit(
+        request: Request,
         _ body: @escaping (ghostty_tmux_session_t) -> ghostty_tmux_result_e
     ) {
         queue.async { [self] in
             guard let session else { return }
-            _ = body(session)
+            let result = body(session)
             drainOutbound()
+            reportImmediateRequestFailureIfNeeded(result, request: request)
         }
+    }
+
+    private func reportImmediateRequestFailureIfNeeded(
+        _ result: ghostty_tmux_result_e,
+        request: Request
+    ) {
+        guard result != GHOSTTY_TMUX_RESULT_OK else { return }
+        DispatchQueue.main.async { self.callbacks.onRequestFailed(request) }
     }
 }
 

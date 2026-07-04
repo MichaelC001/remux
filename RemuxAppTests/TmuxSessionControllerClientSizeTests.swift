@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import Remux
 
@@ -83,5 +84,64 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         )
 
         await shutDown(controller)
+    }
+
+    func testDetachedRequestReportsImmediateFailure() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let recorder = RequestFailureRecorder()
+        let controller = TmuxSessionController(
+            app: runtime.appHandleForTesting,
+            callbacks: TmuxSessionController.Callbacks(
+                onRequestFailed: { request in
+                    Task { await recorder.append(request) }
+                }
+            )
+        )
+        defer { _ = runtime }
+
+        controller.requestCopyMode(paneID: 1)
+
+        try await waitUntil("detached request failure was not reported") {
+            await recorder.requests().contains(.copyMode)
+        }
+
+        await shutDown(controller)
+    }
+
+    func testDetachedInputIsRejectedSynchronously() async throws {
+        let (runtime, controller) = try makeController()
+        defer { _ = runtime }
+
+        XCTAssertFalse(controller.sendInput(paneID: 1, Data([0x61])))
+
+        await shutDown(controller)
+    }
+
+    private func waitUntil(
+        _ failureMessage: String,
+        timeout: Duration = .seconds(2),
+        condition: () async -> Bool
+    ) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            if await condition() {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTFail(failureMessage)
+    }
+}
+
+private actor RequestFailureRecorder {
+    private var recordedRequests: [TmuxSessionController.Request] = []
+
+    func append(_ request: TmuxSessionController.Request) {
+        recordedRequests.append(request)
+    }
+
+    func requests() -> [TmuxSessionController.Request] {
+        recordedRequests
     }
 }

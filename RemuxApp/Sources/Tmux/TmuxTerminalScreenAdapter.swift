@@ -299,20 +299,10 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
 
     private func presentCommandFailure(for request: TmuxSessionController.Request) {
         commandFailureToken &+= 1
-        let kind: TmuxControlCommandFailureKind = switch request {
-        case .newWindow: .newWindow
-        case .splitPane: .splitPane
-        case .closePane: .closePane
-        case .closeWindow: .closeWindow
-        case .copyMode: .copyMode
-        case .selectWindow, .selectPane, .zoomPane, .setClientSize: .copyMode
-        }
         let message = "tmux: \(Self.failureLabel(for: request)) failed"
         commandFailureMessage = message
         commandFailureEvent = GhosttyTmuxCommandFailureEvent(
             token: commandFailureToken,
-            kind: kind,
-            reason: .tmuxError(message),
             message: message
         )
         objectWillChange.send()

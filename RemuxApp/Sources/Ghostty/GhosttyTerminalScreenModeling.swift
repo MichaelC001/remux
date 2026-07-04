@@ -31,8 +31,6 @@ enum GhosttyTmuxModelActionOutcome: Equatable, Sendable {
 
 struct GhosttyTmuxCommandFailureEvent: Equatable {
     let token: UInt64
-    let kind: TmuxControlCommandFailureKind
-    let reason: TmuxControlCommandFailureReason
     let message: String
 }
 
@@ -182,4 +180,3 @@ protocol GhosttyTerminalScreenModeling: ObservableObject {
         topLevelID: UUID
     ) -> GhosttyPaneSelectionSheetRenderProjection
 }
-

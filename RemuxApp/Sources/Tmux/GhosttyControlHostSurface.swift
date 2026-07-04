@@ -63,31 +63,3 @@ protocol GhosttyControlSurface: AnyObject {
     @MainActor
     func setBackingExited(_ exited: Bool)
 }
-
-
-enum TmuxControlCommandFailureReason: Equatable, Sendable {
-    case noSpaceForNewPane
-    case tmuxError(String)
-}
-
-enum TmuxControlCommandFailureKind: Equatable, Sendable {
-    case newWindow
-    case splitPane
-    case closePane
-    case closeWindow
-    case copyMode
-
-}
-
-struct TmuxControlCommandFailure: Equatable, Sendable {
-    let kind: TmuxControlCommandFailureKind
-    let reason: TmuxControlCommandFailureReason
-    let message: String
-
-    init(kind: TmuxControlCommandFailureKind, reason: TmuxControlCommandFailureReason, message: String) {
-        self.kind = kind
-        self.reason = reason
-        self.message = message
-    }
-
-}
