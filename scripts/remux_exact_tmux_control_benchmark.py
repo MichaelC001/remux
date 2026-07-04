@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Measure raw SSH tmux control-mode topology response latency."""
+"""Measure raw bare-exec tmux -C topology response latency.
+
+This is a standalone remote tmux benchmark, not the Remux app transport path.
+It deliberately uses the same no-PTY control-mode shape as Remux: a bare
+`tmux -C` exec stream. Remux itself still lets Ghostty own command generation,
+parsing, and reconciliation.
+"""
 
 from __future__ import annotations
 
@@ -155,11 +161,7 @@ def validate_session_name(session_name: str) -> str:
 
 
 def control_payload(line: str) -> str:
-    stripped = line.strip()
-    dcs_prefix = "\x1bP1000p"
-    if stripped.startswith(dcs_prefix):
-        return stripped[len(dcs_prefix):]
-    return stripped
+    return line.strip()
 
 
 def parse_context_line(line: str, token: str) -> TmuxContext | None:
@@ -230,12 +232,11 @@ class ControlModeSession:
         connect_timeout: int,
     ) -> None:
         remote_command = (
-            f"{shlex.quote(tmux_command)} -CC new-session -A "
+            f"{shlex.quote(tmux_command)} -C new-session -A "
             f"-s {shlex.quote(session_name)}"
         )
         command = [
             "ssh",
-            "-tt",
             "-p",
             str(config.port),
             "-o",
@@ -624,10 +625,6 @@ def self_test() -> int:
         signal="%window-add",
         line="%window-add @2",
     )
-    assert matching_signal("\x1bP1000p%window-add @2", ("%window-add",)) == MatchedSignal(
-        signal="%window-add",
-        line="%window-add @2",
-    )
     assert matching_signal("%layout-change @2 abc", ("%layout-change",)) == MatchedSignal(
         signal="%layout-change",
         line="%layout-change @2 abc",
@@ -698,7 +695,10 @@ def self_test() -> int:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Measure raw SSH tmux -CC topology response latency."
+        description=(
+            "Measure standalone SSH tmux -C topology response latency "
+            "over a bare exec stream."
+        )
     )
     parser.add_argument("--config", default=str(DEFAULT_CONFIG))
     parser.add_argument("--password-env", default=None)

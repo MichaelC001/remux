@@ -202,133 +202,35 @@ def latest_after_topology(predicate: Callable[[str], bool]) -> Callable[[FlowIns
     return latest_after_event(topology_installed, predicate)
 
 
-def process_output_end(instance: FlowInstance) -> FlowEvent | None:
-    return first_event(instance, prefix("tmux.signal.host.pump.processOutput.end."))
+def action_start(instance: FlowInstance) -> FlowEvent | None:
+    return instance.events[0] if instance.events else None
 
 
-def tmux_response(instance: FlowInstance) -> FlowEvent | None:
-    return first_event(instance, prefix("tmux.response."))
-
-
-QUERY_KINDS = (
-    "tmux_version",
-    "list_windows",
-    "pane_state",
-    "pane_metadata",
-    "pane_history",
-    "pane_visible",
-    "pane_pending_output",
-)
-
-
-def query_send(kind: str) -> Callable[[FlowInstance], FlowEvent | None]:
-    return lambda flow: first_event(flow, exact(f"tmux.query.{kind}.send"))
-
-
-def query_receive(kind: str) -> Callable[[FlowInstance], FlowEvent | None]:
-    return after_event(query_send(kind), exact(f"tmux.query.{kind}.response.receive"))
-
-
-def query_processed(kind: str) -> Callable[[FlowInstance], FlowEvent | None]:
-    return after_event(
-        query_receive(kind),
-        exact(f"tmux.query.{kind}.response.processed"),
+def runtime_callback_predicate() -> Callable[[str], bool]:
+    return any_of(
+        "runtime.callback.createSurfaceTree.entry",
+        "runtime.callback.createSurface.entry",
     )
 
 
-def query_events_by_sequence(
-    instance: FlowInstance,
-    event_name: str,
-) -> dict[str, FlowEvent]:
-    events: dict[str, FlowEvent] = {}
-    for event in instance.events:
-        if event.event != event_name:
-            continue
-        sequence = event.field("sequence")
-        if sequence is None:
-            continue
-        events.setdefault(sequence, event)
-    return events
-
-
-def sorted_query_sequences(events: dict[str, FlowEvent]) -> list[str]:
-    def sort_key(sequence: str) -> tuple[int, int | str]:
-        try:
-            return (0, int(sequence))
-        except ValueError:
-            return (1, sequence)
-
-    return sorted(events, key=sort_key)
-
-
-def query_event_pairs(
-    kind: str,
-    start_phase: str,
-    end_phase: str,
-) -> Callable[[FlowInstance], list[tuple[FlowEvent | None, FlowEvent | None]]]:
-    start_event_name = f"tmux.query.{kind}.{start_phase}"
-    end_event_name = f"tmux.query.{kind}.{end_phase}"
-
-    def pairs(instance: FlowInstance) -> list[tuple[FlowEvent | None, FlowEvent | None]]:
-        starts = query_events_by_sequence(instance, start_event_name)
-        ends = query_events_by_sequence(instance, end_event_name)
-        return [(starts[sequence], ends.get(sequence)) for sequence in sorted_query_sequences(starts)]
-
-    return pairs
-
-
-def query_roundtrip_segments() -> list[Segment]:
-    segments: list[Segment] = []
-    for kind in QUERY_KINDS:
-        send = query_send(kind)
-        receive = query_receive(kind)
-        processed = query_processed(kind)
-        segments.extend(
-            [
-                Segment(
-                    f"query.{kind}.send->response_receive",
-                    send,
-                    receive,
-                    query_event_pairs(kind, "send", "response.receive"),
-                ),
-                Segment(
-                    f"query.{kind}.response_receive->response_processed",
-                    receive,
-                    processed,
-                    query_event_pairs(kind, "response.receive", "response.processed"),
-                ),
-                Segment(
-                    f"query.{kind}.send->response_processed",
-                    send,
-                    processed,
-                    query_event_pairs(kind, "send", "response.processed"),
-                ),
-            ]
-        )
-    return segments
-
-
-def runtime_callback_entry(instance: FlowInstance) -> FlowEvent | None:
-    return after_event(
-        process_output_end,
-        any_of(
-            "runtime.callback.createSurfaceTree.entry",
-            "runtime.callback.createSurface.entry",
-        ),
-    )(instance)
+def first_runtime_callback_entry(instance: FlowInstance) -> FlowEvent | None:
+    return first_event(
+        instance,
+        runtime_callback_predicate(),
+    )
 
 
 def runtime_wakeup_entry(instance: FlowInstance) -> FlowEvent | None:
-    response = tmux_response(instance)
-    callback = runtime_callback_entry(instance)
-    if response is None or callback is None:
-        return None
-    return latest_event_between(
-        instance,
-        response,
-        callback,
-        exact("runtime.wakeup.entry"),
-    )
+    return first_event(instance, exact("runtime.wakeup.entry"))
+
+
+def runtime_callback_entry(instance: FlowInstance) -> FlowEvent | None:
+    wakeup = runtime_wakeup_entry(instance)
+    if wakeup is not None:
+        callback = first_event_after(instance, wakeup, runtime_callback_predicate())
+        if callback is not None:
+            return callback
+    return first_runtime_callback_entry(instance)
 
 
 def runtime_wakeup_main_actor_schedule(instance: FlowInstance) -> FlowEvent | None:
@@ -398,7 +300,7 @@ def runtime_callback_main_actor_begin(instance: FlowInstance) -> FlowEvent | Non
 
 
 def registry_callback_begin(instance: FlowInstance) -> FlowEvent | None:
-    anchor = runtime_callback_entry(instance) or process_output_end(instance)
+    anchor = runtime_callback_entry(instance)
     if anchor is None:
         return None
     return first_event_after(
@@ -604,54 +506,13 @@ def overlay_add_snapshot_end(instance: FlowInstance) -> FlowEvent | None:
 
 SEGMENTS = [
     Segment(
-        "send_end->ssh_channel_read",
-        lambda flow: first_event(flow, exact("host.write.send.end")),
-        lambda flow: first_event(flow, prefix("tmux.signal.ssh.channelRead.")),
-    ),
-    Segment(
-        "ssh_channel_read->host_pump_receive",
-        lambda flow: first_event(flow, prefix("tmux.signal.ssh.channelRead.")),
-        lambda flow: first_event(flow, prefix("tmux.signal.host.pump.receive.")),
-    ),
-    Segment(
-        "host_pump_receive->sequencer_enqueue",
-        lambda flow: first_event(flow, prefix("tmux.signal.host.pump.receive.")),
-        lambda flow: first_event(flow, prefix("tmux.signal.sequencer.enqueue.")),
-    ),
-    Segment(
-        "sequencer_enqueue->sequencer_drain",
-        lambda flow: first_event(flow, prefix("tmux.signal.sequencer.enqueue.")),
-        lambda flow: first_event(flow, prefix("tmux.signal.sequencer.drain.")),
-    ),
-    Segment(
-        "sequencer_drain->tmux_response",
-        lambda flow: first_event(flow, prefix("tmux.signal.sequencer.drain.")),
-        lambda flow: first_event(flow, prefix("tmux.response.")),
-    ),
-    Segment(
-        "tmux_response->processOutput_end",
-        lambda flow: first_event(flow, prefix("tmux.response.")),
-        process_output_end,
-    ),
-    *query_roundtrip_segments(),
-    Segment(
-        "tmux_response->runtime_wakeup_entry",
-        tmux_response,
-        runtime_wakeup_entry,
-    ),
-    Segment(
-        "runtime_wakeup_entry->processOutput_end",
-        runtime_wakeup_entry,
-        process_output_end,
-    ),
-    Segment(
-        "processOutput_end->runtime_callback_entry",
-        process_output_end,
+        "action_start->runtime_callback_entry",
+        action_start,
         runtime_callback_entry,
     ),
     Segment(
-        "processOutput_end->runtime_wakeup_entry",
-        process_output_end,
+        "action_start->runtime_wakeup_entry",
+        action_start,
         runtime_wakeup_entry,
     ),
     Segment(
@@ -702,11 +563,6 @@ SEGMENTS = [
     Segment(
         "runtime_callback_entry->registry_callback_begin",
         runtime_callback_entry,
-        registry_callback_begin,
-    ),
-    Segment(
-        "processOutput_end->registry_callback_begin",
-        process_output_end,
         registry_callback_begin,
     ),
     Segment(
@@ -1130,37 +986,14 @@ SEGMENTS = [
         lambda flow: first_event(flow, exact("interactive.ready")),
     ),
     Segment(
-        "send_end->interactive_ready",
-        lambda flow: first_event(flow, exact("host.write.send.end")),
+        "action_start->interactive_ready",
+        action_start,
         lambda flow: first_event(flow, exact("interactive.ready")),
     ),
 ]
 
 
-def query_count_metrics() -> list[CountMetric]:
-    metrics: list[CountMetric] = []
-    for kind in QUERY_KINDS:
-        metrics.extend(
-            [
-                CountMetric(
-                    f"send_end->interactive_ready tmux.query.{kind}.send count",
-                    lambda flow: first_event(flow, exact("host.write.send.end")),
-                    lambda flow: first_event(flow, exact("interactive.ready")),
-                    exact(f"tmux.query.{kind}.send"),
-                ),
-                CountMetric(
-                    f"send_end->interactive_ready tmux.query.{kind}.response_processed count",
-                    lambda flow: first_event(flow, exact("host.write.send.end")),
-                    lambda flow: first_event(flow, exact("interactive.ready")),
-                    exact(f"tmux.query.{kind}.response.processed"),
-                ),
-            ]
-        )
-    return metrics
-
-
 COUNT_METRICS = [
-    *query_count_metrics(),
     CountMetric(
         "registry_callback_begin->topology_installed registry.notifyChanged.begin count",
         registry_callback_begin,
@@ -1322,16 +1155,7 @@ def group_flow_instances(events: Iterable[FlowEvent]) -> list[FlowInstance]:
 
         instance = active.get(event.flow)
         if instance is None:
-            late_instance = completed_flow_instance_for(event, completed)
-            if late_instance is not None:
-                late_instance.events.append(event)
             continue
-
-        if is_query_event(event) and not event_belongs_to_instance(event, instance):
-            late_instance = completed_flow_instance_for(event, completed)
-            if late_instance is not None:
-                late_instance.events.append(event)
-                continue
 
         instance.events.append(event)
         if event.event == "interactive.ready":
@@ -1339,28 +1163,6 @@ def group_flow_instances(events: Iterable[FlowEvent]) -> list[FlowInstance]:
             del active[event.flow]
 
     return completed
-
-
-def is_query_event(event: FlowEvent) -> bool:
-    return event.event.startswith("tmux.query.")
-
-
-def completed_flow_instance_for(
-    event: FlowEvent,
-    completed: list[FlowInstance],
-) -> FlowInstance | None:
-    if not is_query_event(event):
-        return None
-
-    for instance in reversed(completed):
-        if instance.flow == event.flow and event_belongs_to_instance(event, instance):
-            return instance
-    return None
-
-
-def event_belongs_to_instance(event: FlowEvent, instance: FlowInstance) -> bool:
-    estimated_started_at = event.timestamp - int(round(event.since_ms * 1_000_000))
-    return abs(estimated_started_at - instance.started_at) <= 1_000_000
 
 
 def percentile(values: list[float], percentile_value: float) -> float:
@@ -1555,19 +1357,9 @@ def report(instances: list[FlowInstance]) -> str:
 def run_self_test() -> None:
     sample = """
 Remux flow t=1000000 flow=tmux.newWindow event=ui.tap.newWindow since_ms=0.000
-Remux flow t=2000000 flow=tmux.newWindow event=host.write.send.end since_ms=1.000
-Remux flow t=2100000 flow=tmux.newWindow event=tmux.query.list_windows.send since_ms=1.100 command=list_windows kind=list_windows sequence=10
-Remux flow t=3000000 flow=tmux.newWindow event=tmux.signal.ssh.channelRead.window-add since_ms=2.000
-Remux flow t=4000000 flow=tmux.newWindow event=tmux.signal.host.pump.receive.window-add since_ms=3.000
-Remux flow t=5000000 flow=tmux.newWindow event=tmux.signal.sequencer.enqueue.window-add since_ms=4.000
-Remux flow t=7000000 flow=tmux.newWindow event=tmux.signal.sequencer.drain.window-add since_ms=6.000
-Remux flow t=7600000 flow=tmux.newWindow event=tmux.query.list_windows.response.receive since_ms=6.600 kind=list_windows outcome=end sequence=10
-Remux flow t=8000000 flow=tmux.newWindow event=tmux.response.window-add since_ms=7.000
 Remux flow t=8300000 flow=tmux.newWindow event=runtime.callback.createSurfaceTree.entry since_ms=7.300
 Remux flow t=8400000 flow=tmux.newWindow event=runtime.callback.createSurfaceTree.mainActor.begin since_ms=7.400
 Remux flow t=8450000 flow=tmux.newWindow event=registry.createSurfaceTree.begin since_ms=7.450
-Remux flow t=8500000 flow=tmux.newWindow event=tmux.signal.host.pump.processOutput.end.window-add since_ms=7.500
-Remux flow t=8510000 flow=tmux.newWindow event=tmux.query.list_windows.response.processed since_ms=7.510 accepted=true kind=list_windows outcome=end sequence=10
 Remux flow t=8550000 flow=tmux.newWindow event=runtime.wakeup.entry since_ms=7.550
 Remux flow t=8600000 flow=tmux.newWindow event=runtime.wakeup.mainActor.schedule since_ms=7.600
 Remux flow t=8700000 flow=tmux.newWindow event=runtime.wakeup.mainActor.begin since_ms=7.700
@@ -1605,29 +1397,10 @@ Remux flow t=13100000 flow=tmux.newWindow event=managed.updateDisplay.end since_
 Remux flow t=13200000 flow=tmux.newWindow event=ui.recordSurfacePresentation.begin since_ms=12.200
 Remux flow t=14000000 flow=tmux.newWindow event=ui.viewPresentation.ready since_ms=13.000
 Remux flow t=16000000 flow=tmux.newWindow event=registry.runtimePresentation.ready since_ms=15.000
-Remux flow t=16500000 flow=tmux.newWindow event=tmux.query.pane_state.send since_ms=15.500 command=pane_state kind=pane_state sequence=11
 Remux flow t=17000000 flow=tmux.newWindow event=interactive.ready since_ms=16.000
-Remux flow t=18000000 flow=tmux.newWindow event=tmux.query.pane_state.response.receive since_ms=17.000 kind=pane_state outcome=end sequence=11
-Remux flow t=19000000 flow=tmux.newWindow event=tmux.query.pane_state.response.processed since_ms=18.000 accepted=true kind=pane_state outcome=end sequence=11
 Remux flow t=20000000 flow=tmux.splitPane event=ui.tap.splitPane since_ms=0.000
-Remux flow t=21000000 flow=tmux.splitPane event=host.write.send.end since_ms=1.000
-Remux flow t=21500000 flow=tmux.splitPane event=tmux.query.pane_metadata.send since_ms=1.500 command=pane_metadata kind=pane_metadata sequence=20
-Remux flow t=21600000 flow=tmux.splitPane event=tmux.query.pane_visible.send since_ms=1.600 command=pane_visible kind=pane_visible sequence=30
-Remux flow t=21600000 flow=tmux.splitPane event=tmux.query.pane_visible.send since_ms=1.600 command=pane_visible kind=pane_visible sequence=31
-Remux flow t=22000000 flow=tmux.splitPane event=tmux.signal.ssh.channelRead.layout-change since_ms=2.000
-Remux flow t=23000000 flow=tmux.splitPane event=tmux.signal.host.pump.receive.layout-change since_ms=3.000
-Remux flow t=24000000 flow=tmux.splitPane event=tmux.signal.sequencer.enqueue.layout-change since_ms=4.000
-Remux flow t=25000000 flow=tmux.splitPane event=tmux.signal.sequencer.drain.layout-change since_ms=5.000
-Remux flow t=25500000 flow=tmux.splitPane event=tmux.query.pane_metadata.response.receive since_ms=5.500 kind=pane_metadata outcome=end sequence=20
-Remux flow t=25600000 flow=tmux.splitPane event=tmux.query.pane_visible.response.receive since_ms=5.600 kind=pane_visible outcome=end sequence=30
-Remux flow t=25700000 flow=tmux.splitPane event=tmux.query.pane_visible.response.receive since_ms=5.700 kind=pane_visible outcome=end sequence=31
-Remux flow t=26000000 flow=tmux.splitPane event=tmux.response.layout-change since_ms=6.000
 Remux flow t=26450000 flow=tmux.splitPane event=runtime.wakeup.entry since_ms=6.450
 Remux flow t=26460000 flow=tmux.splitPane event=runtime.wakeup.mainActor.schedule since_ms=6.460
-Remux flow t=26500000 flow=tmux.splitPane event=tmux.signal.host.pump.processOutput.end.layout-change since_ms=6.500
-Remux flow t=26510000 flow=tmux.splitPane event=tmux.query.pane_metadata.response.processed since_ms=6.510 accepted=true kind=pane_metadata outcome=end sequence=20
-Remux flow t=26520000 flow=tmux.splitPane event=tmux.query.pane_visible.response.processed since_ms=6.520 accepted=true kind=pane_visible outcome=end sequence=30
-Remux flow t=26530000 flow=tmux.splitPane event=tmux.query.pane_visible.response.processed since_ms=6.530 accepted=true kind=pane_visible outcome=end sequence=31
 Remux flow t=26570000 flow=tmux.splitPane event=runtime.wakeup.mainActor.begin since_ms=6.570
 Remux flow t=26580000 flow=tmux.splitPane event=runtime.wakeup.appTick.begin since_ms=6.580
 Remux flow t=26600000 flow=tmux.splitPane event=runtime.callback.createSurface.entry since_ms=6.600
@@ -1717,23 +1490,8 @@ Remux flow t=1000000 flow=tmux.newWindow event=ui.tap.newWindow since_ms=0.000
     native_events = dedupe_native_surface_events(fill_native_surface_context(native_events))
     native_output = report_native_surface_init(native_events)
     assert "distinct_action_flows=2" in output
-    assert "send_end->ssh_channel_read: n=1 p50_ms=1.000" in output
-    assert "processOutput_end->runtime_callback_entry: n=1 p50_ms=0.400" in output
-    assert "query.list_windows.send->response_receive: n=1 p50_ms=5.500" in output
-    assert "query.list_windows.response_receive->response_processed: n=1 p50_ms=0.910" in output
-    assert "query.pane_state.send->response_processed: n=1 p50_ms=2.500" in output
-    assert "query.pane_metadata.send->response_processed: n=1 p50_ms=5.010" in output
-    assert "query.pane_visible.send->response_receive: n=2 p50_ms=4.050" in output
-    assert "query.pane_visible.response_receive->response_processed: n=2 p50_ms=0.875" in output
-    assert "query.pane_visible.send->response_processed: n=2 p50_ms=4.925" in output
-    assert "tmux_response->runtime_wakeup_entry: n=1 p50_ms=0.550" in output
-    assert "tmux_response->runtime_wakeup_entry: n=1 p50_ms=0.450" in output
-    assert "runtime_wakeup_entry->processOutput_end: n=1 p50_ms=0.050" in output
-    assert "processOutput_end->runtime_wakeup_entry: n=1 p50_ms=0.050" in output
-    assert (
-        "processOutput_end->runtime_wakeup_entry: "
-        "n=0 missing=0 out_of_order=1"
-    ) in output
+    assert "action_start->runtime_callback_entry: n=1 p50_ms=7.900" in output
+    assert "action_start->runtime_wakeup_entry: n=1 p50_ms=7.550" in output
     assert (
         "runtime_wakeup_entry->wakeup_mainActor_schedule: "
         "n=1 p50_ms=0.050"
@@ -1748,7 +1506,6 @@ Remux flow t=1000000 flow=tmux.newWindow event=ui.tap.newWindow since_ms=0.000
     assert "mainActor_schedule->mainActor_begin: n=1 p50_ms=0.200" in output
     assert "runtime_callback_entry->registry_callback_begin: n=1 p50_ms=0.400" in output
     assert "mainActor_begin->registry_callback_begin: n=1 p50_ms=0.100" in output
-    assert "processOutput_end->registry_callback_begin: n=1 p50_ms=0.800" in output
     assert "tree_decode_begin->tree_decode_end: n=1 p50_ms=0.050" in output
     assert "tree_leaves_begin->tree_leaves_end: n=1 p50_ms=0.300" in output
     assert "tree_install_begin->tree_install_end: n=1 p50_ms=0.500" in output
@@ -1793,26 +1550,6 @@ Remux flow t=1000000 flow=tmux.newWindow event=ui.tap.newWindow since_ms=0.000
     assert (
         "topology_installed->interactive_ready model.surfaceRegistryRevision.published count: "
         "n=1 p50_count=1.0"
-    ) in output
-    assert (
-        "send_end->interactive_ready tmux.query.list_windows.send count: "
-        "n=1 p50_count=1.0"
-    ) in output
-    assert (
-        "send_end->interactive_ready tmux.query.pane_metadata.response_processed count: "
-        "n=1 p50_count=1.0"
-    ) in output
-    assert (
-        "send_end->interactive_ready tmux.query.pane_state.response_processed count: "
-        "n=1 p50_count=0.0"
-    ) in output
-    assert (
-        "send_end->interactive_ready tmux.query.pane_visible.send count: "
-        "n=1 p50_count=2.0"
-    ) in output
-    assert (
-        "send_end->interactive_ready tmux.query.pane_visible.response_processed count: "
-        "n=1 p50_count=2.0"
     ) in output
     assert (
         "view_presented->runtime_presentation_ready: "

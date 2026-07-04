@@ -12,19 +12,29 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-import remux_host_pump_report as host_pump
 
-
+TRACE_RE = re.compile(
+    r"Remux (?:latency|perf|flow|tmuxViewport) "
+    r"t=(?P<timestamp>\d+) "
+    r"(?P<body>.*)$"
+)
 WRITE_RE = re.compile(
-    r"hostSurface\.onWrite "
+    r"transport\.send begin "
     r"bytes=(?P<bytes>\d+) "
     r"preview=(?P<preview>.*)$"
 )
 TARGET_RE = re.compile(r"(?:^| )-t (?P<target>[^ ;\\]+)")
 PANE_ID_RE = re.compile(r"%\d+")
 
-NANOS_PER_MILLISECOND = host_pump.NANOS_PER_MILLISECOND
-PROCESS_POST_TOLERANCE_NS = host_pump.SIDE_EFFECT_POST_TOLERANCE_NS
+NANOS_PER_MILLISECOND = 1_000_000
+
+
+@dataclass(frozen=True)
+class LogLine:
+    source: str
+    line: int
+    timestamp: int | None
+    body: str
 
 
 @dataclass(frozen=True)
@@ -62,8 +72,8 @@ class TmuxWriteBundle:
         return self.commands[0].kind if self.commands else "empty"
 
     @property
-    def is_query_bundle(self) -> bool:
-        return any(command.kind in QUERY_KINDS for command in self.commands)
+    def is_state_read_bundle(self) -> bool:
+        return any(command.kind in STATE_READ_COMMAND_KINDS for command in self.commands)
 
     @property
     def signature(self) -> tuple[tuple[str, str], ...]:
@@ -77,7 +87,6 @@ class TmuxWriteBundle:
 @dataclass(frozen=True)
 class ParseResult:
     writes: tuple[TmuxWriteBundle, ...]
-    pump: host_pump.ParseResult
 
 
 @dataclass(frozen=True)
@@ -90,18 +99,11 @@ class DuplicateWrite:
 @dataclass(frozen=True)
 class RefreshFollowup:
     refresh: TmuxWriteBundle
-    query: TmuxWriteBundle
+    state_read: TmuxWriteBundle
     delta_ms: float
 
 
-@dataclass(frozen=True)
-class ProcessCorrelation:
-    write: TmuxWriteBundle
-    process: host_pump.ProcessBatch
-    delta_ms: float
-
-
-QUERY_KINDS = {
+STATE_READ_COMMAND_KINDS = {
     "pane_history",
     "pane_visible",
     "pane_pending_output",
@@ -180,10 +182,28 @@ def command_target(command: str) -> str:
     return "-"
 
 
+def parse_log_line(source: str, line_number: int, line: str) -> LogLine:
+    match = TRACE_RE.search(line)
+    if match is None:
+        return LogLine(
+            source=source,
+            line=line_number,
+            timestamp=None,
+            body=line,
+        )
+
+    return LogLine(
+        source=source,
+        line=line_number,
+        timestamp=int(match.group("timestamp")),
+        body=match.group("body"),
+    )
+
+
 def parse_write_lines(source: str, lines: Iterable[str]) -> list[TmuxWriteBundle]:
     writes: list[TmuxWriteBundle] = []
     for line_number, line in enumerate(lines, 1):
-        log_line = host_pump.parse_log_line(source, line_number, line)
+        log_line = parse_log_line(source, line_number, line)
         if match := WRITE_RE.search(log_line.body):
             preview = match.group("preview").strip()
             writes.append(
@@ -200,26 +220,27 @@ def parse_write_lines(source: str, lines: Iterable[str]) -> list[TmuxWriteBundle
 
 
 def parse_paths(paths: Iterable[Path]) -> ParseResult:
-    path_list = list(paths)
     writes: list[TmuxWriteBundle] = []
-    for path in path_list:
+    for path in paths:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
             writes.extend(parse_write_lines(str(path), handle))
-    return ParseResult(writes=tuple(writes), pump=host_pump.parse_paths(path_list))
+    return ParseResult(writes=tuple(writes))
 
 
 def duplicate_writes(
     writes: list[TmuxWriteBundle],
     window_ms: float,
     same_preview: bool,
-    query_only: bool = False,
+    state_read_only: bool = False,
 ) -> list[DuplicateWrite]:
     duplicates: list[DuplicateWrite] = []
     max_delta_ns = window_ms * NANOS_PER_MILLISECOND
     for previous, current in zip(writes, writes[1:]):
         if previous.source != current.source:
             continue
-        if query_only and (not previous.is_query_bundle or not current.is_query_bundle):
+        if state_read_only and (
+            not previous.is_state_read_bundle or not current.is_state_read_bundle
+        ):
             continue
         if previous.timestamp is None or current.timestamp is None:
             continue
@@ -252,86 +273,26 @@ def refresh_followups(
             continue
         if not any(command.kind == "refresh_client" for command in refresh.commands):
             continue
-        for query in writes[index + 1:]:
-            if query.source != refresh.source:
+        for state_read in writes[index + 1:]:
+            if state_read.source != refresh.source:
                 break
-            if query.timestamp is None:
+            if state_read.timestamp is None:
                 continue
-            delta = query.timestamp - refresh.timestamp
+            delta = state_read.timestamp - refresh.timestamp
             if delta < 0:
                 continue
             if delta > max_delta_ns:
                 break
-            if query.is_query_bundle:
+            if state_read.is_state_read_bundle:
                 followups.append(
                     RefreshFollowup(
                         refresh=refresh,
-                        query=query,
+                        state_read=state_read,
                         delta_ms=delta / NANOS_PER_MILLISECOND,
                     )
                 )
                 break
     return followups
-
-
-def containing_process_correlations(
-    writes: list[TmuxWriteBundle],
-    processes: list[host_pump.ProcessBatch],
-) -> list[ProcessCorrelation]:
-    correlations: list[ProcessCorrelation] = []
-    for write in writes:
-        if write.timestamp is None:
-            continue
-        for process in processes:
-            start = process.start_timestamp
-            end = process.timestamp
-            if start is None or end is None:
-                continue
-            if write.source != process.source:
-                continue
-            if start <= write.timestamp <= end + PROCESS_POST_TOLERANCE_NS:
-                correlations.append(
-                    ProcessCorrelation(
-                        write=write,
-                        process=process,
-                        delta_ms=(write.timestamp - end) / NANOS_PER_MILLISECOND,
-                    )
-                )
-                break
-    return correlations
-
-
-def next_process_correlations(
-    writes: list[TmuxWriteBundle],
-    processes: list[host_pump.ProcessBatch],
-    window_ms: float,
-) -> list[ProcessCorrelation]:
-    correlations: list[ProcessCorrelation] = []
-    max_delta_ns = window_ms * NANOS_PER_MILLISECOND
-    by_source: dict[str, list[host_pump.ProcessBatch]] = {}
-    for process in processes:
-        by_source.setdefault(process.source, []).append(process)
-
-    for write in writes:
-        if write.timestamp is None:
-            continue
-        for process in by_source.get(write.source, []):
-            if process.timestamp is None:
-                continue
-            delta = process.timestamp - write.timestamp
-            if delta < 0:
-                continue
-            if delta > max_delta_ns:
-                break
-            correlations.append(
-                ProcessCorrelation(
-                    write=write,
-                    process=process,
-                    delta_ms=delta / NANOS_PER_MILLISECOND,
-                )
-            )
-            break
-    return correlations
 
 
 def percentile(values: list[float], fraction: float) -> float:
@@ -374,26 +335,15 @@ def print_write_report(
     result: ParseResult,
     duplicate_windows_ms: list[float],
     follow_windows_ms: list[float],
-    next_process_window_ms: float,
     top_count: int,
 ) -> None:
     writes = sorted(result.writes, key=lambda item: (item.source, item.timestamp or -1, item.line))
-    processes = sorted(
-        result.pump.process_batches,
-        key=lambda item: (item.source, item.timestamp or -1, item.line),
-    )
 
     print("tmux write summary")
     print(
         f"writes={len(writes)} "
         f"bytes={sum(write.byte_count for write in writes)} "
         f"commands={sum(len(write.commands) for write in writes)}"
-    )
-    print(
-        "host_pump_pairing "
-        f"unpaired_receives={result.pump.unpaired_receives} "
-        f"missing_receives={sum(1 for batch in processes if batch.receive is None)} "
-        f"mismatched_pairs={result.pump.mismatched_pairs}"
     )
 
     kind_counts = Counter(command.kind for write in writes for command in write.commands)
@@ -421,13 +371,13 @@ def print_write_report(
         print(f"window_ms={window:g}: count={len(duplicates)}")
 
     print()
-    print("adjacent duplicate query same-preview writes")
+    print("adjacent duplicate state-read same-preview writes")
     for window in duplicate_windows_ms:
         duplicates = duplicate_writes(
             writes,
             window_ms=window,
             same_preview=True,
-            query_only=True,
+            state_read_only=True,
         )
         print(f"window_ms={window:g}: count={len(duplicates)}")
 
@@ -438,61 +388,37 @@ def print_write_report(
         print(f"window_ms={window:g}: count={len(duplicates)}")
 
     print()
-    print("adjacent duplicate query same-signature writes")
+    print("adjacent duplicate state-read same-signature writes")
     for window in duplicate_windows_ms:
         duplicates = duplicate_writes(
             writes,
             window_ms=window,
             same_preview=False,
-            query_only=True,
+            state_read_only=True,
         )
         print(f"window_ms={window:g}: count={len(duplicates)}")
 
     print()
-    print("refresh-client followed by query bundle")
+    print("refresh-client followed by state-read bundle")
     for window in follow_windows_ms:
         followups = refresh_followups(writes, window_ms=window)
-        query_kinds = Counter(followup.query.primary_kind for followup in followups)
-        detail = " ".join(f"{kind}={count}" for kind, count in sorted(query_kinds.items()))
+        state_read_kinds = Counter(
+            followup.state_read.primary_kind for followup in followups
+        )
+        detail = " ".join(
+            f"{kind}={count}" for kind, count in sorted(state_read_kinds.items())
+        )
         suffix = f" {detail}" if detail else ""
         print(f"window_ms={window:g}: count={len(followups)}{suffix}")
 
-    containing = containing_process_correlations(writes, processes)
     print()
-    print("writes inside processOutput interval")
-    for kind in sorted({item.write.primary_kind for item in containing}):
-        elapsed = [
-            item.process.elapsed_ms
-            for item in containing
-            if item.write.primary_kind == kind
-        ]
-        print(f"{kind}: {summarize_values(elapsed, suffix='_process_ms')}")
-
-    next_process = next_process_correlations(
-        writes,
-        processes,
-        window_ms=next_process_window_ms,
-    )
-    print()
-    print(f"next processOutput within {next_process_window_ms:g}ms")
-    for kind in sorted({item.write.primary_kind for item in next_process}):
-        items = [item for item in next_process if item.write.primary_kind == kind]
-        elapsed = [item.process.elapsed_ms for item in items]
-        delays = [item.delta_ms for item in items]
-        print(
-            f"{kind}: "
-            f"{summarize_values(elapsed, suffix='_process_ms')} "
-            f"{summarize_values(delays, suffix='_delay_ms')}"
-        )
-
-    print()
-    print(f"top {top_count} duplicate query same-preview writes within max window")
+    print(f"top {top_count} duplicate state-read same-preview writes within max window")
     max_duplicate_window = max(duplicate_windows_ms) if duplicate_windows_ms else 0
     for duplicate in duplicate_writes(
         writes,
         window_ms=max_duplicate_window,
         same_preview=True,
-        query_only=True,
+        state_read_only=True,
     )[:top_count]:
         print(
             f"{duplicate.current.source}:{duplicate.previous.line}->{duplicate.current.line} "
@@ -507,30 +433,24 @@ def print_write_report(
     max_follow_window = max(follow_windows_ms) if follow_windows_ms else 0
     for followup in refresh_followups(writes, window_ms=max_follow_window)[:top_count]:
         print(
-            f"{followup.query.source}:{followup.refresh.line}->{followup.query.line} "
+            f"{followup.state_read.source}:{followup.refresh.line}->{followup.state_read.line} "
             f"delta_ms={followup.delta_ms:.3f} "
-            f"query={bundle_label(followup.query.kind_signature)} "
-            f"targets={target_label(followup.query)}"
+            f"state_read={bundle_label(followup.state_read.kind_signature)} "
+            f"targets={target_label(followup.state_read)}"
         )
 
 
 def run_self_test() -> None:
     lines = [
-        "Remux latency t=1000000 hostSurface.onWrite bytes=24 preview=refresh-client -C 45x37\\134x0A",
-        "Remux latency t=2000000 hostSurface.onWrite bytes=120 preview=capture-pane -p -e -q -C -N -t %1 ; capture-pane -p -P -C -t %1\\134x0Alist-panes -s -F '#{pane_id}'\\134x0A",
-        "Remux latency t=2500000 hostSurface.onWrite bytes=120 preview=capture-pane -p -e -q -C -N -t %1 ; capture-pane -p -P -C -t %1\\134x0Alist-panes -s -F '#{pane_id}'\\134x0A",
-        "Remux latency t=3000000 host.pump.receive bytes=10 chunks=1 total=10 preview=%begin 1 1 1\\134x0D\\134x0A%end 1 1 1",
-        "Remux latency t=4500000 host.pump.processOutput end accepted=true bytes=10 chunks=1 elapsed_ms=1.500",
+        "Remux latency t=1000000 transport.send begin bytes=24 preview=refresh-client -C 45x37\\134x0A",
+        "Remux latency t=2000000 transport.send begin bytes=120 preview=capture-pane -p -e -q -C -N -t %1 ; capture-pane -p -P -C -t %1\\134x0Alist-panes -s -F '#{pane_id}'\\134x0A",
+        "Remux latency t=2500000 transport.send begin bytes=120 preview=capture-pane -p -e -q -C -N -t %1 ; capture-pane -p -P -C -t %1\\134x0Alist-panes -s -F '#{pane_id}'\\134x0A",
     ]
     writes = parse_write_lines("synthetic.log", lines)
     assert len(writes) == 3
     assert writes[1].kind_signature == ("pane_visible", "pane_pending_output", "pane_state")
-    assert refresh_followups(writes, window_ms=2)[0].query == writes[1]
-    assert len(duplicate_writes(writes, window_ms=1, same_preview=True, query_only=True)) == 1
-    pump = host_pump.parse_lines("synthetic.log", lines)
-    result = ParseResult(writes=tuple(writes), pump=pump)
-    correlations = next_process_correlations(list(result.writes), list(result.pump.process_batches), 5)
-    assert len(correlations) == 3
+    assert refresh_followups(writes, window_ms=2)[0].state_read == writes[1]
+    assert len(duplicate_writes(writes, window_ms=1, same_preview=True, state_read_only=True)) == 1
     print("self-test passed")
 
 
@@ -543,7 +463,7 @@ def parse_float_list(value: str) -> list[float]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Summarize Remux hostSurface.onWrite tmux command bundles."
+        description="Summarize Ghostty-generated tmux command bundles sent by Remux."
     )
     parser.add_argument("paths", nargs="*", type=Path, help="App log files to parse.")
     parser.add_argument("--top", type=int, default=12, help="Number of detail rows to print.")
@@ -558,12 +478,6 @@ def parse_args() -> argparse.Namespace:
         type=parse_float_list,
         default=[25, 75, 150],
         help="Comma-separated refresh-client follow-up windows in milliseconds.",
-    )
-    parser.add_argument(
-        "--next-process-window-ms",
-        type=float,
-        default=150,
-        help="Window for the first processOutput completion after a write.",
     )
     parser.add_argument("--self-test", action="store_true", help="Run parser self-test.")
     return parser.parse_args()
@@ -590,7 +504,6 @@ def main() -> int:
         result,
         duplicate_windows_ms=args.duplicate_windows_ms,
         follow_windows_ms=args.follow_windows_ms,
-        next_process_window_ms=args.next_process_window_ms,
         top_count=args.top,
     )
     return 0
