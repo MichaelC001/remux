@@ -408,16 +408,11 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         leafIDs: [UUID],
         previewSizing: GhosttyPanePreviewSession.PreviewSizing
     ) -> GhosttyPanePreviewSession {
-        let previewGrid = previewGrid(
-            for: previewSizing,
-            previewItemCount: max(1, leafIDs.count)
-        )
-        return GhosttyPanePreviewSession(
+        GhosttyPanePreviewSession(
             leafIDs: leafIDs,
             previewSizing: previewSizing,
-            previewGrid: previewGrid,
             previewRequestClient: GhosttyPanePreviewSession.PreviewRequestClient(
-                start: { [weak self] leafID, options, previewGrid, userdata, callback in
+                start: { [weak self] leafID, options, userdata, callback in
                     guard let self else {
                         return .surfaceUnavailable
                     }
@@ -427,13 +422,17 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                     guard let styleSurface = self.activeManagedSurface?.controlSurface.handle else {
                         return .surfaceUnavailable
                     }
+                    guard let previewRequest = self.panePreviewRequest(
+                        paneID: paneID,
+                        options: options
+                    ) else {
+                        return .surfaceUnavailable
+                    }
                     guard let request = self.controller?.renderPanePreviewImageAsync(
                         paneID: paneID,
                         styleSurface: styleSurface,
-                        options: options,
-                        previewGrid: previewGrid.map {
-                            TmuxSessionController.ClientSize(cols: $0.cols, rows: $0.rows)
-                        },
+                        options: previewRequest.options,
+                        previewGrid: previewRequest.grid,
                         userdata: userdata,
                         callback: callback
                     ) else {
@@ -447,42 +446,90 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         )
     }
 
-    private func previewGrid(
-        for previewSizing: GhosttyPanePreviewSession.PreviewSizing,
-        previewItemCount: Int
-    ) -> GhosttyPanePreviewSession.PreviewGrid? {
-        guard let clientSize = controller?.lastClientSize, clientSize.cols > 0 else {
+    private func panePreviewRequest(
+        paneID: UInt64,
+        options: ghostty_surface_preview_image_options_s
+    ) -> (
+        options: ghostty_surface_preview_image_options_s,
+        grid: TmuxSessionController.ClientSize
+    )? {
+        guard let topology = latestTopology else {
             return nil
         }
-        guard let surfaceSize = activeManagedSurface?.controlSurface.currentSize(),
-              surfaceSize.cell_width_px > 0,
-              surfaceSize.cell_height_px > 0
-        else {
+        guard let pane = topology.panes.first(where: { $0.id == paneID }) else {
             return nil
         }
-
-        let budget: (width: UInt32, height: UInt32) = switch previewSizing {
-        case .paneGrid(let availableWidth):
-            PanePreviewLayout.physicalPixelBudget(
-                paneCount: previewItemCount,
-                availableWidth: availableWidth,
-                scale: PanePreviewLayout.currentScale()
-            )
-        case .windowGrid(let availableWidth):
-            PanePreviewLayout.windowPhysicalPixelBudget(
-                availableWidth: availableWidth,
-                scale: PanePreviewLayout.currentScale()
-            )
+        guard let window = topology.windows.first(where: { $0.id == pane.windowID }) else {
+            return nil
         }
-        guard budget.width > 0, budget.height > 0 else { return nil }
+        guard let surfaceSize = activeManagedSurface?.controlSurface.currentSize() else {
+            return nil
+        }
+        guard let scaledOptions = Self.panePreviewOptions(
+            options: options,
+            paneWidth: pane.width,
+            windowWidth: window.width
+        ) else {
+            return nil
+        }
+        guard let grid = Self.panePreviewGrid(
+            paneWidth: pane.width,
+            paneHeight: pane.height,
+            windowWidth: window.width,
+            cellWidthPx: Double(surfaceSize.cell_width_px),
+            cellHeightPx: Double(surfaceSize.cell_height_px),
+            budgetWidthPx: scaledOptions.max_width_px,
+            budgetHeightPx: scaledOptions.max_height_px
+        ) else {
+            return nil
+        }
+        return (scaledOptions, grid)
+    }
 
-        let rows = Double(clientSize.cols) *
-            Double(budget.height) *
-            Double(surfaceSize.cell_width_px) /
-            (Double(budget.width) * Double(surfaceSize.cell_height_px))
-        return GhosttyPanePreviewSession.PreviewGrid(
-            cols: clientSize.cols,
-            rows: max(1, UInt32(rows.rounded()))
+    /// Scale the request budget to the pane's share of its window so split
+    /// panes keep the same cells-per-pixel as a full-window preview.
+    static func panePreviewOptions(
+        options: ghostty_surface_preview_image_options_s,
+        paneWidth: UInt32,
+        windowWidth: UInt32
+    ) -> ghostty_surface_preview_image_options_s? {
+        guard paneWidth > 0, windowWidth > 0 else { return nil }
+        guard options.max_width_px > 0, options.max_height_px > 0 else { return nil }
+
+        let widthRatio = min(1, Double(paneWidth) / Double(windowWidth))
+        let scaledWidth = UInt32(
+            Swift.max(1.0, (Double(options.max_width_px) * widthRatio).rounded())
+        )
+        var scaledOptions = options
+        scaledOptions.max_width_px = scaledWidth
+        return scaledOptions
+    }
+
+    /// The offscreen grid for one pane's preview: pane-local columns with row
+    /// count derived from the full window's aspect, then clamped to real pane
+    /// height. This shows split panes proportionally instead of stretching
+    /// them to look like full-width terminals.
+    static func panePreviewGrid(
+        paneWidth: UInt32,
+        paneHeight: UInt32,
+        windowWidth: UInt32,
+        cellWidthPx: Double,
+        cellHeightPx: Double,
+        budgetWidthPx: UInt32,
+        budgetHeightPx: UInt32
+    ) -> TmuxSessionController.ClientSize? {
+        guard paneWidth > 0, paneHeight > 0, windowWidth > 0 else { return nil }
+        guard cellWidthPx > 0, cellHeightPx > 0 else { return nil }
+        guard budgetWidthPx > 0, budgetHeightPx > 0 else { return nil }
+
+        let aspectRows = Double(windowWidth) *
+            Double(budgetHeightPx) *
+            cellWidthPx /
+            (Double(budgetWidthPx) * cellHeightPx)
+        let rows = min(max(1, aspectRows.rounded()), Double(paneHeight))
+        return TmuxSessionController.ClientSize(
+            cols: paneWidth,
+            rows: UInt32(rows)
         )
     }
 

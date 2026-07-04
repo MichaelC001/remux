@@ -605,7 +605,7 @@ final class TmuxSessionController: @unchecked Sendable {
         paneID: UInt64,
         styleSurface: ghostty_surface_t?,
         options: ghostty_surface_preview_image_options_s,
-        previewGrid: ClientSize?,
+        previewGrid: ClientSize,
         userdata: UnsafeMutableRawPointer?,
         callback: ghostty_surface_preview_image_callback_f
     ) -> ghostty_surface_preview_request_t? {
@@ -613,8 +613,8 @@ final class TmuxSessionController: @unchecked Sendable {
             guard let session, let styleSurface else { return nil }
             let tmuxOptions = ghostty_tmux_pane_preview_image_options_s(
                 image: options,
-                preview_cols: previewGrid?.cols ?? 0,
-                preview_rows: previewGrid?.rows ?? 0
+                preview_cols: previewGrid.cols,
+                preview_rows: previewGrid.rows
             )
             let request = ghostty_tmux_session_render_pane_preview_image_async(
                 session,

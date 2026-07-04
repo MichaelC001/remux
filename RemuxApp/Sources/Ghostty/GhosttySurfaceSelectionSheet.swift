@@ -665,7 +665,7 @@ private struct GhosttyWindowSelectionTile: View {
         case .ready(let cgImage):
             Image(decorative: cgImage, scale: PanePreviewLayout.currentScale())
                 .resizable()
-                .scaledToFill()
+                .scaledToFit()
                 .frame(
                     width: layout.previewPointSize.width,
                     height: layout.previewPointSize.height,
@@ -772,7 +772,7 @@ private struct GhosttyPaneSelectionTile: View {
         case .ready(let cgImage):
             Image(decorative: cgImage, scale: PanePreviewLayout.currentScale())
                 .resizable()
-                .scaledToFill()
+                .scaledToFit()
                 .frame(
                     width: layout.previewPointSize.width,
                     height: layout.previewPointSize.height,
