@@ -37,6 +37,7 @@ struct GhosttyPendingAttachmentInteractionProjection: Equatable {
 
 struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.displayScale) private var displayScale
     @ObservedObject private var model: Model
     private let presentation: GhosttySurfaceScreenPresentation
     private let isSelected: Bool
@@ -1564,6 +1565,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         guard observation.didApplyStableSize else { return }
 
         GhosttyRuntimeTrace.perf("viewport.live applied size=\(observation.liveSize.traceLabel)")
+        model.prepareInitialViewport(
+            size: observation.effectiveSize,
+            scale: displayScale
+        )
     }
 
     private func traceTerminalViewportSnapshot(

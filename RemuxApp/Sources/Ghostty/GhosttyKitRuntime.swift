@@ -94,6 +94,24 @@ enum GhosttyTerminalAppearancePolicy {
     }
 }
 
+private struct GhosttyTerminalRendererWarmupKey: Hashable {
+    let theme: String
+    let fontSize: Float32?
+    let screenScale: Int
+    let contentSizeCategory: String
+
+    init(
+        terminalSettings: TerminalSettings,
+        screenScale: CGFloat,
+        contentSizeCategory: UIContentSizeCategory
+    ) {
+        self.theme = terminalSettings.theme.rawValue
+        self.fontSize = terminalSettings.fontSize
+        self.screenScale = Int((screenScale * 1000).rounded())
+        self.contentSizeCategory = contentSizeCategory.rawValue
+    }
+}
+
 final class GhosttyKitSurfaceView: UIView {
     override init(frame: CGRect) {
         let initialFrame = frame.isEmpty
@@ -165,6 +183,7 @@ final class GhosttyKitRuntime {
     typealias ManualFocusHandler = @Sendable (_ focused: Bool) -> Bool
 
     private static var initialized = false
+    @MainActor private static var terminalRendererWarmupKeys = Set<GhosttyTerminalRendererWarmupKey>()
 
     private let state: GhosttyKitRuntimeState
 
@@ -194,6 +213,50 @@ final class GhosttyKitRuntime {
             .currentDeviceAppearance(settings: state.terminalSettings)
             .apply(to: &config)
         return config
+    }
+
+    @MainActor
+    static func prewarmTerminalRenderer(terminalSettings: TerminalSettings) {
+        let key = GhosttyTerminalRendererWarmupKey(
+            terminalSettings: terminalSettings,
+            screenScale: UIScreen.main.scale,
+            contentSizeCategory: UIApplication.shared.preferredContentSizeCategory
+        )
+        guard !terminalRendererWarmupKeys.contains(key) else { return }
+
+        let start = GhosttyRuntimeTrace.nowNanos()
+        do {
+            let runtime = try GhosttyKitRuntime(terminalSettings: terminalSettings)
+            _ = try runtime.measureTmuxViewport(
+                size: CGSize(width: 96, height: 96),
+                scale: UIScreen.main.scale
+            )
+            terminalRendererWarmupKeys.insert(key)
+            GhosttyRuntimeTrace.perf(
+                "runtime.prewarmTerminalRenderer result=success elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
+            )
+        } catch {
+            GhosttyRuntimeTrace.diagnostics(
+                "runtime.prewarmTerminalRenderer failed error=\(String(describing: error))"
+            )
+        }
+    }
+
+    @MainActor
+    func measureTmuxViewport(size: CGSize, scale: CGFloat) throws -> TmuxControlViewport? {
+        let normalizedSize = GhosttyTerminalViewportCoordinator.normalized(size)
+        guard normalizedSize.width > 1, normalizedSize.height > 1 else { return nil }
+
+        let view = GhosttyKitSurfaceView(frame: CGRect(origin: .zero, size: normalizedSize))
+        view.contentScaleFactor = max(scale, 1)
+
+        return try withExtendedLifetime(view) {
+            let surface = try makeManualHostSurface(
+                view: view,
+                initialSize: normalizedSize
+            )
+            return TmuxControlViewport(ghosttySurfaceSize: surface.currentSize())
+        }
     }
 
 #if DEBUG

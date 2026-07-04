@@ -282,13 +282,6 @@ private final class PreparedCoordinatorTransport: @unchecked Sendable, TmuxContr
         _ = data
     }
 
-    func resize(columns: UInt16, rows: UInt16, width: UInt32, height: UInt32) async throws {
-        _ = columns
-        _ = rows
-        _ = width
-        _ = height
-    }
-
     func close(disposition: TmuxControlTransportCloseDisposition) async {
         factory.recordClosed(index: index, disposition: disposition)
         continuation.finish()

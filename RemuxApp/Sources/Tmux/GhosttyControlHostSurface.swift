@@ -36,7 +36,6 @@ protocol TmuxControlTransport: Sendable {
     func prepare() async
     func start(initialViewport: TmuxControlViewport?) async throws
     func send(_ data: Data) async throws
-    func resize(columns: UInt16, rows: UInt16, width: UInt32, height: UInt32) async throws
     func close(disposition: TmuxControlTransportCloseDisposition) async
 }
 
@@ -51,13 +50,6 @@ enum TmuxControlTransportCloseDisposition: Equatable, Sendable {
 
 extension TmuxControlTransport {
     func prepare() async {}
-
-    func resize(columns: UInt16, rows: UInt16, width: UInt32, height: UInt32) async throws {
-        _ = columns
-        _ = rows
-        _ = width
-        _ = height
-    }
 }
 
 protocol GhosttyControlSurface: AnyObject {

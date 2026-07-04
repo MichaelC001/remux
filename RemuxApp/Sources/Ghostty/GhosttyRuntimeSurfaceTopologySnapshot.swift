@@ -1,6 +1,14 @@
 import Foundation
 
 struct GhosttyRuntimeSurfaceTopologySnapshot: Equatable {
+    static var empty: GhosttyRuntimeSurfaceTopologySnapshot {
+        GhosttyRuntimeSurfaceTopologySnapshot(
+            topLevels: [],
+            selectedTopLevelID: nil,
+            pendingPhonePresentationSurfaceID: nil
+        )
+    }
+
     let topLevels: [GhosttyTopLevelSurface]
     let selectedTopLevelID: UUID?
     let pendingPhonePresentationSurfaceID: UUID?

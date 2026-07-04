@@ -56,6 +56,7 @@ final class TmuxScreenModel: ObservableObject {
     private var stateObservation: AnyCancellable?
     private var transportFailureObservation: AnyCancellable?
     private var stopped = false
+    private var initialViewport: TmuxControlViewport?
 
     private let initialClientSize: TmuxSessionController.ClientSize?
 
@@ -109,15 +110,15 @@ final class TmuxScreenModel: ObservableObject {
             }
         )
         self.session = session
-        terminalScreenAdapter.activate(session: session)
+        terminalScreenAdapter.activate(
+            session: session,
+            initialViewportHandler: { [weak self] size, scale in
+                self?.prepareInitialViewport(size: size, scale: scale)
+            }
+        )
 
-        // Sized attach: a viewport carried from the previous runtime
-        // attempt is reported before connect, so the engine pipelines
-        // refresh-client -C ahead of the baseline and every capture
-        // lands at this client's width (no relayout churn, physical
-        // rows byte-exact).
         if let size = initialClientSize {
-            session.controller.setClientSize(cols: size.cols, rows: size.rows)
+            initialViewport = TmuxControlViewport(clientSize: size)
         }
 
         stateObservation = session.$state
@@ -136,19 +137,53 @@ final class TmuxScreenModel: ObservableObject {
             }
 
         GhosttyRuntimeTrace.flowEventIfActive(flow, event: "model.session.created")
-        connect()
+        if let initialViewport {
+            connect(viewport: initialViewport)
+        }
     }
 
     /// Connect or reconnect; the session keeps its state across
     /// detaches, so this is the single (re)entry point.
     func connect() {
+        guard let viewport = reconnectViewport() else {
+            report(currentRuntimeState(for: session?.state ?? .attaching, connecting: true))
+            return
+        }
+        connect(viewport: viewport)
+    }
+
+    private func connect(viewport: TmuxControlViewport) {
+        initialViewport = viewport
         report(currentRuntimeState(for: session?.state ?? .attaching, connecting: true))
-        session?.connect(viewport: nil)
+        session?.connect(viewport: viewport)
     }
 
     func reconnect(source: TerminalReconnectSource) {
         pendingReconnectSource = source
         connect()
+    }
+
+    private func prepareInitialViewport(size: CGSize, scale: CGFloat) {
+        guard !stopped else { return }
+        guard initialViewport == nil else { return }
+        guard let runtime else { return }
+
+        do {
+            guard let viewport = try runtime.measureTmuxViewport(size: size, scale: scale) else {
+                return
+            }
+            connect(viewport: viewport)
+        } catch {
+            startupFailure = String(describing: error)
+            report(.disconnected(Self.initialViewportFailureReason))
+        }
+    }
+
+    private func reconnectViewport() -> TmuxControlViewport? {
+        if let size = session?.controller.carriedClientSize {
+            return TmuxControlViewport(clientSize: size)
+        }
+        return initialViewport
     }
 
     func handleAppLifecyclePhase(_ phase: GhosttyAppLifecyclePhase) {
@@ -309,5 +344,10 @@ final class TmuxScreenModel: ObservableObject {
     private static let runtimeStartFailureReason = TerminalDisconnectReason(
         kind: .runtime,
         message: "terminal runtime failed to initialize"
+    )
+
+    private static let initialViewportFailureReason = TerminalDisconnectReason(
+        kind: .runtime,
+        message: "terminal viewport failed to initialize"
     )
 }

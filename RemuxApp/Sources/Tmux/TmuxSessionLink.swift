@@ -8,12 +8,9 @@ import GhosttyKit
 /// queue), and transport loss detaches the session promptly via
 /// `disconnect` instead of waiting for command deadlines.
 ///
-/// The transport's own viewport machinery is deliberately unused: the
-/// session model owns `refresh-client -C` reporting, and any command
-/// the transport injected itself would corrupt the channel's response
-/// correlation. The only viewport the transport sees is the `-x -y`
-/// on the attach command line (used by tmux only when creating a new
-/// session).
+/// Viewport ownership stays in the session model: the link reports
+/// client size through `ghostty_tmux_session_set_client_size`, while
+/// the SSH transport only sees the attach command's initial `-x -y`.
 actor TmuxSessionLink {
     let controller: TmuxSessionController
 

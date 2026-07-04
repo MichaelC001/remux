@@ -337,6 +337,11 @@ private struct ConnectionLibraryView: View {
         }
         .libraryHomeGroupedScrollBackground()
         .libraryHomeChrome(theme: terminalSettings.theme)
+        .task(id: terminalRendererWarmupID) {
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            GhosttyKitRuntime.prewarmTerminalRenderer(terminalSettings: terminalSettings)
+        }
         .navigationTitle("Remux")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -360,6 +365,13 @@ private struct ConnectionLibraryView: View {
                 .accessibilityIdentifier("library.add-server")
             }
         }
+    }
+
+    private var terminalRendererWarmupID: String {
+        [
+            terminalSettings.theme.rawValue,
+            terminalSettings.fontSize.map(String.init(describing:)) ?? "default",
+        ].joined(separator: ":")
     }
 
     @ViewBuilder

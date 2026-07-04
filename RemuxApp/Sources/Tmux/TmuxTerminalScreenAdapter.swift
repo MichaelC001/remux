@@ -18,6 +18,12 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     private weak var session: TmuxTerminalSession?
     private var controller: TmuxSessionController?
 
+    /// The last topology emitted by `session.$topology`. All adapter reads go
+    /// through this value, never `session.topology`: `@Published` emits from
+    /// `willSet`, so reading the property inside a sink returns the previous
+    /// snapshot and the projection lags one topology update behind.
+    private var latestTopology: TmuxSessionController.TopologySnapshot?
+
     private let leaseStore = GhosttyRuntimeCallbackLeaseStore()
 
     private var paneUUIDsByID: [UInt64: UUID] = [:]
@@ -27,6 +33,8 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
 
     private var activeManagedSurface: GhosttyManagedSurface?
     private var pendingRemovalSurfaces: [UUID: GhosttyManagedSurface] = [:]
+    private var initialViewportHandler: ((CGSize, CGFloat) -> Void)?
+    private var cachedTopologySnapshot = GhosttyRuntimeSurfaceTopologySnapshot.empty
 
     private var commandFailureMessage: String?
     private(set) var commandFailureEvent: GhosttyTmuxCommandFailureEvent?
@@ -37,19 +45,30 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     /// Connects the adapter to a live session. Called once, right after the
     /// session is created (the adapter itself must exist before the runtime,
     /// because it is the runtime's surface delegate).
-    func activate(session: TmuxTerminalSession) {
+    func activate(
+        session: TmuxTerminalSession,
+        initialViewportHandler: @escaping (CGSize, CGFloat) -> Void
+    ) {
         self.session = session
         self.controller = session.controller
+        self.initialViewportHandler = initialViewportHandler
 
         session.$state
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &subscriptions)
+        // Subscribed before $paneSurface so the replayed initial value seeds
+        // latestTopology ahead of the surface rebuild below.
         session.$topology
-            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .sink { [weak self] topology in
+                self?.latestTopology = topology
+                self?.rebuildTopologySnapshot()
+                self?.objectWillChange.send()
+            }
             .store(in: &subscriptions)
         session.$paneSurface
             .sink { [weak self] paneSurface in
                 self?.rebuildActiveManagedSurface(for: paneSurface)
+                self?.rebuildTopologySnapshot()
                 self?.objectWillChange.send()
             }
             .store(in: &subscriptions)
@@ -71,6 +90,9 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         pendingRemovalSurfaces.removeAll()
         session = nil
         controller = nil
+        initialViewportHandler = nil
+        latestTopology = nil
+        cachedTopologySnapshot = Self.emptyTopologySnapshot
     }
 
     // MARK: ID mapping
@@ -93,13 +115,18 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
 
     // MARK: Topology synthesis
 
+    private static var emptyTopologySnapshot: GhosttyRuntimeSurfaceTopologySnapshot {
+        GhosttyRuntimeSurfaceTopologySnapshot.empty
+    }
+
     private var topologySnapshot: GhosttyRuntimeSurfaceTopologySnapshot {
-        guard let topology = session?.topology else {
-            return GhosttyRuntimeSurfaceTopologySnapshot(
-                topLevels: [],
-                selectedTopLevelID: nil,
-                pendingPhonePresentationSurfaceID: nil
-            )
+        cachedTopologySnapshot
+    }
+
+    private func rebuildTopologySnapshot() {
+        guard let topology = latestTopology else {
+            cachedTopologySnapshot = Self.emptyTopologySnapshot
+            return
         }
 
         let topLevels = topology.windows.map { window in
@@ -116,7 +143,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
             )
         }
 
-        return GhosttyRuntimeSurfaceTopologySnapshot(
+        cachedTopologySnapshot = GhosttyRuntimeSurfaceTopologySnapshot(
             topLevels: topLevels,
             selectedTopLevelID: topology.activeWindowID.map { windowUUID($0) },
             pendingPhonePresentationSurfaceID: nil
@@ -186,7 +213,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
             managedID = surfaceUUID
         }
 
-        let windowIDForPane = session?.topology?.panes
+        let windowIDForPane = latestTopology?.panes
             .first(where: { $0.id == paneID })?.windowID
 
         let controlSurface = GhosttyKitControlSurface(
@@ -317,6 +344,10 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
 // MARK: - GhosttyTerminalScreenModeling
 
 extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
+    func prepareInitialViewport(size: CGSize, scale: CGFloat) {
+        initialViewportHandler?(size, scale)
+    }
+
     var terminalScreenPresentationProjection: GhosttyTerminalScreenPresentationProjection {
         GhosttyTerminalPresentationProjector.terminalScreenPresentationProjection(
             phase: runtimePhase,
@@ -593,7 +624,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     ) -> GhosttyTmuxModelActionOutcome {
         guard
             let controller,
-            let topology = session?.topology,
+            let topology = latestTopology,
             !topology.windows.isEmpty,
             let activeWindowID = topology.activeWindowID,
             let activeIndex = topology.windows.firstIndex(where: { $0.id == activeWindowID })

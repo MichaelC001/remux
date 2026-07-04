@@ -12,43 +12,17 @@ struct TmuxControlViewport: Equatable, Sendable {
     let pixelHeight: UInt32
 }
 
-struct TmuxViewportResizeState: Equatable, Sendable {
-    private(set) var latestViewport: TmuxControlViewport
-    private(set) var appliedViewport: TmuxControlViewport?
-    private(set) var isApplying = false
-
-    init(initialViewport: TmuxControlViewport) {
-        self.latestViewport = initialViewport
-        self.appliedViewport = initialViewport
+extension TmuxControlViewport {
+    init(clientSize: TmuxSessionController.ClientSize) {
+        self.init(
+            columns: Self.clampedCellCount(clientSize.cols),
+            rows: Self.clampedCellCount(clientSize.rows),
+            pixelWidth: 0,
+            pixelHeight: 0
+        )
     }
 
-    mutating func request(_ viewport: TmuxControlViewport) {
-        latestViewport = viewport
-    }
-
-    mutating func markApplied(_ viewport: TmuxControlViewport) {
-        appliedViewport = viewport
-    }
-
-    mutating func beginApplyingIfNeeded() -> TmuxControlViewport? {
-        guard !isApplying else { return nil }
-        guard appliedViewport != latestViewport else { return nil }
-
-        isApplying = true
-        return latestViewport
-    }
-
-    mutating func completeApplied(_ viewport: TmuxControlViewport) -> TmuxControlViewport? {
-        appliedViewport = viewport
-        guard appliedViewport != latestViewport else {
-            isApplying = false
-            return nil
-        }
-
-        return latestViewport
-    }
-
-    mutating func failApplying() {
-        isApplying = false
+    private static func clampedCellCount(_ value: UInt32) -> UInt16 {
+        UInt16(min(max(value, 2), UInt32(UInt16.max)))
     }
 }

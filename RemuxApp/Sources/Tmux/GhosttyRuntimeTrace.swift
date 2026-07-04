@@ -9,7 +9,6 @@ enum GhosttyRuntimeTrace {
         ProcessInfo.processInfo.environment["REMUX_TRACE_GHOSTTY_DIAGNOSTICS"] == "1"
     static let perfEnabled = ProcessInfo.processInfo.environment["REMUX_TRACE_PERF"] == "1"
     static let tmuxViewportEnabled = ProcessInfo.processInfo.environment["REMUX_TRACE_TMUX_VIEWPORT"] == "1"
-    static let tmuxViewportFullIOEnabled = ProcessInfo.processInfo.environment["REMUX_TRACE_TMUX_VIEWPORT_FULL"] == "1"
 
     private static let latencyProbeStore = GhosttyLatencyProbeStore()
     private static let latencyMarkerAccumulator = GhosttyLatencyMarkerAccumulator()
@@ -270,6 +269,87 @@ enum GhosttyRuntimeTrace {
     }
 }
 
+struct RemuxTransportStartupTrace: Sendable {
+    private let flowID: String?
+    private let startedAt: UInt64
+
+    init(flowID: String?, startedAt: UInt64 = GhosttyRuntimeTrace.nowNanos()) {
+        self.flowID = flowID
+        self.startedAt = startedAt
+    }
+
+    func event(
+        _ name: String,
+        fields: [String: String] = [:],
+        at timestamp: UInt64 = GhosttyRuntimeTrace.nowNanos()
+    ) {
+        GhosttyRuntimeTrace.latency(
+            "transport.startup.\(name) since_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt, to: timestamp))\(latencyFields(fields))"
+        )
+
+        if let flowID {
+            GhosttyRuntimeTrace.flowEventIfActive(
+                flowID,
+                event: "transport.startup.\(name)",
+                fields: fields,
+                at: timestamp
+            )
+        }
+    }
+
+    func stage<T>(
+        _ name: String,
+        fields: [String: String] = [:],
+        operation: () async throws -> T
+    ) async throws -> T {
+        let stageStart = GhosttyRuntimeTrace.nowNanos()
+        event("\(name).begin", fields: fields, at: stageStart)
+
+        do {
+            let result = try await operation()
+            let finishedAt = GhosttyRuntimeTrace.nowNanos()
+            event(
+                "\(name).end",
+                fields: stageFields(fields, stageStart: stageStart, finishedAt: finishedAt),
+                at: finishedAt
+            )
+            return result
+        } catch {
+            let failedAt = GhosttyRuntimeTrace.nowNanos()
+            var failureFields = stageFields(fields, stageStart: stageStart, finishedAt: failedAt)
+            failureFields["error"] = String(describing: error)
+            event("\(name).failed", fields: failureFields, at: failedAt)
+            throw error
+        }
+    }
+
+    private func stageFields(
+        _ fields: [String: String],
+        stageStart: UInt64,
+        finishedAt: UInt64
+    ) -> [String: String] {
+        var stageFields = fields
+        stageFields["elapsed_ms"] = GhosttyRuntimeTrace.elapsedMilliseconds(from: stageStart, to: finishedAt)
+        return stageFields
+    }
+
+    private func latencyFields(_ fields: [String: String]) -> String {
+        guard !fields.isEmpty else { return "" }
+
+        return " " + fields
+            .sorted(by: { $0.key < $1.key })
+            .map { key, value in "\(key)=\(sanitizeLatencyField(value))" }
+            .joined(separator: " ")
+    }
+
+    private func sanitizeLatencyField(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: " ", with: "_")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+    }
+}
+
 enum GhosttyTmuxActionTrace {
     enum Action: Equatable, Sendable {
         case newWindow
@@ -284,209 +364,6 @@ enum GhosttyTmuxActionTrace {
             }
         }
 
-        var command: String {
-            switch self {
-            case .newWindow:
-                "new-window"
-            case .splitPane:
-                "split-window"
-            }
-        }
-    }
-
-    enum QueryKind: String, Equatable, Sendable {
-        case tmuxVersion = "tmux_version"
-        case listWindows = "list_windows"
-        case paneState = "pane_state"
-        case paneMetadata = "pane_metadata"
-        case paneHistory = "pane_history"
-        case paneVisible = "pane_visible"
-        case panePendingOutput = "pane_pending_output"
-    }
-
-    struct CommandQueueEntry: Equatable, Sendable {
-        let kind: QueryKind?
-        let command: String
-    }
-
-    struct FlowContext: Equatable, Sendable {
-        let name: String
-        let startedAt: UInt64
-    }
-
-    struct OutboundQueryReservation: Sendable {
-        fileprivate let reservation: GhosttyTmuxCommandTraceStore.OutboundReservation
-    }
-
-    enum InboundSignal: String, Equatable, Sendable {
-        case windowAdd = "window-add"
-        case sessionWindowChanged = "session-window-changed"
-        case windowPaneChanged = "window-pane-changed"
-        case layoutChange = "layout-change"
-
-        var action: Action {
-            switch self {
-            case .windowAdd, .sessionWindowChanged:
-                .newWindow
-            case .windowPaneChanged, .layoutChange:
-                .splitPane
-            }
-        }
-
-        var event: String {
-            eventName(prefix: "tmux.response")
-        }
-
-        func eventName(prefix: String) -> String {
-            "\(prefix).\(rawValue)"
-        }
-    }
-
-    static func outboundAction(for data: Data) -> Action? {
-        if containsCommand(Self.newWindowCommand, in: data) {
-            return .newWindow
-        }
-        if containsCommand(Self.splitWindowCommand, in: data) {
-            return .splitPane
-        }
-        return nil
-    }
-
-    static func inboundSignals(in data: Data) -> [InboundSignal] {
-        var signals: [InboundSignal] = []
-        for candidate in Self.inboundSignalPatterns where contains(candidate.pattern, in: data) {
-            signals.append(candidate.signal)
-        }
-        return signals
-    }
-
-    static func traceOutboundCommand(
-        _ data: Data,
-        event: String,
-        fields: @autoclosure () -> [String: String] = [:],
-        at timestamp: UInt64? = nil
-    ) {
-        guard GhosttyRuntimeTrace.flowTraceEnabled,
-              let action = outboundAction(for: data),
-              GhosttyRuntimeTrace.isFlowActive(action.flow)
-        else {
-            return
-        }
-
-        var eventFields = fields()
-        eventFields["bytes"] = "\(data.count)"
-        eventFields["command"] = action.command
-        GhosttyRuntimeTrace.flowEventIfActive(
-            action.flow,
-            event: event,
-            fields: eventFields,
-            at: timestamp
-        )
-    }
-
-    @discardableResult
-    static func traceOutboundQueryCommands(
-        _ data: Data,
-        event: String,
-        at timestamp: UInt64? = nil
-    ) -> OutboundQueryReservation? {
-        guard GhosttyRuntimeTrace.flowTraceEnabled else { return nil }
-
-        let commands = commandQueueEntries(in: data)
-        guard !commands.isEmpty else { return nil }
-
-        let flows = activeTopologyFlows()
-        let eventTimestamp = timestamp ?? GhosttyRuntimeTrace.nowNanos()
-        let reservation = commandTraceStore.reserveOutbound(commands, flows: flows)
-        for traceEvent in reservation.events {
-            logQueryEvent(
-                traceEvent,
-                phase: "send",
-                fields: ["source": event],
-                at: eventTimestamp
-            )
-        }
-        return OutboundQueryReservation(reservation: reservation)
-    }
-
-    static func cancelOutboundQueryCommands(_ reservation: OutboundQueryReservation?) {
-        guard let reservation else { return }
-        commandTraceStore.cancelOutboundReservation(reservation.reservation)
-    }
-
-    static func traceInboundSignals(
-        in data: Data,
-        source: String,
-        chunkCount: Int,
-        eventPrefix: String = "tmux.response",
-        at timestamp: UInt64? = nil
-    ) {
-        guard GhosttyRuntimeTrace.flowTraceEnabled else { return }
-
-        for signal in inboundSignals(in: data) {
-            let action = signal.action
-            guard GhosttyRuntimeTrace.isFlowActive(action.flow) else { continue }
-
-            GhosttyRuntimeTrace.flowEventIfActive(
-                action.flow,
-                event: signal.eventName(prefix: eventPrefix),
-                fields: [
-                    "bytes": "\(data.count)",
-                    "chunks": "\(chunkCount)",
-                    "signal": signal.rawValue,
-                    "source": source,
-                ],
-                at: timestamp
-            )
-        }
-    }
-
-    static func traceInboundQueryResponses(
-        in data: Data,
-        source: String,
-        chunkCount: Int,
-        at timestamp: UInt64? = nil
-    ) {
-        guard GhosttyRuntimeTrace.flowTraceEnabled else { return }
-
-        let eventTimestamp = timestamp ?? GhosttyRuntimeTrace.nowNanos()
-        for event in commandTraceStore.recordReceivedResponses(in: data) {
-            logQueryEvent(
-                event,
-                phase: "response.receive",
-                fields: [
-                    "chunks": "\(chunkCount)",
-                    "outcome": event.outcome.rawValue,
-                    "source": source,
-                ],
-                at: eventTimestamp
-            )
-        }
-    }
-
-    static func traceProcessedQueryResponses(
-        in data: Data,
-        source: String,
-        chunkCount: Int,
-        accepted: Bool,
-        at timestamp: UInt64? = nil
-    ) {
-        guard GhosttyRuntimeTrace.flowTraceEnabled else { return }
-
-        let eventTimestamp = timestamp ?? GhosttyRuntimeTrace.nowNanos()
-        for event in commandTraceStore.recordProcessedResponses(in: data) {
-            logQueryEvent(
-                event,
-                phase: "response.processed",
-                fields: [
-                    "accepted": "\(accepted)",
-                    "chunks": "\(chunkCount)",
-                    "outcome": event.outcome.rawValue,
-                    "source": source,
-                ],
-                at: eventTimestamp
-            )
-        }
     }
 
     static func traceActiveTopologyFlows(
@@ -509,344 +386,6 @@ enum GhosttyTmuxActionTrace {
             )
         }
     }
-
-    static func commandQueueEntries(in data: Data) -> [CommandQueueEntry] {
-        let text = String(decoding: data, as: UTF8.self)
-        var entries: [CommandQueueEntry] = []
-
-        for rawLine in text.split(whereSeparator: { $0.isNewline }) {
-            for rawCommand in splitCommandSequence(String(rawLine)) {
-                let command = rawCommand.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !command.isEmpty else { continue }
-                entries.append(
-                    CommandQueueEntry(
-                        kind: queryKind(for: command),
-                        command: commandName(for: command)
-                    )
-                )
-            }
-        }
-
-        return entries
-    }
-
-    private static func activeTopologyFlows() -> [FlowContext] {
-        [Action.newWindow.flow, Action.splitPane.flow].compactMap { flow in
-            guard let startedAt = GhosttyRuntimeTrace.flowStartIfActive(flow) else { return nil }
-            return FlowContext(name: flow, startedAt: startedAt)
-        }
-    }
-
-    private static func logQueryEvent(
-        _ event: GhosttyTmuxCommandTraceStore.TraceEvent,
-        phase: String,
-        fields: [String: String] = [:],
-        at timestamp: UInt64
-    ) {
-        guard let kind = event.kind else { return }
-
-        var eventFields = fields
-        eventFields["command"] = event.command
-        eventFields["kind"] = kind.rawValue
-        eventFields["sequence"] = "\(event.sequence)"
-
-        for flow in event.flows {
-            GhosttyRuntimeTrace.flowEventSince(
-                flow.name,
-                event: "tmux.query.\(kind.rawValue).\(phase)",
-                startedAt: flow.startedAt,
-                fields: eventFields,
-                at: timestamp
-            )
-        }
-    }
-
-    private static func splitCommandSequence(_ line: String) -> [String] {
-        line.components(separatedBy: " ; ")
-    }
-
-    private static func queryKind(for command: String) -> QueryKind? {
-        if command.hasPrefix("display-message -p '#{version}'") {
-            return .tmuxVersion
-        }
-        if command.hasPrefix("list-windows ") {
-            return .listWindows
-        }
-        if command.hasPrefix("list-panes ") {
-            return .paneState
-        }
-        if command.hasPrefix("display-message "),
-           command.contains("#{history_size}") {
-            return .paneMetadata
-        }
-        if command.hasPrefix("capture-pane ") {
-            if command.contains(" -P ") {
-                return .panePendingOutput
-            }
-            if command.contains(" -S -") {
-                return .paneHistory
-            }
-            return .paneVisible
-        }
-
-        return nil
-    }
-
-    private static func commandName(for command: String) -> String {
-        if let kind = queryKind(for: command) {
-            return kind.rawValue
-        }
-
-        guard let firstToken = command.split(separator: " ").first else {
-            return "unknown"
-        }
-        return String(firstToken)
-    }
-
-    private static let newWindowCommand = Array("new-window".utf8)
-    private static let splitWindowCommand = Array("split-window".utf8)
-    private static let commandTraceStore = GhosttyTmuxCommandTraceStore()
-    private static let inboundSignalPatterns: [(signal: InboundSignal, pattern: Data)] = [
-        (.windowAdd, Data("%window-add".utf8)),
-        (.sessionWindowChanged, Data("%session-window-changed".utf8)),
-        (.windowPaneChanged, Data("%window-pane-changed".utf8)),
-        (.layoutChange, Data("%layout-change".utf8)),
-    ]
-
-    private static func containsCommand(_ command: [UInt8], in data: Data) -> Bool {
-        let bytes = Array(data)
-        var lineStart = 0
-
-        while lineStart < bytes.count {
-            var index = lineStart
-            while index < bytes.count, bytes[index] == Self.space || bytes[index] == Self.tab {
-                index += 1
-            }
-
-            if matchesCommand(command, in: bytes, at: index) {
-                return true
-            }
-
-            while lineStart < bytes.count,
-                  bytes[lineStart] != Self.lineFeed,
-                  bytes[lineStart] != Self.carriageReturn {
-                lineStart += 1
-            }
-            while lineStart < bytes.count,
-                  bytes[lineStart] == Self.lineFeed || bytes[lineStart] == Self.carriageReturn {
-                lineStart += 1
-            }
-        }
-
-        return false
-    }
-
-    private static func matchesCommand(_ command: [UInt8], in bytes: [UInt8], at index: Int) -> Bool {
-        guard index + command.count <= bytes.count else { return false }
-        guard bytes[index..<index + command.count].elementsEqual(command) else { return false }
-
-        let boundaryIndex = index + command.count
-        guard boundaryIndex < bytes.count else { return true }
-        return isCommandTokenBoundary(bytes[boundaryIndex])
-    }
-
-    private static func isCommandTokenBoundary(_ byte: UInt8) -> Bool {
-        byte == Self.space || byte == Self.tab || byte == Self.lineFeed || byte == Self.carriageReturn
-    }
-
-    private static func contains(_ needle: Data, in haystack: Data) -> Bool {
-        haystack.range(of: needle) != nil
-    }
-
-    private static let space: UInt8 = 0x20
-    private static let tab: UInt8 = 0x09
-    private static let lineFeed: UInt8 = 0x0A
-    private static let carriageReturn: UInt8 = 0x0D
-}
-
-final class GhosttyTmuxCommandTraceStore: @unchecked Sendable {
-    enum ResponseOutcome: String, Sendable {
-        case end
-        case error
-    }
-
-    struct OutboundReservation: Sendable {
-        let firstSequence: UInt64?
-        let count: Int
-        let events: [TraceEvent]
-    }
-
-    struct TraceEvent: Sendable {
-        let kind: GhosttyTmuxActionTrace.QueryKind?
-        let command: String
-        let flows: [GhosttyTmuxActionTrace.FlowContext]
-        let sequence: UInt64
-        let outcome: ResponseOutcome
-    }
-
-    private struct PendingCommand {
-        let kind: GhosttyTmuxActionTrace.QueryKind?
-        let command: String
-        let flows: [GhosttyTmuxActionTrace.FlowContext]
-        let sequence: UInt64
-    }
-
-    private let lock = NSLock()
-    private let maxPendingCommands = 2048
-    private var nextSequence: UInt64 = 0
-    private var receivePending: [PendingCommand] = []
-    private var processPending: [PendingCommand] = []
-    private var receiveParser = GhosttyTmuxControlResponseParser()
-    private var processParser = GhosttyTmuxControlResponseParser()
-
-    func reserveOutbound(
-        _ commands: [GhosttyTmuxActionTrace.CommandQueueEntry],
-        flows: [GhosttyTmuxActionTrace.FlowContext]
-    ) -> OutboundReservation {
-        return lock.withLock {
-            var events: [TraceEvent] = []
-            var firstSequence: UInt64?
-            var count = 0
-            for command in commands {
-                nextSequence &+= 1
-                if firstSequence == nil {
-                    firstSequence = nextSequence
-                }
-                count += 1
-                let pending = PendingCommand(
-                    kind: command.kind,
-                    command: command.command,
-                    flows: flows,
-                    sequence: nextSequence
-                )
-                receivePending.append(pending)
-                trimPendingIfNeeded(&receivePending)
-                if command.kind != nil, !flows.isEmpty {
-                    events.append(traceEvent(for: pending, outcome: .end))
-                }
-            }
-            return OutboundReservation(
-                firstSequence: firstSequence,
-                count: count,
-                events: events
-            )
-        }
-    }
-
-    func cancelOutboundReservation(_ reservation: OutboundReservation) {
-        guard let firstSequence = reservation.firstSequence, reservation.count > 0 else { return }
-        let lastSequence = firstSequence + UInt64(reservation.count - 1)
-
-        lock.withLock {
-            receivePending.removeAll { pending in
-                pending.sequence >= firstSequence && pending.sequence <= lastSequence
-            }
-            processPending.removeAll { pending in
-                pending.sequence >= firstSequence && pending.sequence <= lastSequence
-            }
-        }
-    }
-
-    func recordReceivedResponses(in data: Data) -> [TraceEvent] {
-        lock.withLock {
-            let responses = receiveParser.responses(in: data)
-            guard !responses.isEmpty else { return [] }
-
-            var events: [TraceEvent] = []
-            for response in responses {
-                guard !receivePending.isEmpty else { continue }
-                let pending = receivePending.removeFirst()
-                processPending.append(pending)
-                trimPendingIfNeeded(&processPending)
-                if pending.kind != nil, !pending.flows.isEmpty {
-                    events.append(traceEvent(for: pending, outcome: response))
-                }
-            }
-            return events
-        }
-    }
-
-    func recordProcessedResponses(in data: Data) -> [TraceEvent] {
-        lock.withLock {
-            let responses = processParser.responses(in: data)
-            guard !responses.isEmpty else { return [] }
-
-            var events: [TraceEvent] = []
-            for response in responses {
-                guard !processPending.isEmpty else { continue }
-                let pending = processPending.removeFirst()
-                if pending.kind != nil, !pending.flows.isEmpty {
-                    events.append(traceEvent(for: pending, outcome: response))
-                }
-            }
-            return events
-        }
-    }
-
-    private func traceEvent(for pending: PendingCommand, outcome: ResponseOutcome) -> TraceEvent {
-        TraceEvent(
-            kind: pending.kind,
-            command: pending.command,
-            flows: pending.flows,
-            sequence: pending.sequence,
-            outcome: outcome
-        )
-    }
-
-    private func trimPendingIfNeeded(_ pending: inout [PendingCommand]) {
-        guard pending.count > maxPendingCommands else { return }
-        pending.removeFirst(pending.count - maxPendingCommands)
-    }
-}
-
-struct GhosttyTmuxControlResponseParser {
-    private var partialLine: [UInt8] = []
-    private var previousByteWasCarriageReturn = false
-    private let maxPartialLineLength = 4096
-
-    mutating func responses(in data: Data) -> [GhosttyTmuxCommandTraceStore.ResponseOutcome] {
-        guard !data.isEmpty else { return [] }
-
-        var responses: [GhosttyTmuxCommandTraceStore.ResponseOutcome] = []
-        for byte in data {
-            if previousByteWasCarriageReturn {
-                previousByteWasCarriageReturn = false
-                if byte == Self.lineFeed {
-                    continue
-                }
-            }
-
-            if byte == Self.carriageReturn || byte == Self.lineFeed {
-                appendResponseIfNeeded(from: partialLine, to: &responses)
-                partialLine.removeAll(keepingCapacity: true)
-                previousByteWasCarriageReturn = byte == Self.carriageReturn
-                continue
-            }
-
-            partialLine.append(byte)
-            if partialLine.count > maxPartialLineLength {
-                partialLine.removeFirst(partialLine.count - maxPartialLineLength)
-            }
-        }
-
-        return responses
-    }
-
-    private func appendResponseIfNeeded(
-        from line: [UInt8],
-        to responses: inout [GhosttyTmuxCommandTraceStore.ResponseOutcome]
-    ) {
-        if line.starts(with: Self.endPrefix) {
-            responses.append(.end)
-        } else if line.starts(with: Self.errorPrefix) {
-            responses.append(.error)
-        }
-    }
-
-    private static let endPrefix = Array("%end ".utf8)
-    private static let errorPrefix = Array("%error ".utf8)
-    private static let lineFeed: UInt8 = 0x0A
-    private static let carriageReturn: UInt8 = 0x0D
 }
 
 final class GhosttyFlowTraceStore: @unchecked Sendable {

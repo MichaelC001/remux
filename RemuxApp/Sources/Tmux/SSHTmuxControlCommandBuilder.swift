@@ -12,7 +12,7 @@ enum SSHTmuxControlCommandBuilder {
         // Single -C: pure control mode without the DCS 1000p envelope that
         // -CC emits for in-terminal clients (and without -CC's hard tty
         // requirement). The session channel is a bare exec stream feeding
-        // the control-mode parser directly.
+        // Ghostty's tmux session parser directly.
         return """
         export PATH=\(remotePath) TERM=xterm-256color; exec \(tmux) -C new-session -A -s \(session) -x \(initialViewport.columns) -y \(initialViewport.rows)
         """

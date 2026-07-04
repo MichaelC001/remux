@@ -2230,7 +2230,7 @@ private func makeTestTerminalScreenModel(
         sessionInstanceID: sessionInstanceID,
         transportFactory: transportFactory,
         onRuntimeStateChange: onRuntimeStateChange,
-        initialClientSize: initialClientSize
+        initialClientSize: initialClientSize ?? .rootModelTestViewport
     )
 }
 
@@ -2275,12 +2275,16 @@ private final class RecordingTerminalScreenModelFactory: @unchecked Sendable {
                 self.recordedUpdates.append(update)
                 onRuntimeStateChange(update)
             },
-            initialClientSize: initialClientSize
+            initialClientSize: initialClientSize ?? .rootModelTestViewport
         )
         createdKeys.append(key)
         createdModels[key] = model
         return model
     }
+}
+
+private extension TmuxSessionController.ClientSize {
+    static let rootModelTestViewport = Self(cols: 47, rows: 38)
 }
 
 private final class RecordingAttachmentTransferServiceFactory: @unchecked Sendable {
@@ -2458,13 +2462,6 @@ private actor RecordingRootTmuxControlTransport: TmuxControlTransport {
 
     func send(_ data: Data) async throws {
         _ = data
-    }
-
-    func resize(columns: UInt16, rows: UInt16, width: UInt32, height: UInt32) async throws {
-        _ = columns
-        _ = rows
-        _ = width
-        _ = height
     }
 
     func close(disposition: TmuxControlTransportCloseDisposition) async {

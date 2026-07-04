@@ -84,6 +84,65 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertEqual(tracedConfiguration.controlNoResponseTimeout, .seconds(12))
     }
 
+    func testSFTPLeaseOpenTimeoutReturnsSuccessfulOperation() async throws {
+        let value = try await GhosttyAttachmentCitadelSFTPClientProvider.withLeaseOpenTimeout(
+            operationTimeout: .seconds(1),
+            operation: {
+                42
+            }
+        )
+
+        XCTAssertEqual(value, 42)
+    }
+
+    func testSFTPLeaseOpenTimeoutReturnsBeforeStalledOperationCompletes() async {
+        let start = DispatchTime.now().uptimeNanoseconds
+
+        do {
+            _ = try await GhosttyAttachmentCitadelSFTPClientProvider.withLeaseOpenTimeout(
+                operationTimeout: .milliseconds(20),
+                operation: {
+                    try await Task.sleep(nanoseconds: 5_000_000_000)
+                    return 42
+                }
+            )
+            XCTFail("expected SFTP lease open to time out")
+        } catch let error as GhosttyAttachmentSFTPClientError {
+            XCTAssertEqual(error, .operationTimedOut)
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+
+        let elapsedMilliseconds = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+        XCTAssertLessThan(elapsedMilliseconds, 1_000)
+    }
+
+    func testSFTPLeaseOpenTimeoutCleansLateSuccess() async throws {
+        let recorder = LateSFTPOpenCleanupRecorder()
+
+        do {
+            _ = try await GhosttyAttachmentCitadelSFTPClientProvider.withLeaseOpenTimeout(
+                operationTimeout: .milliseconds(20),
+                operation: {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    return 42
+                },
+                cleanupLateSuccess: { value in
+                    await recorder.record(value)
+                }
+            )
+            XCTFail("expected SFTP lease open to time out")
+        } catch let error as GhosttyAttachmentSFTPClientError {
+            XCTAssertEqual(error, .operationTimedOut)
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let cleanedValues = await recorder.values()
+        XCTAssertEqual(cleanedValues, [42])
+    }
+
     func testSSHRootServiceKeyIsServerAndCredentialScoped() {
         let server = SavedServer(
             displayName: "Build Host",
@@ -172,7 +231,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertEqual(entry?.readiness, .ready)
         XCTAssertEqual(entry?.activeLeaseCount, 0)
         XCTAssertEqual(entry?.isIdleCloseScheduled, true)
-        await pool.closeAllConnections()
+        await pool.closeAllConnectionsForTesting()
     }
 
     func testSSHRootServiceInvalidatedReleaseRemovesRoot() async {
@@ -215,7 +274,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertEqual(entry?.activeLeaseCount, 1)
         XCTAssertEqual(entry?.reservationCount, 0)
         XCTAssertEqual(entry?.isIdleCloseScheduled, false)
-        await pool.closeAllConnections()
+        await pool.closeAllConnectionsForTesting()
     }
 
     func testSSHRootServiceSecondReservationSharesRoot() async throws {
@@ -236,7 +295,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertEqual(entry?.generation, generation)
         XCTAssertEqual(entry?.reservationCount, 2)
         XCTAssertEqual(entry?.activeLeaseCount, 0)
-        await pool.closeAllConnections()
+        await pool.closeAllConnectionsForTesting()
     }
 
     func testSSHRootServiceCapacityBoundsSharedRoot() async throws {
@@ -253,7 +312,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertNotNil(last)
         let overflow = await pool.reserveEntryForTesting(for: key)
         XCTAssertNil(overflow)
-        await pool.closeAllConnections()
+        await pool.closeAllConnectionsForTesting()
     }
 
     func testSSHRootServiceClaimRequiresMatchingReservation() async throws {
@@ -270,7 +329,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
                 reservationID: UUID()
             )
             XCTFail("expected stale reservation to fail")
-        } catch let error as SSHTmuxControlTransportError {
+        } catch let error as RemuxSSHRootServiceError {
             XCTAssertEqual(error, .closed)
         } catch {
             XCTFail("unexpected error: \(error)")
@@ -289,7 +348,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         entry = await pool.snapshot().entry(for: key)
         XCTAssertEqual(entry?.reservationCount, 0)
         XCTAssertEqual(entry?.activeLeaseCount, 1)
-        await pool.closeAllConnections()
+        await pool.closeAllConnectionsForTesting()
     }
 
     func testSSHRootServiceReleasedReservationReturnsRootToIdle() async throws {
@@ -309,7 +368,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertEqual(entry?.reservationCount, 0)
         XCTAssertEqual(entry?.activeLeaseCount, 0)
         XCTAssertEqual(entry?.isIdleCloseScheduled, true)
-        await pool.closeAllConnections()
+        await pool.closeAllConnectionsForTesting()
     }
 
     func testSSHRootServiceReusableReleasesMultipleLeasesIndependently() async {
@@ -339,7 +398,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         entry = await pool.snapshot().entry(for: key)
         XCTAssertEqual(entry?.activeLeaseCount, 0)
         XCTAssertEqual(entry?.isIdleCloseScheduled, true)
-        await pool.closeAllConnections()
+        await pool.closeAllConnectionsForTesting()
     }
 
     func testSSHRootServiceInvalidationRetiresSharedRootUntilLastLease() async {
@@ -370,6 +429,54 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         )
         snapshot = await pool.snapshot()
         XCTAssertEqual(snapshot.retiredCount, 0)
+    }
+
+    func testSSHRootServiceStaleReservationDoesNotOwnRetiredSharedRootClose() async {
+        let pool = RemuxSSHRootService()
+        let key = makeSSHRootKey()
+        let reservationID = UUID()
+        let generation = await pool.insertEntryForTesting(
+            for: key,
+            activeLeaseCount: 2,
+            reservationID: reservationID
+        )
+
+        await pool.releaseEntryForTesting(
+            for: key,
+            generation: generation,
+            disposition: .invalidated
+        )
+
+        var snapshot = await pool.snapshot()
+        XCTAssertNil(snapshot.entry(for: key))
+        XCTAssertEqual(snapshot.retiredCount, 1)
+
+        let retiredStaleReservationOwnsClose = await pool.staleLeaseShouldCloseConnectionForTesting(
+            for: key,
+            generation: generation,
+            reservationID: reservationID
+        )
+        XCTAssertEqual(retiredStaleReservationOwnsClose, false)
+
+        await pool.releaseEntryForTesting(
+            for: key,
+            generation: generation,
+            disposition: .reusable
+        )
+
+        snapshot = await pool.snapshot()
+        XCTAssertEqual(snapshot.retiredCount, 0)
+    }
+
+    func testSSHRootServiceStaleReservationForUnknownRootOwnsClose() async {
+        let pool = RemuxSSHRootService()
+
+        let unknownStaleReservationOwnsClose = await pool.staleLeaseShouldCloseConnectionForTesting(
+            for: makeSSHRootKey(),
+            generation: UUID(),
+            reservationID: UUID()
+        )
+        XCTAssertEqual(unknownStaleReservationOwnsClose, true)
     }
 
     func testSSHRootServiceCloseIdleConnectionsPreservesActiveEntries() async {
@@ -408,10 +515,10 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertNotNil(snapshot.entry(for: activeKey))
         XCTAssertNotNil(snapshot.entry(for: otherServerKey))
         XCTAssertEqual(snapshot.entryCount, 3)
-        await pool.closeAllConnections()
+        await pool.closeAllConnectionsForTesting()
     }
 
-    func testSSHRootServiceCloseAllConnectionsEvictsAllEntries() async {
+    func testSSHRootServiceTestingCleanupEvictsAllEntries() async {
         let pool = RemuxSSHRootService()
         await pool.insertEntryForTesting(
             for: makeSSHRootKey(host: "first.example.com")
@@ -420,7 +527,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             for: makeSSHRootKey(host: "second.example.com")
         )
 
-        await pool.closeAllConnections()
+        await pool.closeAllConnectionsForTesting()
 
         let snapshot = await pool.snapshot()
         XCTAssertEqual(snapshot.entryCount, 0)
@@ -455,7 +562,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         let entry = await pool.snapshot().entry(for: key)
         XCTAssertEqual(entry?.readiness, .ready)
         XCTAssertEqual(entry?.isIdleCloseScheduled, true)
-        await pool.closeAllConnections()
+        await pool.closeAllConnectionsForTesting()
     }
 
     func testSSHRootServiceAuthenticationSuccessKeepsReservedEntryOpen() async {
@@ -476,7 +583,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertEqual(entry?.readiness, .ready)
         XCTAssertEqual(entry?.reservationCount, 1)
         XCTAssertEqual(entry?.isIdleCloseScheduled, false)
-        await pool.closeAllConnections()
+        await pool.closeAllConnectionsForTesting()
     }
 
     func testSSHRootServiceClosedIdleRootIsEvicted() async {
@@ -534,7 +641,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertEqual(entry?.generation, generation)
         XCTAssertEqual(entry?.activeLeaseCount, 1)
         XCTAssertEqual(entry?.isIdleCloseScheduled, false)
-        await pool.closeAllConnections()
+        await pool.closeAllConnectionsForTesting()
     }
 
     func testInboundStreamYieldsBytesInCallOrder() async throws {
@@ -594,68 +701,14 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         }
     }
 
-    func testResizeStateBeginsApplyingOnlyWhenViewportChanges() {
-        let initial = TmuxControlViewport(columns: 80, rows: 24, pixelWidth: 800, pixelHeight: 600)
-        var state = TmuxViewportResizeState(initialViewport: initial)
-
-        XCTAssertNil(state.beginApplyingIfNeeded())
-
-        state.markApplied(initial)
-        XCTAssertNil(state.beginApplyingIfNeeded())
-
-        state.request(.init(columns: 90, rows: 30, pixelWidth: 900, pixelHeight: 700))
-        XCTAssertEqual(
-            state.beginApplyingIfNeeded(),
-            .init(columns: 90, rows: 30, pixelWidth: 900, pixelHeight: 700)
-        )
-        XCTAssertTrue(state.isApplying)
-        XCTAssertNil(state.beginApplyingIfNeeded())
-    }
-
-    func testResizeStateCoalescesToLatestViewportAfterApply() {
-        let initial = TmuxControlViewport(columns: 80, rows: 24, pixelWidth: 800, pixelHeight: 600)
-        var state = TmuxViewportResizeState(initialViewport: initial)
-        state.markApplied(initial)
-
-        let first = TmuxControlViewport(columns: 90, rows: 30, pixelWidth: 900, pixelHeight: 700)
-        let second = TmuxControlViewport(columns: 100, rows: 32, pixelWidth: 1000, pixelHeight: 720)
-        state.request(first)
-
-        XCTAssertEqual(state.beginApplyingIfNeeded(), first)
-
-        state.request(second)
-        XCTAssertEqual(state.completeApplied(first), second)
-        XCTAssertTrue(state.isApplying)
-        XCTAssertNil(state.completeApplied(second))
-        XCTAssertFalse(state.isApplying)
-    }
-
-    func testResizeStateResetsApplyingFlagOnFailure() {
-        let initial = TmuxControlViewport(columns: 80, rows: 24, pixelWidth: 800, pixelHeight: 600)
-        var state = TmuxViewportResizeState(initialViewport: initial)
-        state.markApplied(initial)
-        state.request(.init(columns: 90, rows: 30, pixelWidth: 900, pixelHeight: 700))
-
-        XCTAssertNotNil(state.beginApplyingIfNeeded())
-        XCTAssertTrue(state.isApplying)
-
-        state.failApplying()
-
-        XCTAssertFalse(state.isApplying)
-        XCTAssertEqual(
-            state.beginApplyingIfNeeded(),
-            .init(columns: 90, rows: 30, pixelWidth: 900, pixelHeight: 700)
-        )
-    }
-
     func testChannelRequestReplyTrackerMatchesFailuresToOldestPendingReply() {
         var tracker = SSHTmuxControlChannelRequestReplyTracker()
 
-        tracker.expectReply(for: .pseudoTerminal)
+        tracker.expectReply(for: .exec)
         tracker.expectReply(for: .exec)
 
         XCTAssertEqual(tracker.pendingCount, 2)
-        XCTAssertEqual(tracker.acknowledgeSuccess(), .pseudoTerminal)
+        XCTAssertEqual(tracker.acknowledgeSuccess(), .exec)
         XCTAssertEqual(tracker.acknowledgeFailure(), .exec)
         XCTAssertEqual(tracker.pendingCount, 0)
     }
@@ -671,10 +724,6 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertEqual(
             String(describing: SSHTmuxControlTransportError.channelRequestFailed(.exec)),
             "SSH exec request failed"
-        )
-        XCTAssertEqual(
-            String(describing: SSHTmuxControlTransportError.channelRequestFailed(.pseudoTerminal)),
-            "SSH pseudo-terminal request failed"
         )
     }
 
@@ -897,7 +946,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         await transport.close(disposition: .reusable)
 
         do {
-            try await transport.send(Data("send-keys -t %1 a\n".utf8))
+            try await transport.send(Data("opaque outbound bytes".utf8))
             XCTFail("expected closed transport failure")
         } catch let error as SSHTmuxControlTransportError {
             XCTAssertEqual(error, .closed)
@@ -945,5 +994,17 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             identityID: server.identityID,
             displayLabel: server.displayName
         )
+    }
+}
+
+private actor LateSFTPOpenCleanupRecorder {
+    private var recordedValues: [Int] = []
+
+    func record(_ value: Int) {
+        recordedValues.append(value)
+    }
+
+    func values() -> [Int] {
+        recordedValues
     }
 }

@@ -66,6 +66,8 @@ protocol GhosttyTerminalScreenModeling: ObservableObject {
     var commandFailureEvent: GhosttyTmuxCommandFailureEvent? { get }
     var stateTraceLabel: String { get }
 
+    func prepareInitialViewport(size: CGSize, scale: CGFloat)
+
     func reportRuntimeReadinessIfNeeded()
 
     /// Host hint that the terminal viewport is (not) in its settled

@@ -24,12 +24,6 @@ final class SSHTmuxControlInboundStream: @unchecked Sendable {
             GhosttyRuntimeTrace.latency(
                 "transport.emit bytes=\(data.count) preview=\(GhosttyRuntimeTrace.preview(data, limit: 160))"
             )
-            GhosttyTmuxActionTrace.traceInboundSignals(
-                in: data,
-                source: "transport.emit",
-                chunkCount: 1,
-                eventPrefix: "tmux.signal.transport.emit"
-            )
             continuation.yield(data)
         }
     }

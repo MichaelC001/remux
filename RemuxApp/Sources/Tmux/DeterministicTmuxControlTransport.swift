@@ -7,14 +7,6 @@ actor DeterministicTmuxControlTransport: TmuxControlTransport {
     private let chunks: [Data]
     private var started = false
     private var sentCommands: [Data] = []
-    private var resizeEvents: [ResizeEvent] = []
-
-    struct ResizeEvent: Equatable, Sendable {
-        let columns: UInt16
-        let rows: UInt16
-        let width: UInt32
-        let height: UInt32
-    }
 
     init(chunks: [Data]) {
         self.chunks = chunks
@@ -27,16 +19,7 @@ actor DeterministicTmuxControlTransport: TmuxControlTransport {
     }
 
     func start(initialViewport: TmuxControlViewport?) async throws {
-        if let initialViewport {
-            resizeEvents.append(
-                ResizeEvent(
-                    columns: initialViewport.columns,
-                    rows: initialViewport.rows,
-                    width: initialViewport.pixelWidth,
-                    height: initialViewport.pixelHeight
-                )
-            )
-        }
+        _ = initialViewport
         guard !started else { return }
         started = true
 
@@ -49,17 +32,6 @@ actor DeterministicTmuxControlTransport: TmuxControlTransport {
         sentCommands.append(data)
     }
 
-    func resize(columns: UInt16, rows: UInt16, width: UInt32, height: UInt32) async throws {
-        resizeEvents.append(
-            ResizeEvent(
-                columns: columns,
-                rows: rows,
-                width: width,
-                height: height
-            )
-        )
-    }
-
     func close(disposition: TmuxControlTransportCloseDisposition) async {
         _ = disposition
         continuation.finish()
@@ -67,9 +39,5 @@ actor DeterministicTmuxControlTransport: TmuxControlTransport {
 
     func commandsSentByGhostty() -> [Data] {
         sentCommands
-    }
-
-    func resizesSentByGhostty() -> [ResizeEvent] {
-        resizeEvents
     }
 }

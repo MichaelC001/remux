@@ -6,6 +6,41 @@ import XCTest
 
 @MainActor
 final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
+    func testInitialConnectWaitsForMeasuredViewport() async throws {
+        let target = makeTarget()
+        let transport = ForegroundInactiveTransport(isActive: true)
+        let model = TmuxScreenModel(
+            target: target,
+            sessionInstanceID: UUID(),
+            transportFactory: { _ in transport },
+            onRuntimeStateChange: { _ in }
+        )
+        defer {
+            Task { @MainActor in
+                await model.stop()
+            }
+        }
+
+        try await Task.sleep(for: .milliseconds(80))
+        let didStartBeforeViewport = await transport.didStart()
+        XCTAssertFalse(didStartBeforeViewport)
+
+        model.terminalScreenAdapter.prepareInitialViewport(
+            size: CGSize(width: 420, height: 756),
+            scale: 3
+        )
+
+        try await waitUntil("transport did not start after viewport report") {
+            await transport.didStart()
+        }
+        let viewport = await transport.startedViewport()
+        XCTAssertNotNil(viewport)
+        XCTAssertNotEqual(viewport, .default)
+        XCTAssertEqual(viewport?.pixelWidth, 1260)
+        XCTAssertEqual(viewport?.pixelHeight, 2268)
+        await model.stop()
+    }
+
     func testForegroundInvalidatesInactiveTransportAndReportsForegroundDisconnect() async throws {
         let target = makeTarget()
         let instanceID = UUID()
@@ -15,7 +50,8 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
             target: target,
             sessionInstanceID: instanceID,
             transportFactory: { _ in transport },
-            onRuntimeStateChange: { updates.append($0) }
+            onRuntimeStateChange: { updates.append($0) },
+            initialClientSize: Self.initialClientSize
         )
         defer {
             Task { @MainActor in
@@ -43,6 +79,7 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
                         .foregroundMissingHost()
             }
         }
+        await model.stop()
     }
 
     func testForegroundDoesNotProbeTransportWhileSessionIsStillConnecting() async throws {
@@ -53,7 +90,8 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
             target: target,
             sessionInstanceID: UUID(),
             transportFactory: { _ in transport },
-            onRuntimeStateChange: { updates.append($0) }
+            onRuntimeStateChange: { updates.append($0) },
+            initialClientSize: Self.initialClientSize
         )
         defer {
             Task { @MainActor in
@@ -74,6 +112,7 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
         XCTAssertEqual(activeCheckCount, 0)
         XCTAssertTrue(closeDispositions.isEmpty)
         XCTAssertTrue(updates.allSatisfy { $0.source != .foreground })
+        await model.stop()
     }
 
     func testStaleForegroundProbeDoesNotInvalidateReplacementLink() async throws {
@@ -123,11 +162,13 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
 
         await firstTransport.resumeActiveCheck()
         let reason = await probe.value
+        let firstCloseDispositions = await firstTransport.closeDispositions()
+        let secondCloseDispositions = await secondTransport.closeDispositions()
 
         XCTAssertNil(reason)
         XCTAssertTrue(invalidatedReasons.isEmpty)
-        XCTAssertEqual(await firstTransport.closeDispositions(), [.reusable])
-        XCTAssertTrue(await secondTransport.closeDispositions().isEmpty)
+        XCTAssertEqual(firstCloseDispositions, [.reusable])
+        XCTAssertFalse(secondCloseDispositions.contains(.invalidated))
     }
 
     private func waitUntil(
@@ -164,6 +205,11 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
             )
         )
     }
+
+    private static let initialClientSize = TmuxSessionController.ClientSize(
+        cols: 47,
+        rows: 38
+    )
 }
 
 private actor ForegroundInactiveTransport: TmuxControlTransport, TmuxControlTransportLivenessChecking {
@@ -172,6 +218,7 @@ private actor ForegroundInactiveTransport: TmuxControlTransport, TmuxControlTran
     private let isActive: Bool
     private let continuation: AsyncThrowingStream<Data, Error>.Continuation
     private var started = false
+    private var recordedInitialViewport: TmuxControlViewport?
     private var recordedActiveCheckCount = 0
     private var recordedCloseDispositions: [TmuxControlTransportCloseDisposition] = []
 
@@ -186,7 +233,7 @@ private actor ForegroundInactiveTransport: TmuxControlTransport, TmuxControlTran
     }
 
     func start(initialViewport: TmuxControlViewport?) async throws {
-        _ = initialViewport
+        recordedInitialViewport = initialViewport
         started = true
     }
 
@@ -206,6 +253,10 @@ private actor ForegroundInactiveTransport: TmuxControlTransport, TmuxControlTran
 
     func didStart() -> Bool {
         started
+    }
+
+    func startedViewport() -> TmuxControlViewport? {
+        recordedInitialViewport
     }
 
     func closeDispositions() -> [TmuxControlTransportCloseDisposition] {

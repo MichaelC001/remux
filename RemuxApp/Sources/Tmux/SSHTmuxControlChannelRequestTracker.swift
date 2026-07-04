@@ -1,12 +1,9 @@
 enum SSHTmuxControlChannelRequestKind: Equatable, Sendable, CustomStringConvertible {
-    case pseudoTerminal
     case exec
     case unknown
 
     var description: String {
         switch self {
-        case .pseudoTerminal:
-            return "pseudo-terminal"
         case .exec:
             return "exec"
         case .unknown:

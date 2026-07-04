@@ -184,15 +184,96 @@ private final class GhosttyAttachmentCitadelSFTPFileBox: @unchecked Sendable {
     }
 }
 
+private final class GhosttyAttachmentSFTPLeaseOpenTimeoutGate<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value, Error>?
+    private var pendingResult: Result<Value, Error>?
+    private var tasks: [Task<Void, Never>] = []
+    private var isFinished = false
+
+    func install(_ continuation: CheckedContinuation<Value, Error>) {
+        let pendingResult: Result<Value, Error>?
+        lock.lock()
+        if isFinished {
+            pendingResult = self.pendingResult
+        } else {
+            self.continuation = continuation
+            pendingResult = nil
+        }
+        lock.unlock()
+
+        if let pendingResult {
+            continuation.resume(with: pendingResult)
+        }
+    }
+
+    func setTasks(_ tasks: [Task<Void, Never>]) {
+        let tasksToCancel: [Task<Void, Never>]
+        lock.lock()
+        if isFinished {
+            tasksToCancel = tasks
+        } else {
+            self.tasks = tasks
+            tasksToCancel = []
+        }
+        lock.unlock()
+
+        for task in tasksToCancel {
+            task.cancel()
+        }
+    }
+
+    @discardableResult
+    func succeed(_ value: Value) -> Bool {
+        finish(.success(value))
+    }
+
+    @discardableResult
+    func fail(_ error: Error) -> Bool {
+        finish(.failure(error))
+    }
+
+    func cancel() {
+        _ = fail(CancellationError())
+    }
+
+    @discardableResult
+    private func finish(_ result: Result<Value, Error>) -> Bool {
+        let continuation: CheckedContinuation<Value, Error>?
+        let tasksToCancel: [Task<Void, Never>]
+
+        lock.lock()
+        guard !isFinished else {
+            lock.unlock()
+            return false
+        }
+
+        isFinished = true
+        pendingResult = result
+        continuation = self.continuation
+        self.continuation = nil
+        tasksToCancel = tasks
+        tasks.removeAll()
+        lock.unlock()
+
+        for task in tasksToCancel {
+            task.cancel()
+        }
+
+        continuation?.resume(with: result)
+        return true
+    }
+}
+
 private actor GhosttyAttachmentCitadelSFTPLeaseState {
     private let sftp: SFTPClient
-    private let closeRoot: @Sendable () async throws -> Void
+    private let closeRoot: @Sendable (RemuxSSHRootLeaseDisposition) async throws -> Void
     private var timedOut = false
     private var closeTask: Task<Void, Error>?
 
     init(
         sftp: SFTPClient,
-        closeRoot: @escaping @Sendable () async throws -> Void
+        closeRoot: @escaping @Sendable (RemuxSSHRootLeaseDisposition) async throws -> Void
     ) {
         self.sftp = sftp
         self.closeRoot = closeRoot
@@ -234,6 +315,7 @@ private actor GhosttyAttachmentCitadelSFTPLeaseState {
 
         let sftp = sftp
         let closeRoot = closeRoot
+        let invalidatedByTimeout = timedOut
 
         let task = Task {
             var closeFailure: Error?
@@ -245,7 +327,9 @@ private actor GhosttyAttachmentCitadelSFTPLeaseState {
             }
 
             do {
-                try await closeRoot()
+                let disposition: RemuxSSHRootLeaseDisposition =
+                    (invalidatedByTimeout || closeFailure != nil) ? .invalidated : .reusable
+                try await closeRoot(disposition)
             } catch {
                 if closeFailure == nil {
                     closeFailure = error
@@ -297,6 +381,42 @@ struct GhosttyAttachmentCitadelSFTPClientProvider: GhosttyAttachmentSFTPClientPr
         try await provider.withClient(operation)
     }
 
+    static func withLeaseOpenTimeout<Value: Sendable>(
+        operationTimeout: TimeAmount,
+        operation: @escaping @Sendable () async throws -> Value,
+        cleanupLateSuccess: @escaping @Sendable (Value) async -> Void = { _ in }
+    ) async throws -> Value {
+        let gate = GhosttyAttachmentSFTPLeaseOpenTimeoutGate<Value>()
+        let timeoutNanos = UInt64(clamping: operationTimeout.nanoseconds)
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                gate.install(continuation)
+                let operationTask = Task {
+                    do {
+                        let value = try await operation()
+                        if !gate.succeed(value) {
+                            await cleanupLateSuccess(value)
+                        }
+                    } catch {
+                        _ = gate.fail(error)
+                    }
+                }
+                let timeoutTask = Task {
+                    do {
+                        try await Task.sleep(nanoseconds: timeoutNanos)
+                        _ = gate.fail(GhosttyAttachmentSFTPClientError.operationTimedOut)
+                    } catch {
+                        _ = gate.fail(error)
+                    }
+                }
+                gate.setTasks([operationTask, timeoutTask])
+            }
+        } onCancel: {
+            gate.cancel()
+        }
+    }
+
     private static func openLease(
         sshRootService: RemuxSSHRootService,
         rootKey: RemuxSSHRootKey,
@@ -304,7 +424,7 @@ struct GhosttyAttachmentCitadelSFTPClientProvider: GhosttyAttachmentSFTPClientPr
         operationTimeout: TimeAmount,
         chunkSize: Int
     ) async throws -> GhosttyAttachmentSFTPClientLease<GhosttyAttachmentCitadelSFTPClient> {
-        let trace = SSHTmuxControlStartupTrace(flowID: nil)
+        let trace = RemuxTransportStartupTrace(flowID: nil)
         let preparedRoot = await sshRootService.preparedRoot(
             for: rootKey,
             configuration: rootConfiguration,
@@ -332,7 +452,19 @@ struct GhosttyAttachmentCitadelSFTPClientProvider: GhosttyAttachmentSFTPClientPr
         do {
             let sftpOpenStartedAt = GhosttyRuntimeTrace.latencyEnabled ? GhosttyRuntimeTrace.nowNanos() : nil
             GhosttyRuntimeTrace.latency("sftp.open begin host=\(rootConfiguration.host):\(rootConfiguration.port)")
-            let sftp = try await SFTPClient.open(overAuthenticatedSSHChannel: claimedRoot.sshRoot.rootChannel)
+            let sftp = try await Self.withLeaseOpenTimeout(
+                operationTimeout: operationTimeout,
+                operation: {
+                    try await SFTPClient.open(overAuthenticatedSSHChannel: claimedRoot.sshRoot.rootChannel)
+                },
+                cleanupLateSuccess: { sftp in
+                    do {
+                        try await sftp.close()
+                    } catch {
+                        NSLog("Remux attachment SFTP late open close failed: %@", String(describing: error))
+                    }
+                }
+            )
             if let sftpOpenStartedAt {
                 GhosttyRuntimeTrace.latency(
                     "sftp.open end host=\(rootConfiguration.host):\(rootConfiguration.port) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: sftpOpenStartedAt))"
@@ -340,8 +472,8 @@ struct GhosttyAttachmentCitadelSFTPClientProvider: GhosttyAttachmentSFTPClientPr
             }
             let leaseState = GhosttyAttachmentCitadelSFTPLeaseState(
                 sftp: sftp,
-                closeRoot: {
-                    await claimedRoot.releaseAfterSFTPLease()
+                closeRoot: { disposition in
+                    await claimedRoot.release(disposition)
                 }
             )
             let client = GhosttyAttachmentCitadelSFTPClient(
@@ -357,14 +489,8 @@ struct GhosttyAttachmentCitadelSFTPClientProvider: GhosttyAttachmentSFTPClientPr
                 }
             )
         } catch {
-            await claimedRoot.releaseAfterSFTPLease()
+            await claimedRoot.release(.invalidated)
             throw error
         }
-    }
-}
-
-private extension RemuxSSHClaimedRoot {
-    func releaseAfterSFTPLease() async {
-        await release(sshRoot.rootChannel.isActive ? .reusable : .invalidated)
     }
 }
