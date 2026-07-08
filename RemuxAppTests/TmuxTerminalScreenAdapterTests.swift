@@ -87,41 +87,184 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         await session.shutdown()
     }
 
-    func testPanePreviewOptionsScaleWidthForSplitPane() {
+    /// Resumes after everything already enqueued on the main queue ran,
+    /// including the adapter's deferred pending-presentation rebuild.
+    private func nextMainQueueTurn() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+    }
+
+    func testPendingPresentationHoldsUntilActiveSurfaceDisplays() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let session = makeSession(runtime: runtime)
+        let adapter = TmuxTerminalScreenAdapter()
+        adapter.activate(session: session, initialViewportHandler: { _, _ in })
+
+        session.handleTopology(TmuxSessionController.TopologySnapshot(
+            sessionName: "pending-test",
+            windows: [window(id: 1, active: true, paneID: 10)],
+            panes: [pane(id: 10, windowID: 1)],
+            activeWindowID: 1
+        ))
+
+        let tree = adapter.terminalScreenPresentationProjection.tree
+        let activeLeaf = try XCTUnwrap(tree.selectedActiveLeafID)
+        XCTAssertEqual(
+            tree.pendingPresentationSurfaceID, activeLeaf,
+            "an active pane with no displayed surface must hold presentation"
+        )
+
+        adapter.notePresentationSurfaceDisplayed(activeLeaf)
+        await nextMainQueueTurn()
+
+        XCTAssertNil(
+            adapter.terminalScreenPresentationProjection.tree.pendingPresentationSurfaceID,
+            "the hold must drop after the surface's first layout-sized display update"
+        )
+
+        await session.shutdown()
+    }
+
+    func testPendingPresentationFollowsActivePaneSwitch() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let session = makeSession(runtime: runtime)
+        let adapter = TmuxTerminalScreenAdapter()
+        adapter.activate(session: session, initialViewportHandler: { _, _ in })
+
+        session.handleTopology(TmuxSessionController.TopologySnapshot(
+            sessionName: "pending-test",
+            windows: [window(id: 1, active: true, paneID: 10)],
+            panes: [pane(id: 10, windowID: 1), pane(id: 20, windowID: 1)],
+            activeWindowID: 1
+        ))
+        let firstLeaf = try XCTUnwrap(
+            adapter.terminalScreenPresentationProjection.tree.selectedActiveLeafID
+        )
+        adapter.notePresentationSurfaceDisplayed(firstLeaf)
+        await nextMainQueueTurn()
+
+        session.handleTopology(TmuxSessionController.TopologySnapshot(
+            sessionName: "pending-test",
+            windows: [window(id: 1, active: true, paneID: 20)],
+            panes: [pane(id: 10, windowID: 1), pane(id: 20, windowID: 1)],
+            activeWindowID: 1
+        ))
+
+        let tree = adapter.terminalScreenPresentationProjection.tree
+        let secondLeaf = try XCTUnwrap(tree.selectedActiveLeafID)
+        XCTAssertNotEqual(secondLeaf, firstLeaf)
+        XCTAssertEqual(
+            tree.pendingPresentationSurfaceID, secondLeaf,
+            "switching the active pane must hold presentation until the new surface displays"
+        )
+
+        await session.shutdown()
+    }
+
+    func testPendingPresentationTimeoutDropsHoldUntilPaneChanges() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let session = makeSession(runtime: runtime)
+        let adapter = TmuxTerminalScreenAdapter()
+        adapter.pendingPresentationTimeout = .milliseconds(40)
+        adapter.activate(session: session, initialViewportHandler: { _, _ in })
+
+        let firstTopology = TmuxSessionController.TopologySnapshot(
+            sessionName: "pending-test",
+            windows: [window(id: 1, active: true, paneID: 10)],
+            panes: [pane(id: 10, windowID: 1), pane(id: 20, windowID: 1)],
+            activeWindowID: 1
+        )
+        session.handleTopology(firstTopology)
+        XCTAssertNotNil(
+            adapter.terminalScreenPresentationProjection.tree.pendingPresentationSurfaceID
+        )
+
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline,
+              adapter.terminalScreenPresentationProjection.tree.pendingPresentationSurfaceID != nil {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertNil(
+            adapter.terminalScreenPresentationProjection.tree.pendingPresentationSurfaceID,
+            "a pending surface that never displays must stop holding presentation"
+        )
+
+        session.handleTopology(firstTopology)
+        XCTAssertNil(
+            adapter.terminalScreenPresentationProjection.tree.pendingPresentationSurfaceID,
+            "an abandoned pending pane must not re-hold until the active pane changes"
+        )
+
+        session.handleTopology(TmuxSessionController.TopologySnapshot(
+            sessionName: "pending-test",
+            windows: [window(id: 1, active: true, paneID: 20)],
+            panes: [pane(id: 10, windowID: 1), pane(id: 20, windowID: 1)],
+            activeWindowID: 1
+        ))
+        XCTAssertNotNil(
+            adapter.terminalScreenPresentationProjection.tree.pendingPresentationSurfaceID,
+            "a different active pane must hold presentation again"
+        )
+
+        await session.shutdown()
+    }
+
+    func testPanePreviewOptionsPreserveRequestedBudget() {
         let options = ghostty_surface_preview_image_options_s(
             max_width_px: 400,
             max_height_px: 300,
             include_cursor: true
         )
         let scaled = TmuxTerminalScreenAdapter.panePreviewOptions(
-            options: options,
-            paneWidth: 80,
-            windowWidth: 160
+            options: options
         )
 
-        XCTAssertEqual(scaled?.max_width_px, 200)
+        XCTAssertEqual(scaled?.max_width_px, 400)
         XCTAssertEqual(scaled?.max_height_px, 300)
         XCTAssertEqual(scaled?.include_cursor, true)
     }
 
-    func testPanePreviewGridPreservesWindowScaleForSplitPane() {
-        let grid = TmuxTerminalScreenAdapter.panePreviewGrid(
+    func testPanePreviewRejectsSplitGeometryForRasterPreview() {
+        XCTAssertFalse(TmuxTerminalScreenAdapter.canRenderPanePreview(
+            previewSizing: .paneGrid(availableWidth: 361),
             paneWidth: 80,
             paneHeight: 24,
             windowWidth: 160,
+            windowHeight: 24
+        ))
+        XCTAssertFalse(TmuxTerminalScreenAdapter.canRenderPanePreview(
+            previewSizing: .paneGrid(availableWidth: 361),
+            paneWidth: 160,
+            paneHeight: 12,
+            windowWidth: 160,
+            windowHeight: 24
+        ))
+        XCTAssertTrue(TmuxTerminalScreenAdapter.canRenderPanePreview(
+            previewSizing: .paneGrid(availableWidth: 361),
+            paneWidth: 160,
+            paneHeight: 24,
+            windowWidth: 160,
+            windowHeight: 24
+        ))
+    }
+
+    func testPanePreviewGridUsesFullWindowGeometry() {
+        let grid = TmuxTerminalScreenAdapter.panePreviewGrid(
+            windowWidth: 160,
+            windowHeight: 24,
             cellWidthPx: 10,
             cellHeightPx: 20,
-            budgetWidthPx: 200,
+            budgetWidthPx: 400,
             budgetHeightPx: 300
         )
-        XCTAssertEqual(grid, TmuxSessionController.ClientSize(cols: 80, rows: 24))
+        XCTAssertEqual(grid, TmuxSessionController.ClientSize(cols: 160, rows: 24))
     }
 
     func testPanePreviewGridCropsTallPanesToTileAspect() {
         let grid = TmuxTerminalScreenAdapter.panePreviewGrid(
-            paneWidth: 160,
-            paneHeight: 200,
             windowWidth: 160,
+            windowHeight: 200,
             cellWidthPx: 10,
             cellHeightPx: 20,
             budgetWidthPx: 400,
@@ -133,20 +276,8 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
     func testPanePreviewGridRequiresRealGeometry() {
         XCTAssertNil(
             TmuxTerminalScreenAdapter.panePreviewGrid(
-                paneWidth: 0,
-                paneHeight: 24,
-                windowWidth: 160,
-                cellWidthPx: 10,
-                cellHeightPx: 20,
-                budgetWidthPx: 400,
-                budgetHeightPx: 300
-            )
-        )
-        XCTAssertNil(
-            TmuxTerminalScreenAdapter.panePreviewGrid(
-                paneWidth: 80,
-                paneHeight: 24,
                 windowWidth: 0,
+                windowHeight: 24,
                 cellWidthPx: 10,
                 cellHeightPx: 20,
                 budgetWidthPx: 400,
@@ -155,9 +286,18 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         )
         XCTAssertNil(
             TmuxTerminalScreenAdapter.panePreviewGrid(
-                paneWidth: 80,
-                paneHeight: 24,
                 windowWidth: 160,
+                windowHeight: 0,
+                cellWidthPx: 10,
+                cellHeightPx: 20,
+                budgetWidthPx: 400,
+                budgetHeightPx: 300
+            )
+        )
+        XCTAssertNil(
+            TmuxTerminalScreenAdapter.panePreviewGrid(
+                windowWidth: 160,
+                windowHeight: 24,
                 cellWidthPx: 0,
                 cellHeightPx: 20,
                 budgetWidthPx: 400,
@@ -166,9 +306,8 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         )
         XCTAssertNil(
             TmuxTerminalScreenAdapter.panePreviewGrid(
-                paneWidth: 80,
-                paneHeight: 24,
                 windowWidth: 160,
+                windowHeight: 24,
                 cellWidthPx: 10,
                 cellHeightPx: 20,
                 budgetWidthPx: 0,
@@ -178,12 +317,10 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         XCTAssertNil(
             TmuxTerminalScreenAdapter.panePreviewOptions(
                 options: ghostty_surface_preview_image_options_s(
-                    max_width_px: 400,
+                    max_width_px: 0,
                     max_height_px: 300,
                     include_cursor: true
-                ),
-                paneWidth: 0,
-                windowWidth: 160
+                )
             )
         )
     }

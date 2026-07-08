@@ -74,6 +74,34 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         }
     }
 
+    func testNonTransientStartFailureDoesNotRetry() async {
+        let paneID = UUID()
+        var startedPaneIDs: [UUID] = []
+
+        let client = GhosttyPanePreviewSession.PreviewRequestClient(
+            start: { requestedPaneID, _, _, _ in
+                startedPaneIDs.append(requestedPaneID)
+                return .failed(GHOSTTY_SURFACE_PREVIEW_STATUS_INVALID_OPTIONS)
+            },
+            cancel: { _ in },
+            release: { _ in }
+        )
+
+        let session = GhosttyPanePreviewSession(
+            leafIDs: [paneID],
+            scale: 1,
+            retryDelay: .milliseconds(1),
+            previewRequestClient: client
+        )
+
+        assertFailed(
+            session.imagesByPaneID[paneID],
+            status: GHOSTTY_SURFACE_PREVIEW_STATUS_INVALID_OPTIONS
+        )
+        try? await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(startedPaneIDs, [paneID])
+    }
+
     func testAcceptedAsyncTransientFailureRetriesPreviewStart() async {
         let paneID = UUID()
         let firstRequest: ghostty_surface_preview_request_t = OpaquePointer(bitPattern: 0x5251)!

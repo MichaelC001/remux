@@ -39,6 +39,7 @@ final class GhosttyPanePreviewSession: ObservableObject {
 
     enum PreviewStartResult {
         case started(ghostty_surface_preview_request_t)
+        case failed(ghostty_surface_preview_status_e)
         case surfaceUnavailable
         case rejected
     }
@@ -211,6 +212,10 @@ final class GhosttyPanePreviewSession: ObservableObject {
             pendingRequests[paneID] = requestLease
             imagesByPaneID[paneID] = .pending
             requestLease.install(request)
+
+        case .failed(let status):
+            Unmanaged<PreviewCallbackBox>.fromOpaque(userdata).release()
+            imagesByPaneID[paneID] = .failed(status)
 
         case .surfaceUnavailable:
             Unmanaged<PreviewCallbackBox>.fromOpaque(userdata).release()

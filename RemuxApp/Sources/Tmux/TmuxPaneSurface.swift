@@ -18,6 +18,7 @@ final class TmuxPaneSurface {
     private let binding: TmuxSessionController.PaneBinding
     private let controller: TmuxSessionController
     private let inputBox: InputBox
+    private let wakeTarget: WakeTarget
     private var closed = false
 
     /// Invoked synchronously at the start of `close()`, before the
@@ -78,8 +79,7 @@ final class TmuxPaneSurface {
             wake: { [weak wakeTarget] in
                 // Writer queue; ghostty_surface_refresh is a renderer
                 // mailbox push and is thread-safe.
-                guard let surface = wakeTarget?.surface else { return }
-                ghostty_surface_refresh(surface)
+                wakeTarget?.requestRefresh()
             }
         ) { result in
             // The controller invokes completions on the main queue.
@@ -93,13 +93,11 @@ final class TmuxPaneSurface {
                     controller: controller,
                     paneID: paneID,
                     binding: binding,
+                    wakeTarget: wakeTarget,
                     baseConfig: configBox.value,
                     theme: theme
                 ) {
-                    wakeTarget.surface = pane.surface
-                    // Content may have changed between bind and
-                    // surface creation; render once unconditionally.
-                    ghostty_surface_refresh(pane.surface)
+                    wakeTarget.install(surface: pane.surface)
                     completion(.success(pane))
                 } else {
                     controller.unbind(binding)
@@ -115,10 +113,34 @@ final class TmuxPaneSurface {
     private final class WakeTarget: @unchecked Sendable {
         private let lock = NSLock()
         private var _surface: ghostty_surface_t?
+        private var allowsRefresh = false
 
-        var surface: ghostty_surface_t? {
-            get { lock.withLock { _surface } }
-            set { lock.withLock { _surface = newValue } }
+        func install(surface: ghostty_surface_t) {
+            lock.withLock {
+                _surface = surface
+            }
+        }
+
+        func requestRefresh() {
+            let surface = lock.withLock {
+                allowsRefresh ? _surface : nil
+            }
+            guard let surface else { return }
+            ghostty_surface_refresh(surface)
+        }
+
+        func enableRefreshAfterInitialLayout() -> ghostty_surface_t? {
+            lock.withLock {
+                guard !allowsRefresh else { return nil }
+                allowsRefresh = true
+                return _surface
+            }
+        }
+
+        func clear() {
+            lock.withLock {
+                _surface = nil
+            }
         }
     }
 
@@ -127,6 +149,7 @@ final class TmuxPaneSurface {
         controller: TmuxSessionController,
         paneID: UInt64,
         binding: TmuxSessionController.PaneBinding,
+        wakeTarget: WakeTarget,
         baseConfig: ghostty_surface_config_s,
         theme: TerminalTheme
     ) {
@@ -187,6 +210,7 @@ final class TmuxPaneSurface {
         self.binding = binding
         self.controller = controller
         self.inputBox = inputBox
+        self.wakeTarget = wakeTarget
     }
 
     var rawSurface: ghostty_surface_t { surface }
@@ -205,6 +229,14 @@ final class TmuxPaneSurface {
         )
     }
 
+    /// The first render must happen after the real host viewport has
+    /// sized the borrowed surface. Rendering before that uses the
+    /// placeholder UIView frame and can flash a stale narrow grid.
+    func refreshAfterInitialLayout() {
+        guard let surface = wakeTarget.enableRefreshAfterInitialLayout() else { return }
+        ghostty_surface_refresh(surface)
+    }
+
     func setVisible(_ visible: Bool) {
         ghostty_surface_set_occlusion(surface, visible)
     }
@@ -221,6 +253,7 @@ final class TmuxPaneSurface {
         closed = true
         onClose?()
         onClose = nil
+        wakeTarget.clear()
         ghostty_surface_free(surface)
         controller.unbind(binding) {
             completion()

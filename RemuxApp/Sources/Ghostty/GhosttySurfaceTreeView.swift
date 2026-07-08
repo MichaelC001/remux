@@ -435,6 +435,18 @@ private final class GhosttySurfaceTreeContainerUIView: UIView, UIGestureRecogniz
                   materializationContext.isAvailable,
                   let surface = materializationContext.managedSurface(for: surfaceID)
             else {
+                // A surface that retired mid-hold had its permanent
+                // removal deferred (sync skips held containers);
+                // complete it now or pendingRemoval leaks the surface.
+                if let retiringSurface = materializationContext.surfacePendingPermanentRemoval(for: surfaceID) {
+                    retiringSurface.setFocused(false)
+                    retiringSurface.setVisible(false)
+                    container.detachSurfaceIfNeeded(retiringSurface)
+                    container.removeFromSuperview()
+                    scrollContainersBySurfaceID[surfaceID] = nil
+                    materializationContext.completePermanentRemoval(of: surfaceID)
+                    continue
+                }
                 if let surface = materializationContext.managedSurface(for: surfaceID) {
                     surface.setFocused(false)
                     surface.setVisible(false)
@@ -519,9 +531,14 @@ private final class GhosttySurfaceTreeContainerUIView: UIView, UIGestureRecogniz
 
         var detachedSurfaceIDs = Set<UUID>()
         for surfaceID in Array(scrollContainersBySurfaceID.keys) where !visibleIDs.contains(surfaceID) {
-            if presentationOverlayHeldSurfaceIDs.contains(surfaceID),
-               let surface = materializationContext.managedSurface(for: surfaceID) {
-                surface.setFocused(false)
+            // Held overlay containers stay untouched even after their
+            // surface retires into pending removal: they are what keeps
+            // the outgoing pane's last frame on screen until the
+            // incoming surface completes its first layout-sized
+            // refresh. releaseHeldPresentationOverlaySurfaces owns
+            // their teardown at overlay clear.
+            if presentationOverlayHeldSurfaceIDs.contains(surfaceID) {
+                materializationContext.managedSurface(for: surfaceID)?.setFocused(false)
                 continue
             }
 
@@ -567,11 +584,10 @@ private final class GhosttySurfaceTreeContainerUIView: UIView, UIGestureRecogniz
     }
 
     private func reconcileInactiveContainer(for surfaceID: UUID) {
+        guard !presentationOverlayHeldSurfaceIDs.contains(surfaceID) else { return }
         guard let container = scrollContainersBySurfaceID[surfaceID] else { return }
 
         if let retiringSurface = materializationContext.surfacePendingPermanentRemoval(for: surfaceID) {
-            presentationOverlayHeldSurfaceIDs.remove(surfaceID)
-            presentationOverlayHeldInteractionStates[surfaceID] = nil
             retiringSurface.setFocused(false)
             retiringSurface.setVisible(false)
             container.detachSurfaceIfNeeded(retiringSurface)
@@ -591,8 +607,6 @@ private final class GhosttySurfaceTreeContainerUIView: UIView, UIGestureRecogniz
             container.removeFromSuperview()
             return
         } else {
-            presentationOverlayHeldSurfaceIDs.remove(surfaceID)
-            presentationOverlayHeldInteractionStates[surfaceID] = nil
             container.detachCurrentSurfaceForRemoval()
         }
 
