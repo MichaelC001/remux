@@ -127,8 +127,8 @@ private struct RemuxWorkspaceShell: View {
                             await model.beginServerRepair(for: entry.id)
                         }
                     },
-                    onTrustChangedHostKey: {
-                        model.trustChangedHostKeyAndReconnect(entry.id)
+                    onTrustHostKey: {
+                        model.trustHostKeyAndReconnect(entry.id)
                     },
                     onShowLibrary: {
                         dismissKeyboard()
@@ -279,7 +279,7 @@ private struct ActiveTerminalSessionView: View {
     let onReconnect: () -> Void
     let onUpdateCredentials: () -> Void
     let onEditServer: () -> Void
-    let onTrustChangedHostKey: () -> Void
+    let onTrustHostKey: () -> Void
     let onShowLibrary: () -> Void
 
     var body: some View {
@@ -293,7 +293,7 @@ private struct ActiveTerminalSessionView: View {
             onEditConnection: onShowLibrary,
             onUpdateCredentials: onUpdateCredentials,
             onEditServer: onEditServer,
-            onTrustChangedHostKey: onTrustChangedHostKey,
+            onTrustHostKey: onTrustHostKey,
             onMount: { _ in },
             onDismantle: { _ in }
         )

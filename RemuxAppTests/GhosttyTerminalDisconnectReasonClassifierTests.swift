@@ -1,10 +1,13 @@
+@preconcurrency import Citadel
+import NIO
 import XCTest
-import NIOCore
+@preconcurrency import NIOSSH
 @testable import Remux
 
 final class GhosttyTerminalDisconnectReasonClassifierTests: XCTestCase {
     func testTransportStartFailureMapsKnownBoundaryErrors() {
-        let hostKeyChange = SSHHostKeyChange(
+        let hostKeyChallenge = SSHHostKeyTrustChallenge(
+            kind: .changed,
             serverID: UUID(),
             host: "example.com",
             trustedKeyType: "ssh-ed25519",
@@ -13,13 +16,13 @@ final class GhosttyTerminalDisconnectReasonClassifierTests: XCTestCase {
             receivedOpenSSHPublicKey: "ssh-ed25519 received"
         )
         let changedReason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
-            TrustedHostStoreError.hostKeyChanged(hostKeyChange)
+            TrustedHostStoreError.hostKeyTrustRequired(hostKeyChallenge)
         )
         XCTAssertEqual(
             changedReason.kind,
             .hostKey
         )
-        XCTAssertEqual(changedReason.hostKeyChange, hostKeyChange)
+        XCTAssertEqual(changedReason.hostKeyChallenge, hostKeyChallenge)
 
         XCTAssertEqual(
             GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
@@ -119,7 +122,55 @@ final class GhosttyTerminalDisconnectReasonClassifierTests: XCTestCase {
 }
 
 final class TrustedHostStoreTests: XCTestCase {
-    func testTrustReplacementHostKeyUpdatesOnlyMatchingTrustedKey() throws {
+    func testValidatorRequiresExplicitTrustForUnknownHostKey() throws {
+        let root = temporaryRoot()
+        let server = SavedServer(
+            id: UUID(),
+            displayName: "Server",
+            host: "server.example.com",
+            username: "macbook",
+            identityID: UUID()
+        )
+        let hostKey = try makeHostKey(comment: "unknown")
+        let expectedOpenSSHKey = String(openSSHPublicKey: hostKey)
+        let store = TrustedHostStore(rootURL: root)
+
+        let promise = MultiThreadedEventLoopGroup.singleton.next().makePromise(of: Void.self)
+        store.validator(for: server).validateHostKey(
+            hostKey: hostKey,
+            validationCompletePromise: promise
+        )
+
+        var capturedChallenge: SSHHostKeyTrustChallenge?
+        XCTAssertThrowsError(try promise.futureResult.wait()) { error in
+            guard case TrustedHostStoreError.hostKeyTrustRequired(let challenge) = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+
+            capturedChallenge = challenge
+            XCTAssertEqual(challenge.kind, .unknown)
+            XCTAssertEqual(challenge.serverID, server.id)
+            XCTAssertEqual(challenge.host, server.host)
+            XCTAssertNil(challenge.trustedKeyType)
+            XCTAssertNil(challenge.trustedOpenSSHPublicKey)
+            XCTAssertEqual(challenge.receivedKeyType, "ssh-ed25519")
+            XCTAssertEqual(challenge.receivedOpenSSHPublicKey, expectedOpenSSHKey)
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: root.appendingPathComponent("trusted-hosts.json").path)
+        )
+
+        try store.trustHostKey(try XCTUnwrap(capturedChallenge))
+
+        let acceptedPromise = MultiThreadedEventLoopGroup.singleton.next().makePromise(of: Void.self)
+        store.validator(for: server).validateHostKey(
+            hostKey: hostKey,
+            validationCompletePromise: acceptedPromise
+        )
+        XCTAssertNoThrow(try acceptedPromise.futureResult.wait())
+    }
+
+    func testTrustHostKeyUpdatesOnlyMatchingTrustedKey() throws {
         let root = temporaryRoot()
         let serverID = UUID()
         let trusted = TrustedHostIdentity(
@@ -132,8 +183,9 @@ final class TrustedHostStoreTests: XCTestCase {
         try saveIdentities([trusted], root: root)
 
         let store = TrustedHostStore(rootURL: root)
-        try store.trustReplacementHostKey(
-            SSHHostKeyChange(
+        try store.trustHostKey(
+            SSHHostKeyTrustChallenge(
+                kind: .changed,
                 serverID: serverID,
                 host: "server.example.com",
                 trustedKeyType: "ssh-ed25519",
@@ -151,7 +203,7 @@ final class TrustedHostStoreTests: XCTestCase {
         XCTAssertEqual(identities[0].openSSHPublicKey, "ecdsa-sha2-nistp256 received")
     }
 
-    func testTrustReplacementHostKeyRejectsStaleChange() throws {
+    func testTrustHostKeyRejectsStaleChange() throws {
         let root = temporaryRoot()
         let serverID = UUID()
         let current = TrustedHostIdentity(
@@ -166,8 +218,9 @@ final class TrustedHostStoreTests: XCTestCase {
         let store = TrustedHostStore(rootURL: root)
 
         XCTAssertThrowsError(
-            try store.trustReplacementHostKey(
-                SSHHostKeyChange(
+            try store.trustHostKey(
+                SSHHostKeyTrustChallenge(
+                    kind: .changed,
                     serverID: serverID,
                     host: "server.example.com",
                     trustedKeyType: "ssh-ed25519",
@@ -177,7 +230,7 @@ final class TrustedHostStoreTests: XCTestCase {
                 )
             )
         ) { error in
-            guard case TrustedHostStoreError.staleHostKeyChange(host: "server.example.com") = error else {
+            guard case TrustedHostStoreError.staleHostKeyTrust(host: "server.example.com") = error else {
                 return XCTFail("unexpected error: \(error)")
             }
         }
@@ -200,6 +253,11 @@ final class TrustedHostStoreTests: XCTestCase {
     private func loadIdentities(root: URL) throws -> [TrustedHostIdentity] {
         let data = try Data(contentsOf: root.appendingPathComponent("trusted-hosts.json"))
         return try JSONDecoder().decode([TrustedHostIdentity].self, from: data)
+    }
+
+    private func makeHostKey(comment: String) throws -> NIOSSHPublicKey {
+        let generated = SSHPrivateKeyInspector.generateEd25519(comment: comment)
+        return try NIOSSHPublicKey(openSSHPublicKey: generated.publicKeyLine)
     }
 }
 

@@ -72,7 +72,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private let onEditConnection: () -> Void
     private let onUpdateCredentials: () -> Void
     private let onEditServer: () -> Void
-    private let onTrustChangedHostKey: () -> Void
+    private let onTrustHostKey: () -> Void
     private let attachmentTransferServiceFactory: @Sendable () -> any GhosttyAttachmentTransferService
     private let onMount: (GhosttyTerminalScreenViewComponent) -> Void
     private let onDismantle: (GhosttyTerminalScreenViewComponent) -> Void
@@ -89,7 +89,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         onEditConnection: @escaping () -> Void,
         onUpdateCredentials: @escaping () -> Void,
         onEditServer: @escaping () -> Void,
-        onTrustChangedHostKey: @escaping () -> Void,
+        onTrustHostKey: @escaping () -> Void,
         onMount: @escaping (GhosttyTerminalScreenViewComponent) -> Void,
         onDismantle: @escaping (GhosttyTerminalScreenViewComponent) -> Void
     ) {
@@ -102,7 +102,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         self.onEditConnection = onEditConnection
         self.onUpdateCredentials = onUpdateCredentials
         self.onEditServer = onEditServer
-        self.onTrustChangedHostKey = onTrustChangedHostKey
+        self.onTrustHostKey = onTrustHostKey
         self.onMount = onMount
         self.onDismantle = onDismantle
         // First struct init marks when SwiftUI starts building the
@@ -251,7 +251,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             onUpdateCredentials: onUpdateCredentials,
                             onEditServer: onEditServer,
                             onCancel: onEditConnection,
-                            onTrustChangedHostKey: onTrustChangedHostKey
+                            onTrustHostKey: onTrustHostKey
                         )
                     }
                     .overlay(alignment: .topTrailing) {
@@ -2121,7 +2121,7 @@ private struct GhosttySurfaceStatusOverlay: View {
     let onUpdateCredentials: () -> Void
     let onEditServer: () -> Void
     let onCancel: () -> Void
-    let onTrustChangedHostKey: () -> Void
+    let onTrustHostKey: () -> Void
 
     var body: some View {
         ZStack(alignment: overlayAlignment) {
@@ -2213,7 +2213,7 @@ private struct GhosttySurfaceStatusOverlay: View {
                     .padding(.top, 2)
             }
 
-            if let hostKeyVerification = hostKeyVerification(for: reason?.hostKeyChange) {
+            if let hostKeyVerification = hostKeyVerification(for: reason?.hostKeyChallenge) {
                 Text(hostKeyVerification)
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .foregroundStyle(GhosttySheetPalette.secondary)
@@ -2243,7 +2243,7 @@ private struct GhosttySurfaceStatusOverlay: View {
 
     @ViewBuilder
     private func repairActions(for reason: TerminalDisconnectReason?) -> some View {
-        if reason?.hostKeyChange != nil {
+        if reason?.hostKeyChallenge != nil {
             HStack(spacing: 12) {
                 GhosttyRepairActionButton(
                     title: "Cancel",
@@ -2254,12 +2254,12 @@ private struct GhosttySurfaceStatusOverlay: View {
                 )
 
                 GhosttyRepairActionButton(
-                    title: "Update Trust",
+                    title: trustActionTitle(for: reason?.hostKeyChallenge),
                     systemName: "checkmark.shield",
                     accessibilityIdentifier: "terminal.status.hostKey.updateTrust",
                     chromeStyle: chromeStyle,
                     isPrimary: true,
-                    action: onTrustChangedHostKey
+                    action: onTrustHostKey
                 )
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2311,8 +2311,13 @@ private struct GhosttySurfaceStatusOverlay: View {
     }
 
     private func title(for reason: TerminalDisconnectReason?) -> String {
-        if reason?.hostKeyChange != nil {
-            return "Host Key Changed"
+        if let challenge = reason?.hostKeyChallenge {
+            switch challenge.kind {
+            case .unknown:
+                return "Verify Server"
+            case .changed:
+                return "Host Key Changed"
+            }
         }
 
         if reason?.kind == .authentication {
@@ -2327,7 +2332,7 @@ private struct GhosttySurfaceStatusOverlay: View {
     }
 
     private func caption(for reason: TerminalDisconnectReason?) -> String {
-        if reason?.hostKeyChange != nil {
+        if reason?.hostKeyChallenge != nil {
             return "SECURITY"
         }
 
@@ -2343,8 +2348,13 @@ private struct GhosttySurfaceStatusOverlay: View {
     }
 
     private func displayMessage(for reason: TerminalDisconnectReason?, fallback: String) -> String {
-        if let change = reason?.hostKeyChange {
-            return "The SSH host key for \(change.host) changed. Update trust only if this matches the server you expect."
+        if let challenge = reason?.hostKeyChallenge {
+            switch challenge.kind {
+            case .unknown:
+                return "This is the first time Remux has seen the SSH host key for \(challenge.host). Trust it only if this fingerprint matches the server you expect."
+            case .changed:
+                return "The SSH host key for \(challenge.host) changed. Update trust only if this matches the server you expect."
+            }
         }
 
         if reason?.kind == .authentication {
@@ -2358,16 +2368,26 @@ private struct GhosttySurfaceStatusOverlay: View {
         return fallback
     }
 
-    private func hostKeyVerification(for change: SSHHostKeyChange?) -> String? {
-        guard let change else {
+    private func trustActionTitle(for challenge: SSHHostKeyTrustChallenge?) -> String {
+        guard let challenge else { return "Trust Server" }
+        switch challenge.kind {
+        case .unknown:
+            return "Trust Server"
+        case .changed:
+            return "Update Trust"
+        }
+    }
+
+    private func hostKeyVerification(for challenge: SSHHostKeyTrustChallenge?) -> String? {
+        guard let challenge else {
             return nil
         }
 
-        guard let fingerprint = hostKeyFingerprint(change.receivedOpenSSHPublicKey) else {
-            return "Received \(change.receivedKeyType)"
+        guard let fingerprint = hostKeyFingerprint(challenge.receivedOpenSSHPublicKey) else {
+            return "Received \(challenge.receivedKeyType)"
         }
 
-        return "Received \(change.receivedKeyType) \(fingerprint)"
+        return "Received \(challenge.receivedKeyType) \(fingerprint)"
     }
 
     private func hostKeyFingerprint(_ openSSHPublicKey: String) -> String? {

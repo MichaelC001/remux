@@ -1661,7 +1661,7 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(harness.model.state, .terminal(workspace.id))
     }
 
-    func testTrustChangedHostKeyUpdatesTrustAndReconnectsActiveSession() async throws {
+    func testTrustHostKeyUpdatesTrustAndReconnectsActiveSession() async throws {
         let pair = makePasswordBackedServer()
         let server = pair.server
         let workspace = SavedWorkspace(serverID: server.id, sessionName: "base")
@@ -1685,7 +1685,8 @@ final class RemuxRootModelTests: XCTestCase {
         await harness.model.connect(to: workspace.id)
 
         let oldSession = try XCTUnwrap(harness.model.activeSessions.first)
-        let change = SSHHostKeyChange(
+        let challenge = SSHHostKeyTrustChallenge(
+            kind: .changed,
             serverID: server.id,
             host: server.host,
             trustedKeyType: "ssh-ed25519",
@@ -1696,7 +1697,7 @@ final class RemuxRootModelTests: XCTestCase {
         let reason = TerminalDisconnectReason(
             kind: .hostKey,
             message: "host key changed",
-            hostKeyChange: change
+            hostKeyChallenge: challenge
         )
         _ = harness.model.handleTerminalRuntimeStateUpdate(
             TerminalRuntimeStateUpdate(
@@ -1707,7 +1708,7 @@ final class RemuxRootModelTests: XCTestCase {
             )
         )
 
-        harness.model.trustChangedHostKeyAndReconnect(workspace.id)
+        harness.model.trustHostKeyAndReconnect(workspace.id)
 
         let identities = try loadTrustedHostIdentities(root: harness.trustedHostRoot)
         XCTAssertEqual(identities.count, 1)

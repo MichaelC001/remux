@@ -370,8 +370,9 @@ final class GhosttyTerminalPresentationProjectorTests: XCTestCase {
         )
     }
 
-    func testStatusOverlayProjectionPreservesHostKeyChangeReason() {
-        let change = SSHHostKeyChange(
+    func testStatusOverlayProjectionPreservesHostKeyChallengeReason() {
+        let challenge = SSHHostKeyTrustChallenge(
+            kind: .changed,
             serverID: UUID(uuidString: "7b882734-5e15-48dd-a48c-40ff7b8906db")!,
             host: "macbook.local",
             trustedKeyType: "ssh-ed25519",
@@ -382,7 +383,7 @@ final class GhosttyTerminalPresentationProjectorTests: XCTestCase {
         let reason = TerminalDisconnectReason(
             kind: .hostKey,
             message: "Host key changed",
-            hostKeyChange: change
+            hostKeyChallenge: challenge
         )
 
         XCTAssertEqual(

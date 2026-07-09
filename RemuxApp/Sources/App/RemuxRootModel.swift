@@ -691,14 +691,14 @@ final class RemuxRootModel: ObservableObject {
         )
     }
 
-    func trustChangedHostKeyAndReconnect(_ id: SavedWorkspace.ID) {
+    func trustHostKeyAndReconnect(_ id: SavedWorkspace.ID) {
         guard let session = RemuxActiveSessionCollection.session(id, in: activeSessions),
-              let change = session.runtimeState.disconnectedReason?.hostKeyChange else {
+              let challenge = session.runtimeState.disconnectedReason?.hostKeyChallenge else {
             return
         }
 
         do {
-            try dependencies.trustedHostStore.trustReplacementHostKey(change)
+            try dependencies.trustedHostStore.trustHostKey(challenge)
             reconnectActiveSession(id, source: .manualButton)
         } catch {
             transitionToFailed(error)

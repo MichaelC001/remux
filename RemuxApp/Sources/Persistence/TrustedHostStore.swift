@@ -12,15 +12,20 @@ struct TrustedHostIdentity: Equatable, Codable, Sendable {
 }
 
 enum TrustedHostStoreError: LocalizedError, Sendable {
-    case hostKeyChanged(SSHHostKeyChange)
-    case staleHostKeyChange(host: String)
+    case hostKeyTrustRequired(SSHHostKeyTrustChallenge)
+    case staleHostKeyTrust(host: String)
     case invalidHostKey
 
     var errorDescription: String? {
         switch self {
-        case .hostKeyChanged(let change):
-            return "The SSH host key for \(change.host) changed. Remux refused the connection."
-        case .staleHostKeyChange(let host):
+        case .hostKeyTrustRequired(let challenge):
+            switch challenge.kind {
+            case .unknown:
+                return "The SSH host key for \(challenge.host) is unknown. Remux refused the connection until you trust it."
+            case .changed:
+                return "The SSH host key for \(challenge.host) changed. Remux refused the connection."
+            }
+        case .staleHostKeyTrust(let host):
             return "The SSH host key trust state for \(host) changed. Try connecting again."
         case .invalidHostKey:
             return "Remux could not read the SSH host key."
@@ -41,7 +46,7 @@ final class TrustedHostStore: @unchecked Sendable {
 
     func validator(for server: SavedServer) -> SSHHostKeyValidator {
         SSHHostKeyValidator.custom(
-            TrustOnFirstUseHostKeyValidator(server: server, store: self)
+            StoredHostKeyValidator(server: server, store: self)
         )
     }
 
@@ -52,21 +57,32 @@ final class TrustedHostStore: @unchecked Sendable {
         }
     }
 
-    func trustReplacementHostKey(_ change: SSHHostKeyChange) throws {
+    func trustHostKey(_ challenge: SSHHostKeyTrustChallenge) throws {
         try lock.withLock {
             var identities = try loadLocked()
-            guard let index = identities.firstIndex(where: { $0.serverID == change.serverID }),
-                  identities[index].openSSHPublicKey == change.trustedOpenSSHPublicKey else {
-                throw TrustedHostStoreError.staleHostKeyChange(host: change.host)
+            let trustedIdentity = Self.identity(challenge: challenge)
+
+            if let index = identities.firstIndex(where: { $0.serverID == challenge.serverID }) {
+                if identities[index].openSSHPublicKey == challenge.receivedOpenSSHPublicKey {
+                    return
+                }
+
+                guard challenge.kind == .changed,
+                      let trustedOpenSSHPublicKey = challenge.trustedOpenSSHPublicKey,
+                      identities[index].openSSHPublicKey == trustedOpenSSHPublicKey else {
+                    throw TrustedHostStoreError.staleHostKeyTrust(host: challenge.host)
+                }
+
+                identities[index] = trustedIdentity
+                try saveLocked(identities)
+                return
             }
 
-            identities[index] = TrustedHostIdentity(
-                serverID: change.serverID,
-                host: change.host,
-                keyType: change.receivedKeyType,
-                openSSHPublicKey: change.receivedOpenSSHPublicKey,
-                trustedAt: Date()
-            )
+            guard challenge.kind == .unknown else {
+                throw TrustedHostStoreError.staleHostKeyTrust(host: challenge.host)
+            }
+
+            identities.append(trustedIdentity)
             try saveLocked(identities)
         }
     }
@@ -75,18 +91,19 @@ final class TrustedHostStore: @unchecked Sendable {
         let identity = try Self.identity(server: server, hostKey: hostKey)
 
         try lock.withLock {
-            var identities = try loadLocked()
+            let identities = try loadLocked()
             if let existing = identities.first(where: { $0.serverID == server.id }) {
                 guard existing.openSSHPublicKey == identity.openSSHPublicKey else {
-                    throw TrustedHostStoreError.hostKeyChanged(
-                        Self.hostKeyChange(trusted: existing, received: identity)
+                    throw TrustedHostStoreError.hostKeyTrustRequired(
+                        Self.challenge(kind: .changed, trusted: existing, received: identity)
                     )
                 }
                 return
             }
 
-            identities.append(identity)
-            try saveLocked(identities)
+            throw TrustedHostStoreError.hostKeyTrustRequired(
+                Self.challenge(kind: .unknown, trusted: nil, received: identity)
+            )
         }
     }
 
@@ -129,22 +146,34 @@ final class TrustedHostStore: @unchecked Sendable {
         )
     }
 
-    private static func hostKeyChange(
-        trusted: TrustedHostIdentity,
+    private static func identity(challenge: SSHHostKeyTrustChallenge) -> TrustedHostIdentity {
+        TrustedHostIdentity(
+            serverID: challenge.serverID,
+            host: challenge.host,
+            keyType: challenge.receivedKeyType,
+            openSSHPublicKey: challenge.receivedOpenSSHPublicKey,
+            trustedAt: Date()
+        )
+    }
+
+    private static func challenge(
+        kind: SSHHostKeyTrustChallenge.Kind,
+        trusted: TrustedHostIdentity?,
         received: TrustedHostIdentity
-    ) -> SSHHostKeyChange {
-        SSHHostKeyChange(
-            serverID: trusted.serverID,
+    ) -> SSHHostKeyTrustChallenge {
+        SSHHostKeyTrustChallenge(
+            kind: kind,
+            serverID: received.serverID,
             host: received.host,
-            trustedKeyType: trusted.keyType,
-            trustedOpenSSHPublicKey: trusted.openSSHPublicKey,
+            trustedKeyType: trusted?.keyType,
+            trustedOpenSSHPublicKey: trusted?.openSSHPublicKey,
             receivedKeyType: received.keyType,
             receivedOpenSSHPublicKey: received.openSSHPublicKey
         )
     }
 }
 
-private final class TrustOnFirstUseHostKeyValidator: NIOSSHClientServerAuthenticationDelegate, @unchecked Sendable {
+private final class StoredHostKeyValidator: NIOSSHClientServerAuthenticationDelegate, @unchecked Sendable {
     private let server: SavedServer
     private let store: TrustedHostStore
 
