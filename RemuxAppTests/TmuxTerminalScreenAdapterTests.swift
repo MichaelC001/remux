@@ -225,28 +225,43 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         XCTAssertEqual(scaled?.include_cursor, true)
     }
 
-    func testPanePreviewRejectsSplitGeometryForRasterPreview() {
-        XCTAssertFalse(TmuxTerminalScreenAdapter.canRenderPanePreview(
-            previewSizing: .paneGrid(availableWidth: 361),
-            paneWidth: 80,
-            paneHeight: 24,
-            windowWidth: 160,
-            windowHeight: 24
-        ))
-        XCTAssertFalse(TmuxTerminalScreenAdapter.canRenderPanePreview(
-            previewSizing: .paneGrid(availableWidth: 361),
-            paneWidth: 160,
-            paneHeight: 12,
-            windowWidth: 160,
-            windowHeight: 24
-        ))
-        XCTAssertTrue(TmuxTerminalScreenAdapter.canRenderPanePreview(
-            previewSizing: .paneGrid(availableWidth: 361),
-            paneWidth: 160,
-            paneHeight: 24,
-            windowWidth: 160,
-            windowHeight: 24
-        ))
+    func testPanePreviewCacheEvictsLeastRecentlyUsedImageWithinByteLimit() throws {
+        let first = try makeImage(width: 4, height: 4)
+        let second = try makeImage(width: 4, height: 4)
+        let third = try makeImage(width: 4, height: 4)
+        let imageCost = first.bytesPerRow * first.height
+        var cache = TmuxPanePreviewImageCache(byteLimit: imageCost * 2)
+
+        XCTAssertEqual(cache.store(first, for: 1), [])
+        XCTAssertEqual(cache.store(second, for: 2), [])
+        XCTAssertNotNil(cache.image(for: 1), "reading pane 1 must refresh its LRU age")
+        XCTAssertEqual(cache.store(third, for: 3), [2])
+        XCTAssertNotNil(cache.image(for: 1))
+        XCTAssertNil(cache.image(for: 2))
+        XCTAssertNotNil(cache.image(for: 3))
+        XCTAssertEqual(cache.totalByteCost, imageCost * 2)
+    }
+
+    func testPanePreviewCacheDropsRemovedTopologyPanes() throws {
+        let image = try makeImage(width: 4, height: 4)
+        var cache = TmuxPanePreviewImageCache(byteLimit: 1024)
+        cache.store(image, for: 1)
+        cache.store(image, for: 2)
+
+        XCTAssertEqual(Set(cache.retainOnly(Set([2]))), Set([1]))
+        XCTAssertNil(cache.image(for: 1))
+        XCTAssertNotNil(cache.image(for: 2))
+    }
+
+    func testPanePreviewCacheRejectsImageLargerThanByteLimit() throws {
+        let image = try makeImage(width: 4, height: 4)
+        var cache = TmuxPanePreviewImageCache(
+            byteLimit: image.bytesPerRow * image.height - 1
+        )
+
+        XCTAssertEqual(cache.store(image, for: 1), [])
+        XCTAssertNil(cache.image(for: 1))
+        XCTAssertEqual(cache.totalByteCost, 0)
     }
 
     func testPanePreviewGridUsesFullWindowGeometry() {
@@ -323,5 +338,18 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
                 )
             )
         )
+    }
+
+    private func makeImage(width: Int, height: Int) throws -> CGImage {
+        let context = try XCTUnwrap(CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        return try XCTUnwrap(context.makeImage())
     }
 }

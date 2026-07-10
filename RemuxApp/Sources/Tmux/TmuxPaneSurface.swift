@@ -10,6 +10,7 @@ import UIKit
 /// and MUST be released after the surface is freed in `close` order:
 /// surface render stops -> surface freed -> binding unbound. Switching
 /// panes means a new TmuxPaneSurface, never a rebind.
+@MainActor
 final class TmuxPaneSurface {
     let paneID: UInt64
     let view: GhosttyKitSurfaceView
@@ -20,6 +21,10 @@ final class TmuxPaneSurface {
     private let inputBox: InputBox
     private let wakeTarget: WakeTarget
     private var closed = false
+    private var closeResult: Result<Void, TmuxSessionController.PaneReleaseError>?
+    private var closeCompletions: [
+        @MainActor @Sendable (Result<Void, TmuxSessionController.PaneReleaseError>) -> Void
+    ] = []
 
     /// Invoked synchronously at the start of `close()`, before the
     /// surface is freed: host-side wrappers borrowing the surface
@@ -100,8 +105,14 @@ final class TmuxPaneSurface {
                     wakeTarget.install(surface: pane.surface)
                     completion(.success(pane))
                 } else {
-                    controller.unbind(binding)
-                    completion(.failure(.surfaceCreationFailed))
+                    controller.unbindAndDematerialize(binding) { releaseResult in
+                        if case .failure(let error) = releaseResult {
+                            GhosttyRuntimeTrace.diagnostics(
+                                "tmuxPane.create releaseFailed pane=\(paneID) error=\(error)"
+                            )
+                        }
+                        completion(.failure(.surfaceCreationFailed))
+                    }
                 }
             }
             }
@@ -241,26 +252,41 @@ final class TmuxPaneSurface {
         ghostty_surface_set_occlusion(surface, visible)
     }
 
-    /// Teardown in contract order: free the surface (renderer stops,
-    /// the borrowed mutex is no longer locked by anyone), then release
-    /// the binding on the writer queue (destroying the engine if its
-    /// pane already died). Completion on main.
-    func close(completion: @escaping @Sendable () -> Void = {}) {
-        guard !closed else {
-            completion()
+    /// Teardown in contract order: free the surface (renderer stops and
+    /// releases the borrowed mutex), unbind presentation, then discard the
+    /// local engine. The remote pane remains alive in tmux. Completion on
+    /// main.
+    func close(
+        completion: @escaping @MainActor @Sendable (Result<Void, TmuxSessionController.PaneReleaseError>) -> Void = { _ in }
+    ) {
+        if let closeResult {
+            completion(closeResult)
             return
         }
+        closeCompletions.append(completion)
+        guard !closed else { return }
         closed = true
         onClose?()
         onClose = nil
         wakeTarget.clear()
         ghostty_surface_free(surface)
-        controller.unbind(binding) {
-            completion()
+        let paneID = paneID
+        controller.unbindAndDematerialize(binding) { [self] releaseResult in
+            if case .failure(let error) = releaseResult {
+                GhosttyRuntimeTrace.diagnostics(
+                    "tmuxPane.close releaseFailed pane=\(paneID) error=\(error)"
+                )
+            }
+            closeResult = releaseResult
+            let completions = closeCompletions
+            closeCompletions.removeAll()
+            for completion in completions {
+                completion(releaseResult)
+            }
         }
     }
 
-    deinit {
+    isolated deinit {
         assert(closed, "TmuxPaneSurface deinit without close()")
     }
 }

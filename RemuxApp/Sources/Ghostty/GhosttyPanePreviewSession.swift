@@ -55,6 +55,25 @@ final class GhosttyPanePreviewSession: ObservableObject {
         let start: Start
         let cancel: @MainActor (ghostty_surface_preview_request_t) -> Void
         let release: @MainActor (ghostty_surface_preview_request_t) -> Void
+        let cachedImage: @MainActor (UUID) -> CGImage?
+        let shouldCacheRenderedImage: @MainActor (UUID) -> Bool
+        let cacheRenderedImage: @MainActor (UUID, CGImage) -> Void
+
+        init(
+            start: @escaping Start,
+            cancel: @escaping @MainActor (ghostty_surface_preview_request_t) -> Void,
+            release: @escaping @MainActor (ghostty_surface_preview_request_t) -> Void,
+            cachedImage: @escaping @MainActor (UUID) -> CGImage? = { _ in nil },
+            shouldCacheRenderedImage: @escaping @MainActor (UUID) -> Bool = { _ in false },
+            cacheRenderedImage: @escaping @MainActor (UUID, CGImage) -> Void = { _, _ in }
+        ) {
+            self.start = start
+            self.cancel = cancel
+            self.release = release
+            self.cachedImage = cachedImage
+            self.shouldCacheRenderedImage = shouldCacheRenderedImage
+            self.cacheRenderedImage = cacheRenderedImage
+        }
     }
 
     enum PreviewSizing: Equatable {
@@ -90,6 +109,10 @@ final class GhosttyPanePreviewSession: ObservableObject {
     private let previewRequestClient: PreviewRequestClient
     private let retryDelay: Duration
     private var pendingRequests: [UUID: GhosttyPreviewRequestLease] = [:]
+    /// Whether each accepted request started from a live, full-viewport
+    /// surface. Captured at submission so a pane switch before callback
+    /// delivery cannot accidentally cache a split-geometry fallback.
+    private var pendingCacheWrites: [UUID: Bool] = [:]
     private var retryTasks: [UUID: Task<Void, Never>] = [:]
     private var generation: UInt64 = 0
 
@@ -181,6 +204,11 @@ final class GhosttyPanePreviewSession: ObservableObject {
         guard pendingRequests[paneID] == nil else { return }
         cancelRetry(for: paneID)
 
+        if let cachedImage = previewRequestClient.cachedImage(paneID) {
+            imagesByPaneID[paneID] = .ready(cachedImage)
+            return
+        }
+
         let pixelBudget = physicalPixelBudget(previewItemCount: previewItemCount)
 
         let options = ghostty_surface_preview_image_options_s(
@@ -210,6 +238,7 @@ final class GhosttyPanePreviewSession: ObservableObject {
         ) {
         case .started(let request):
             pendingRequests[paneID] = requestLease
+            pendingCacheWrites[paneID] = previewRequestClient.shouldCacheRenderedImage(paneID)
             imagesByPaneID[paneID] = .pending
             requestLease.install(request)
 
@@ -263,6 +292,7 @@ final class GhosttyPanePreviewSession: ObservableObject {
     /// this method to release the handle exactly once.
     private func dropRequest(for paneID: UUID) {
         cancelRetry(for: paneID)
+        pendingCacheWrites.removeValue(forKey: paneID)
         guard let requestLease = pendingRequests.removeValue(forKey: paneID) else {
             return
         }
@@ -284,8 +314,12 @@ final class GhosttyPanePreviewSession: ObservableObject {
         guard generation == self.generation else { return }
         guard pendingRequests[paneID] === requestLease else { return }
         pendingRequests.removeValue(forKey: paneID)
+        let shouldCache = pendingCacheWrites.removeValue(forKey: paneID) ?? false
 
         if status == GHOSTTY_SURFACE_PREVIEW_STATUS_OK, let image = image {
+            if shouldCache {
+                previewRequestClient.cacheRenderedImage(paneID, image)
+            }
             imagesByPaneID[paneID] = .ready(image)
         } else {
             let failureStatus = normalizedFailureStatus(status: status, image: image)

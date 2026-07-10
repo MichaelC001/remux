@@ -139,6 +139,12 @@ final class TmuxSessionController: @unchecked Sendable {
         case outOfMemory
     }
 
+    enum PaneReleaseError: Error {
+        case missingSession
+        case paneStillBound
+        case unexpectedResult
+    }
+
     // MARK: State
 
     /// The writer thread. Everything that touches `session` runs here.
@@ -181,7 +187,10 @@ final class TmuxSessionController: @unchecked Sendable {
         config.handshake_timeout_ms = 0 // library default
         config.command_timeout_ms = 0 // library default
         config.history_line_cap = 0 // library default
-        config.materialization_policy = GHOSTTY_TMUX_MATERIALIZATION_POLICY_ALL_PANES
+        // Mobile presentation projects one pane at a time. Topology remains
+        // complete, but a local terminal engine is created only by bind and
+        // explicitly released after its surface is gone.
+        config.materialization_policy = GHOSTTY_TMUX_MATERIALIZATION_POLICY_MANUAL
 
         // The session must be created before any callback can fire;
         // the event callback only runs inside pump/tick on our queue.
@@ -474,21 +483,46 @@ final class TmuxSessionController: @unchecked Sendable {
         }
     }
 
-    /// REQUIRED for every binding, AFTER the bound surface has been
-    /// freed (unbind may destroy a dead-pane's engine and its mutex;
-    /// no renderer may still reference them). `completion` fires on
-    /// the main queue once released.
-    func unbind(_ binding: PaneBinding, completion: @escaping @Sendable () -> Void = {}) {
+    /// REQUIRED for every binding, AFTER the bound surface has been freed.
+    /// Unbind presentation first, then discard this consumer's local engine;
+    /// the remote tmux pane and topology are untouched. Keeping both C calls
+    /// in one writer-queue turn prevents another bind from racing between
+    /// them. `completion` fires on the main queue once release finishes.
+    func unbindAndDematerialize(
+        _ binding: PaneBinding,
+        completion: @escaping @MainActor @Sendable (Result<Void, PaneReleaseError>) -> Void = { _ in }
+    ) {
         queue.async { [self] in
             guard let session else {
-                DispatchQueue.main.async(execute: completion)
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { completion(.failure(.missingSession)) }
+                }
                 return
             }
+            let startedAt = GhosttyRuntimeTrace.perfEnabled ? GhosttyRuntimeTrace.nowNanos() : 0
             ghostty_tmux_session_unbind_pane(session, binding.handle)
             // Keep the wake box alive until after unbind: no wake can
             // fire past this point.
             _ = binding.wakeBox
-            DispatchQueue.main.async(execute: completion)
+            let result = ghostty_tmux_session_dematerialize_pane(session, binding.paneID)
+            GhosttyRuntimeTrace.perf(
+                "tmuxPane.dematerialize pane=\(binding.paneID) result=\(result) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt))"
+            )
+
+            let completionResult: Result<Void, PaneReleaseError> = switch result {
+            case GHOSTTY_TMUX_RESULT_OK, GHOSTTY_TMUX_RESULT_PANE_UNKNOWN:
+                // Unknown is expected when tmux removed the pane while its
+                // bound surface was displaying the frozen zombie engine;
+                // unbind already destroyed that local engine.
+                .success(())
+            case GHOSTTY_TMUX_RESULT_PANE_BOUND:
+                .failure(.paneStillBound)
+            default:
+                .failure(.unexpectedResult)
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { completion(completionResult) }
+            }
         }
     }
 
@@ -633,7 +667,7 @@ final class TmuxSessionController: @unchecked Sendable {
 
     private func submit(
         request: Request,
-        _ body: @escaping (ghostty_tmux_session_t) -> ghostty_tmux_result_e
+        _ body: @escaping @Sendable (ghostty_tmux_session_t) -> ghostty_tmux_result_e
     ) {
         queue.async { [self] in
             guard let session else { return }

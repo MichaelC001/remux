@@ -5,6 +5,44 @@ import XCTest
 
 @MainActor
 final class GhosttyPanePreviewSessionTests: XCTestCase {
+    func testCachedPreviewIsReadyWithoutStartingRequest() throws {
+        let paneID = UUID()
+        let context = try XCTUnwrap(CGContext(
+            data: nil,
+            width: 2,
+            height: 2,
+            bitsPerComponent: 8,
+            bytesPerRow: 8,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        let cachedImage = try XCTUnwrap(context.makeImage())
+        var startCount = 0
+        let client = GhosttyPanePreviewSession.PreviewRequestClient(
+            start: { _, _, _, _ in
+                startCount += 1
+                return .rejected
+            },
+            cancel: { _ in },
+            release: { _ in },
+            cachedImage: { requestedPaneID in
+                requestedPaneID == paneID ? cachedImage : nil
+            }
+        )
+
+        let session = GhosttyPanePreviewSession(
+            leafIDs: [paneID],
+            scale: 1,
+            previewRequestClient: client
+        )
+
+        XCTAssertEqual(startCount, 0)
+        guard case .ready(let result)? = session.imagesByPaneID[paneID] else {
+            return XCTFail("expected cached preview to be ready")
+        }
+        XCTAssertTrue(result === cachedImage)
+    }
+
     func testWindowGridPreviewSizingUsesWindowTileBudget() {
         let paneID = UUID()
         let request: ghostty_surface_preview_request_t = OpaquePointer(bitPattern: 0x5051)!
