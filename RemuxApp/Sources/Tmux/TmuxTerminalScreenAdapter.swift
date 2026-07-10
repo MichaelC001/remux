@@ -88,6 +88,7 @@ struct TmuxPanePreviewImageCache {
 @MainActor
 final class TmuxTerminalScreenAdapter: ObservableObject {
     private static let panePreviewCacheByteLimit = 8 * 1024 * 1024
+    private static let panePreviewWarmupDelay: Duration = .milliseconds(250)
 
     private weak var session: TmuxTerminalSession?
     private var controller: TmuxSessionController?
@@ -112,6 +113,8 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     private var panePreviewCache = TmuxPanePreviewImageCache(
         byteLimit: TmuxTerminalScreenAdapter.panePreviewCacheByteLimit
     )
+    private var panePreviewWarmupTask: Task<Void, Never>?
+    private var panePreviewWarmupSession: GhosttyPanePreviewSession?
 
     /// Presentation hold: while the active leaf has no surface that has
     /// completed a layout-sized display update, the snapshot carries the
@@ -293,6 +296,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     func notePresentationSurfaceDisplayed(_ surfaceID: UUID) {
         guard displayedPresentationSurfaceID != surfaceID else { return }
         displayedPresentationSurfaceID = surfaceID
+        schedulePanePreviewWarmup(for: surfaceID)
         guard cachedTopologySnapshot.pendingPhonePresentationSurfaceID == surfaceID else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -361,6 +365,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     // MARK: Managed surface lifecycle
 
     private func rebuildActiveManagedSurface(for paneSurface: TmuxPaneSurface?) {
+        cancelPanePreviewWarmup()
         if let previous = activeManagedSurface {
             pendingRemovalSurfaces[previous.id] = previous
             activeManagedSurface = nil
@@ -580,6 +585,21 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         leafIDs: [UUID],
         previewSizing: GhosttyPanePreviewSession.PreviewSizing
     ) -> GhosttyPanePreviewSession {
+        // If background prewarming is still running, the sheet becomes the
+        // sole request owner. A completed warmup has already populated the
+        // shared cache; an incomplete one is canceled before the sheet starts
+        // its deferred refresh.
+        cancelPanePreviewWarmup()
+        return newPanePreviewSession(
+            leafIDs: leafIDs,
+            previewSizing: previewSizing
+        )
+    }
+
+    private func newPanePreviewSession(
+        leafIDs: [UUID],
+        previewSizing: GhosttyPanePreviewSession.PreviewSizing
+    ) -> GhosttyPanePreviewSession {
         GhosttyPanePreviewSession(
             leafIDs: leafIDs,
             previewSizing: previewSizing,
@@ -633,7 +653,6 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                 release: { GhosttyKitControlSurface.releasePreviewRequest($0) },
                 cachedImage: { [weak self] leafID in
                     guard let self,
-                          self.activeManagedSurface?.id != leafID,
                           let paneID = self.paneIDsByUUID[leafID]
                     else { return nil }
                     guard let image = self.panePreviewCache.image(for: paneID) else {
@@ -674,6 +693,42 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                 }
             )
         )
+    }
+
+    private func schedulePanePreviewWarmup(for surfaceID: UUID) {
+        panePreviewWarmupTask?.cancel()
+        let delay = Self.panePreviewWarmupDelay
+        panePreviewWarmupTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+            guard let self,
+                  self.session?.state == .ready,
+                  self.activeManagedSurface?.id == surfaceID,
+                  let paneID = self.paneIDsByUUID[surfaceID]
+            else { return }
+
+            let warmupSession = self.newPanePreviewSession(
+                leafIDs: [surfaceID],
+                previewSizing: .paneGridForCurrentScreen
+            )
+            self.panePreviewWarmupSession?.cancelAll()
+            self.panePreviewWarmupSession = warmupSession
+            self.panePreviewWarmupTask = nil
+            GhosttyRuntimeTrace.perf(
+                "tmuxPane.preview.prewarm pane=\(paneID) event=start"
+            )
+            warmupSession.startRefreshing()
+        }
+    }
+
+    private func cancelPanePreviewWarmup() {
+        panePreviewWarmupTask?.cancel()
+        panePreviewWarmupTask = nil
+        panePreviewWarmupSession?.cancelAll()
+        panePreviewWarmupSession = nil
     }
 
     private struct PanePreviewRequest {
@@ -761,6 +816,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     }
 
     private func clearPanePreviewCache(reason: String) {
+        cancelPanePreviewWarmup()
         guard !panePreviewCache.entries.isEmpty else { return }
         panePreviewCache.removeAll()
         GhosttyRuntimeTrace.perf(

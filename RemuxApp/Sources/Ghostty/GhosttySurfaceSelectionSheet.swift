@@ -135,8 +135,12 @@ struct GhosttyWindowSelectionSheet: View {
         .padding(.horizontal, 16)
         .padding(.top, 16)
         .padding(.bottom, 16)
-        .task(id: projection.previewLeafIDs) {
+        .task(id: session.id) {
             session.reconcile(leafIDs: projection.previewLeafIDs)
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            GhosttyRuntimeTrace.perf("panePreview.presentation activate kind=windows")
+            session.startRefreshing()
         }
         .onChange(of: projection.previewLeafIDs) { _, newValue in
             session.reconcile(leafIDs: newValue)
@@ -315,12 +319,16 @@ struct GhosttyPaneSelectionSheet: View {
         .padding(.horizontal, 16)
         .padding(.top, 16)
         .padding(.bottom, 16)
-        .task(id: projection.topLevelID) {
+        .task(id: session.id) {
             // First-render reconcile closes the gap between tap-time session
             // creation and the sheet's initial body render. If pane
             // membership changed during presentation, the session must align
             // immediately with the leaf IDs the sheet is actually showing.
             session.reconcile(leafIDs: projection.previewLeafIDs)
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            GhosttyRuntimeTrace.perf("panePreview.presentation activate kind=panes")
+            session.startRefreshing()
         }
         .onChange(of: projection.previewLeafIDs) { _, newValue in
             session.reconcile(leafIDs: newValue)

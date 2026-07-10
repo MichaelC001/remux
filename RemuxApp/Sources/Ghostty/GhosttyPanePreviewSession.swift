@@ -2,12 +2,15 @@ import CoreGraphics
 import Foundation
 import GhosttyKit
 
-/// Manages the lifetime of pane-preview image requests for one open picker
-/// sheet. A pane picker previews every pane in one window; the window picker
-/// previews the focused pane for each top-level window.
+/// Manages cached pane images plus the lifetime of asynchronous preview
+/// requests for one picker presentation. Construction is cache-only: callers
+/// explicitly invoke `startRefreshing()` after the sheet enters SwiftUI's
+/// presentation lifecycle, so preview submission cannot delay the sheet's
+/// initial state transaction.
 ///
-/// Owned by the parent (`GhosttySurfaceScreen`), created when a picker opens,
-/// and explicitly torn down via `cancelAll()` from the sheet's dismissal path.
+/// Owned by the caller: normally `GhosttySurfaceScreen` for an open picker,
+/// or the tmux adapter for a one-shot post-display cache warmup. Callers
+/// explicitly tear it down via `cancelAll()` when that ownership ends.
 /// Accepted request handles are also carried by the callback userdata so the
 /// Ghostty callback can release them if the Swift session disappears before
 /// completion.
@@ -17,10 +20,10 @@ import GhosttyKit
 /// - The session owns only preview request lifetime and image state. The pane
 ///   sheet owns its frozen top-level separately; the window sheet owns its
 ///   focused-leaf set separately.
-/// - The C preview request handle is held by the session for each pane in
-///   `.pending` state. Every transition out of `.pending` (deliver / cancel /
-///   reconcile-removal) releases that handle exactly once via
-///   `dropRequest(for:)`.
+/// - Every accepted C preview request handle is held in `pendingRequests`.
+///   Every completion / cancel / reconcile-removal releases that handle
+///   exactly once via its request lease. A pane may remain `.ready` while an
+///   active-pane refresh is pending so its cached image never disappears.
 /// - Pixel buffers are copied into Swift-owned memory in the C callback,
 ///   then `ghostty_surface_free_preview_image` is called immediately. The
 ///   resulting `CGImage` owns the Swift copy via a `CGDataProvider` whose
@@ -108,12 +111,16 @@ final class GhosttyPanePreviewSession: ObservableObject {
     private let previewSizing: PreviewSizing
     private let previewRequestClient: PreviewRequestClient
     private let retryDelay: Duration
+    private let createdAt: UInt64
     private var pendingRequests: [UUID: GhosttyPreviewRequestLease] = [:]
     /// Whether each accepted request started from a live, full-viewport
     /// surface. Captured at submission so a pane switch before callback
     /// delivery cannot accidentally cache a split-geometry fallback.
     private var pendingCacheWrites: [UUID: Bool] = [:]
     private var retryTasks: [UUID: Task<Void, Never>] = [:]
+    private var trackedLeafIDs: [UUID] = []
+    private var didStartRefreshing = false
+    private var isCancelled = false
     private var generation: UInt64 = 0
 
     init(
@@ -123,20 +130,28 @@ final class GhosttyPanePreviewSession: ObservableObject {
         retryDelay: Duration? = nil,
         previewRequestClient: PreviewRequestClient
     ) {
+        let createdAt = GhosttyRuntimeTrace.nowNanos()
         self.displayScale = scale
         self.previewSizing = previewSizing ?? .paneGridForCurrentScreen
         self.previewRequestClient = previewRequestClient
         self.retryDelay = retryDelay ?? Self.transientRetryDelay
-        startInitialRequests(leafIDs: leafIDs)
+        self.createdAt = createdAt
+        trackedLeafIDs = Self.uniqueLeafIDs(leafIDs)
+        seedCachedImages(for: trackedLeafIDs)
+        GhosttyRuntimeTrace.perf(
+            "panePreview.session construct panes=\(trackedLeafIDs.count) cached=\(readyImageCount) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: createdAt, to: GhosttyRuntimeTrace.nowNanos()))"
+        )
     }
 
-    private func startInitialRequests(leafIDs: [UUID]) {
-        for paneID in leafIDs {
-            startRequest(
-                for: paneID,
-                previewItemCount: max(1, leafIDs.count),
-                remainingRetryAttempts: Self.transientRetryAttempts
-            )
+    private static func uniqueLeafIDs(_ leafIDs: [UUID]) -> [UUID] {
+        var seen: Set<UUID> = []
+        return leafIDs.filter { seen.insert($0).inserted }
+    }
+
+    private func seedCachedImages(for leafIDs: [UUID]) {
+        for paneID in leafIDs where imagesByPaneID[paneID] == nil {
+            guard let image = previewRequestClient.cachedImage(paneID) else { continue }
+            imagesByPaneID[paneID] = .ready(image)
         }
     }
 
@@ -149,18 +164,44 @@ final class GhosttyPanePreviewSession: ObservableObject {
 
     // MARK: - Public API
 
+    /// Starts any live refresh or cold fallback requests that were deferred
+    /// during construction. Idempotent. Cached inactive panes issue no
+    /// request; a cached active pane keeps its image visible while its live
+    /// full-viewport refresh runs.
+    func startRefreshing() {
+        guard !didStartRefreshing, !isCancelled else { return }
+        didStartRefreshing = true
+        GhosttyRuntimeTrace.perf(
+            "panePreview.session refresh panes=\(trackedLeafIDs.count) cached=\(readyImageCount) since_construct_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: createdAt, to: GhosttyRuntimeTrace.nowNanos()))"
+        )
+
+        let paneCount = max(1, trackedLeafIDs.count)
+        for paneID in trackedLeafIDs {
+            startRequestIfNeeded(for: paneID, previewItemCount: paneCount)
+        }
+    }
+
     /// Reconcile in-flight requests against an updated leaf ID set within
     /// the frozen top-level. Adds requests for new panes, cancels+releases
     /// requests for removed panes. Existing pending requests are untouched.
     func reconcile(leafIDs: [UUID]) {
-        let newSet = Set(leafIDs)
-        let currentSet = Set(imagesByPaneID.keys)
-        let paneCount = max(1, leafIDs.count)
+        let uniqueLeafIDs = Self.uniqueLeafIDs(leafIDs)
+        let newSet = Set(uniqueLeafIDs)
+        let currentSet = Set(trackedLeafIDs)
+        let paneCount = max(1, uniqueLeafIDs.count)
 
         for removedID in currentSet.subtracting(newSet) {
             dropRequest(for: removedID)
             imagesByPaneID.removeValue(forKey: removedID)
         }
+        trackedLeafIDs = uniqueLeafIDs
+
+        for addedID in newSet.subtracting(currentSet) {
+            seedCachedImages(for: [addedID])
+        }
+
+        guard didStartRefreshing, !isCancelled else { return }
+
         for retainedID in currentSet.intersection(newSet) {
             guard shouldRetryPreview(for: retainedID) else { continue }
             startRequest(
@@ -170,11 +211,7 @@ final class GhosttyPanePreviewSession: ObservableObject {
             )
         }
         for addedID in newSet.subtracting(currentSet) {
-            startRequest(
-                for: addedID,
-                previewItemCount: paneCount,
-                remainingRetryAttempts: Self.transientRetryAttempts
-            )
+            startRequestIfNeeded(for: addedID, previewItemCount: paneCount)
         }
     }
 
@@ -184,6 +221,7 @@ final class GhosttyPanePreviewSession: ObservableObject {
     /// `imagesByPaneID` so currently-displayed previews remain visible
     /// while the sheet animates out.
     func cancelAll() {
+        isCancelled = true
         generation &+= 1
         for task in retryTasks.values {
             task.cancel()
@@ -196,6 +234,27 @@ final class GhosttyPanePreviewSession: ObservableObject {
 
     // MARK: - Internal: request lifecycle
 
+    private var readyImageCount: Int {
+        imagesByPaneID.values.reduce(into: 0) { count, state in
+            if case .ready = state {
+                count += 1
+            }
+        }
+    }
+
+    private func startRequestIfNeeded(for paneID: UUID, previewItemCount: Int) {
+        guard pendingRequests[paneID] == nil else { return }
+        if case .ready? = imagesByPaneID[paneID],
+           !previewRequestClient.shouldCacheRenderedImage(paneID) {
+            return
+        }
+        startRequest(
+            for: paneID,
+            previewItemCount: previewItemCount,
+            remainingRetryAttempts: Self.transientRetryAttempts
+        )
+    }
+
     private func startRequest(
         for paneID: UUID,
         previewItemCount: Int,
@@ -203,10 +262,11 @@ final class GhosttyPanePreviewSession: ObservableObject {
     ) {
         guard pendingRequests[paneID] == nil else { return }
         cancelRetry(for: paneID)
-
-        if let cachedImage = previewRequestClient.cachedImage(paneID) {
-            imagesByPaneID[paneID] = .ready(cachedImage)
-            return
+        let preservesCachedImage: Bool
+        if case .ready? = imagesByPaneID[paneID] {
+            preservesCachedImage = true
+        } else {
+            preservesCachedImage = false
         }
 
         let pixelBudget = physicalPixelBudget(previewItemCount: previewItemCount)
@@ -239,15 +299,19 @@ final class GhosttyPanePreviewSession: ObservableObject {
         case .started(let request):
             pendingRequests[paneID] = requestLease
             pendingCacheWrites[paneID] = previewRequestClient.shouldCacheRenderedImage(paneID)
-            imagesByPaneID[paneID] = .pending
+            if !preservesCachedImage {
+                imagesByPaneID[paneID] = .pending
+            }
             requestLease.install(request)
 
         case .failed(let status):
             Unmanaged<PreviewCallbackBox>.fromOpaque(userdata).release()
+            guard !preservesCachedImage else { return }
             imagesByPaneID[paneID] = .failed(status)
 
         case .surfaceUnavailable:
             Unmanaged<PreviewCallbackBox>.fromOpaque(userdata).release()
+            guard !preservesCachedImage else { return }
             imagesByPaneID[paneID] = .failed(GHOSTTY_SURFACE_PREVIEW_STATUS_SURFACE_CLOSED)
             scheduleRetry(
                 for: paneID,
@@ -259,6 +323,7 @@ final class GhosttyPanePreviewSession: ObservableObject {
             // Synchronous rejection (e.g., immediate alloc failure). Reclaim
             // the box we just retained and mark the pane failed.
             Unmanaged<PreviewCallbackBox>.fromOpaque(userdata).release()
+            guard !preservesCachedImage else { return }
             imagesByPaneID[paneID] = .failed(GHOSTTY_SURFACE_PREVIEW_STATUS_RENDER_FAILED)
             scheduleRetry(
                 for: paneID,
@@ -288,7 +353,7 @@ final class GhosttyPanePreviewSession: ObservableObject {
     }
 
     /// Cancel-and-release the C request handle for a pane. Ownership rule:
-    /// any caller that transitions a pane out of `.pending` MUST go through
+    /// every caller that stops tracking an accepted request MUST go through
     /// this method to release the handle exactly once.
     private func dropRequest(for paneID: UUID) {
         cancelRetry(for: paneID)
@@ -323,6 +388,11 @@ final class GhosttyPanePreviewSession: ObservableObject {
             imagesByPaneID[paneID] = .ready(image)
         } else {
             let failureStatus = normalizedFailureStatus(status: status, image: image)
+            if case .ready? = imagesByPaneID[paneID] {
+                // A failed refresh must not replace a usable cached image
+                // with an empty/error placeholder.
+                return
+            }
             imagesByPaneID[paneID] = .failed(failureStatus)
             guard isTransientPreviewFailure(failureStatus) else { return }
             scheduleRetry(

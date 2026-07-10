@@ -36,11 +36,167 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             previewRequestClient: client
         )
 
+        session.startRefreshing()
         XCTAssertEqual(startCount, 0)
         guard case .ready(let result)? = session.imagesByPaneID[paneID] else {
             return XCTFail("expected cached preview to be ready")
         }
         XCTAssertTrue(result === cachedImage)
+    }
+
+    func testUncachedPreviewDoesNotStartUntilRefreshBegins() {
+        let paneID = UUID()
+        let request: ghostty_surface_preview_request_t = OpaquePointer(bitPattern: 0x5050)!
+        var startCount = 0
+        let client = GhosttyPanePreviewSession.PreviewRequestClient(
+            start: { _, _, _, _ in
+                startCount += 1
+                return .started(request)
+            },
+            cancel: { _ in },
+            release: { _ in }
+        )
+
+        let session = GhosttyPanePreviewSession(
+            leafIDs: [paneID],
+            scale: 1,
+            previewRequestClient: client
+        )
+
+        XCTAssertEqual(startCount, 0)
+        XCTAssertNil(session.imagesByPaneID[paneID])
+
+        session.startRefreshing()
+
+        XCTAssertEqual(startCount, 1)
+        XCTAssertPending(session.imagesByPaneID[paneID])
+        session.cancelAll()
+    }
+
+    func testMixedCachedAndUncachedPanesOnlyRequestColdPreviewAfterRefreshBegins() throws {
+        let cachedPaneID = UUID()
+        let uncachedPaneID = UUID()
+        let context = try XCTUnwrap(CGContext(
+            data: nil,
+            width: 2,
+            height: 2,
+            bitsPerComponent: 8,
+            bytesPerRow: 8,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        let cachedImage = try XCTUnwrap(context.makeImage())
+        let request: ghostty_surface_preview_request_t = OpaquePointer(bitPattern: 0x5053)!
+        var startedPaneIDs: [UUID] = []
+        let client = GhosttyPanePreviewSession.PreviewRequestClient(
+            start: { paneID, _, _, _ in
+                startedPaneIDs.append(paneID)
+                return .started(request)
+            },
+            cancel: { _ in },
+            release: { _ in },
+            cachedImage: { paneID in
+                paneID == cachedPaneID ? cachedImage : nil
+            }
+        )
+
+        let session = GhosttyPanePreviewSession(
+            leafIDs: [cachedPaneID, uncachedPaneID],
+            scale: 1,
+            previewRequestClient: client
+        )
+
+        XCTAssertTrue(startedPaneIDs.isEmpty)
+        guard case .ready(let result)? = session.imagesByPaneID[cachedPaneID] else {
+            return XCTFail("expected cached pane to be ready during construction")
+        }
+        XCTAssertTrue(result === cachedImage)
+        XCTAssertNil(session.imagesByPaneID[uncachedPaneID])
+
+        session.startRefreshing()
+
+        XCTAssertEqual(startedPaneIDs, [uncachedPaneID])
+        XCTAssertPending(session.imagesByPaneID[uncachedPaneID])
+        session.cancelAll()
+    }
+
+    func testCancelBeforeRefreshPreventsRequestStart() {
+        let paneID = UUID()
+        var startCount = 0
+        let client = GhosttyPanePreviewSession.PreviewRequestClient(
+            start: { _, _, _, _ in
+                startCount += 1
+                return .rejected
+            },
+            cancel: { _ in },
+            release: { _ in }
+        )
+        let session = GhosttyPanePreviewSession(
+            leafIDs: [paneID],
+            scale: 1,
+            previewRequestClient: client
+        )
+
+        session.cancelAll()
+        session.startRefreshing()
+
+        XCTAssertEqual(startCount, 0)
+        XCTAssertNil(session.imagesByPaneID[paneID])
+    }
+
+    func testCachedActivePreviewStaysVisibleWhenRefreshFails() async throws {
+        let paneID = UUID()
+        let context = try XCTUnwrap(CGContext(
+            data: nil,
+            width: 2,
+            height: 2,
+            bitsPerComponent: 8,
+            bytesPerRow: 8,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        let cachedImage = try XCTUnwrap(context.makeImage())
+        let request: ghostty_surface_preview_request_t = OpaquePointer(bitPattern: 0x5052)!
+        var callbacks: [CapturedPreviewCallback] = []
+        var releasedRequests: [ghostty_surface_preview_request_t] = []
+        let client = GhosttyPanePreviewSession.PreviewRequestClient(
+            start: { _, _, userdata, callback in
+                callbacks.append(.init(userdata: userdata, callback: callback))
+                return .started(request)
+            },
+            cancel: { _ in },
+            release: { releasedRequests.append($0) },
+            cachedImage: { requestedPaneID in
+                requestedPaneID == paneID ? cachedImage : nil
+            },
+            shouldCacheRenderedImage: { $0 == paneID }
+        )
+        let session = GhosttyPanePreviewSession(
+            leafIDs: [paneID],
+            scale: 1,
+            previewRequestClient: client
+        )
+
+        session.startRefreshing()
+
+        guard case .ready(let refreshingImage)? = session.imagesByPaneID[paneID] else {
+            return XCTFail("expected cached image to remain visible during refresh")
+        }
+        XCTAssertTrue(refreshingImage === cachedImage)
+        XCTAssertEqual(callbacks.count, 1)
+
+        callbacks[0].callback(
+            callbacks[0].userdata,
+            GHOSTTY_SURFACE_PREVIEW_STATUS_RENDER_FAILED,
+            ghostty_surface_preview_image_s()
+        )
+
+        let didRelease = await waitUntil { releasedRequests == [request] }
+        XCTAssertTrue(didRelease)
+        guard case .ready(let finalImage)? = session.imagesByPaneID[paneID] else {
+            return XCTFail("expected failed refresh to preserve cached image")
+        }
+        XCTAssertTrue(finalImage === cachedImage)
     }
 
     func testWindowGridPreviewSizingUsesWindowTileBudget() {
@@ -64,6 +220,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             previewRequestClient: client
         )
 
+        session.startRefreshing()
         XCTAssertEqual(capturedOptions?.max_width_px, 477)
         XCTAssertEqual(capturedOptions?.max_height_px, 360)
         session.cancelAll()
@@ -93,6 +250,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             previewRequestClient: client
         )
 
+        session.startRefreshing()
         XCTAssertEqual(startedPaneIDs, [paneID])
         assertFailed(
             session.imagesByPaneID[paneID],
@@ -132,6 +290,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             previewRequestClient: client
         )
 
+        session.startRefreshing()
         assertFailed(
             session.imagesByPaneID[paneID],
             status: GHOSTTY_SURFACE_PREVIEW_STATUS_INVALID_OPTIONS
@@ -165,6 +324,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             previewRequestClient: client
         )
 
+        session.startRefreshing()
         callbacks[0].callback(
             callbacks[0].userdata,
             GHOSTTY_SURFACE_PREVIEW_STATUS_SURFACE_CLOSED,
@@ -206,6 +366,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             scale: 1,
             previewRequestClient: client
         )
+        session?.startRefreshing()
         weak var weakSession = session
         XCTAssertNotNil(weakSession)
 
@@ -246,6 +407,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             previewRequestClient: client
         )
 
+        session.startRefreshing()
         callbacks[0].callback(
             callbacks[0].userdata,
             GHOSTTY_SURFACE_PREVIEW_STATUS_OK,
@@ -299,6 +461,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             previewRequestClient: client
         )
 
+        session.startRefreshing()
         session.reconcile(leafIDs: [retainedPaneID, addedPaneID])
 
         XCTAssertEqual(startedPaneIDs, [retainedPaneID, removedPaneID, addedPaneID])
@@ -344,6 +507,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             previewRequestClient: client
         )
 
+        session.startRefreshing()
         session.reconcile(leafIDs: [])
         session.reconcile(leafIDs: [paneID])
 
