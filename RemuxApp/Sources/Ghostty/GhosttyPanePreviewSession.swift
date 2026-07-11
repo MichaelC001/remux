@@ -67,12 +67,14 @@ final class GhosttyPanePreviewSession: ObservableObject {
     }
 
     struct PreviewRequestClient {
+        typealias StartCompletion = @MainActor @Sendable (PreviewStartResult) -> Void
         typealias Start = @MainActor (
             UUID,
             ghostty_surface_preview_image_options_s,
             UnsafeMutableRawPointer?,
-            ghostty_surface_preview_image_callback_f
-        ) -> PreviewStartResult
+            ghostty_surface_preview_image_callback_f,
+            @escaping StartCompletion
+        ) -> Void
 
         let start: Start
         let cancel: @MainActor (ghostty_surface_preview_request_t) -> Void
@@ -190,6 +192,7 @@ final class GhosttyPanePreviewSession: ObservableObject {
     func startRefreshing() {
         guard !didStartRefreshing, !isCancelled else { return }
         didStartRefreshing = true
+        let submitStartedAt = GhosttyRuntimeTrace.nowNanos()
         GhosttyRuntimeTrace.perf(
             "panePreview.session refresh panes=\(trackedLeafIDs.count) cached=\(readyImageCount) since_construct_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: createdAt, to: GhosttyRuntimeTrace.nowNanos()))"
         )
@@ -198,6 +201,9 @@ final class GhosttyPanePreviewSession: ObservableObject {
         for paneID in trackedLeafIDs {
             startRequestIfNeeded(for: paneID, previewItemCount: paneCount)
         }
+        GhosttyRuntimeTrace.perf(
+            "panePreview.session submitted panes=\(trackedLeafIDs.count) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: submitStartedAt, to: GhosttyRuntimeTrace.nowNanos()))"
+        )
     }
 
     /// Reconcile in-flight requests against an updated leaf ID set within
@@ -309,46 +315,65 @@ final class GhosttyPanePreviewSession: ObservableObject {
             requestLease: requestLease
         )
         let userdata = Unmanaged.passRetained(box).toOpaque()
+        let requestGeneration = generation
+        pendingRequests[paneID] = requestLease
+        if !preservesCachedImage {
+            imagesByPaneID[paneID] = .pending
+        }
 
-        switch startPreviewRequest(
+        startPreviewRequest(
             paneID: paneID,
             options: options,
             userdata: userdata
-        ) {
-        case .started(let request, let source):
-            pendingRequests[paneID] = requestLease
-            pendingSources[paneID] = source
-            if !preservesCachedImage {
-                imagesByPaneID[paneID] = .pending
+        ) { [weak self] result in
+            if case .started(let request, _) = result {
+                // Install even after cancellation. The lease remembers an
+                // early cancel/release and applies both exactly once when
+                // the writer queue eventually returns the C handle.
+                requestLease.install(request)
+            } else {
+                // A rejected submission never transfers userdata to C.
+                Unmanaged<PreviewCallbackBox>.fromOpaque(userdata).release()
             }
-            requestLease.install(request)
 
-        case .failed(let status):
-            Unmanaged<PreviewCallbackBox>.fromOpaque(userdata).release()
-            guard !preservesCachedImage else { return }
-            imagesByPaneID[paneID] = .failed(status)
+            guard let self,
+                  requestGeneration == self.generation,
+                  self.pendingRequests[paneID] === requestLease
+            else { return }
 
-        case .surfaceUnavailable:
-            Unmanaged<PreviewCallbackBox>.fromOpaque(userdata).release()
-            guard !preservesCachedImage else { return }
-            imagesByPaneID[paneID] = .failed(GHOSTTY_SURFACE_PREVIEW_STATUS_SURFACE_CLOSED)
-            scheduleRetry(
-                for: paneID,
-                previewItemCount: previewItemCount,
-                remainingRetryAttempts: remainingRetryAttempts
-            )
+            switch result {
+            case .started(_, let source):
+                self.pendingSources[paneID] = source
 
-        case .rejected:
-            // Synchronous rejection (e.g., immediate alloc failure). Reclaim
-            // the box we just retained and mark the pane failed.
-            Unmanaged<PreviewCallbackBox>.fromOpaque(userdata).release()
-            guard !preservesCachedImage else { return }
-            imagesByPaneID[paneID] = .failed(GHOSTTY_SURFACE_PREVIEW_STATUS_RENDER_FAILED)
-            scheduleRetry(
-                for: paneID,
-                previewItemCount: previewItemCount,
-                remainingRetryAttempts: remainingRetryAttempts
-            )
+            case .failed(let status):
+                self.pendingRequests.removeValue(forKey: paneID)
+                guard !preservesCachedImage else { return }
+                self.imagesByPaneID[paneID] = .failed(status)
+
+            case .surfaceUnavailable:
+                self.pendingRequests.removeValue(forKey: paneID)
+                guard !preservesCachedImage else { return }
+                self.imagesByPaneID[paneID] = .failed(
+                    GHOSTTY_SURFACE_PREVIEW_STATUS_SURFACE_CLOSED
+                )
+                self.scheduleRetry(
+                    for: paneID,
+                    previewItemCount: previewItemCount,
+                    remainingRetryAttempts: remainingRetryAttempts
+                )
+
+            case .rejected:
+                self.pendingRequests.removeValue(forKey: paneID)
+                guard !preservesCachedImage else { return }
+                self.imagesByPaneID[paneID] = .failed(
+                    GHOSTTY_SURFACE_PREVIEW_STATUS_RENDER_FAILED
+                )
+                self.scheduleRetry(
+                    for: paneID,
+                    previewItemCount: previewItemCount,
+                    remainingRetryAttempts: remainingRetryAttempts
+                )
+            }
         }
     }
 
@@ -474,9 +499,16 @@ final class GhosttyPanePreviewSession: ObservableObject {
     private func startPreviewRequest(
         paneID: UUID,
         options: ghostty_surface_preview_image_options_s,
-        userdata: UnsafeMutableRawPointer?
-    ) -> PreviewStartResult {
-        previewRequestClient.start(paneID, options, userdata, previewImageCallback)
+        userdata: UnsafeMutableRawPointer?,
+        completion: @escaping PreviewRequestClient.StartCompletion
+    ) {
+        previewRequestClient.start(
+            paneID,
+            options,
+            userdata,
+            previewImageCallback,
+            completion
+        )
     }
 }
 

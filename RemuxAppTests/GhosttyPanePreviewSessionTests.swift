@@ -19,9 +19,9 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         let cachedImage = try XCTUnwrap(context.makeImage())
         var startCount = 0
         let client = GhosttyPanePreviewSession.PreviewRequestClient(
-            start: { _, _, _, _ in
+            start: { _, _, _, _, completion in
                 startCount += 1
-                return .rejected
+                completion(.rejected)
             },
             cancel: { _ in },
             release: { _ in },
@@ -52,9 +52,9 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         let request: ghostty_surface_preview_request_t = OpaquePointer(bitPattern: 0x5050)!
         var startCount = 0
         let client = GhosttyPanePreviewSession.PreviewRequestClient(
-            start: { _, _, _, _ in
+            start: { _, _, _, _, completion in
                 startCount += 1
-                return .started(request)
+                completion(.started(request))
             },
             cancel: { _ in },
             release: { _ in }
@@ -92,9 +92,9 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         let request: ghostty_surface_preview_request_t = OpaquePointer(bitPattern: 0x5053)!
         var startedPaneIDs: [UUID] = []
         let client = GhosttyPanePreviewSession.PreviewRequestClient(
-            start: { paneID, _, _, _ in
+            start: { paneID, _, _, _, completion in
                 startedPaneIDs.append(paneID)
-                return .started(request)
+                completion(.started(request))
             },
             cancel: { _ in },
             release: { _ in },
@@ -129,9 +129,9 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         let paneID = UUID()
         var startCount = 0
         let client = GhosttyPanePreviewSession.PreviewRequestClient(
-            start: { _, _, _, _ in
+            start: { _, _, _, _, completion in
                 startCount += 1
-                return .rejected
+                completion(.rejected)
             },
             cancel: { _ in },
             release: { _ in }
@@ -163,11 +163,12 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         let cachedImage = try XCTUnwrap(context.makeImage())
         let request: ghostty_surface_preview_request_t = OpaquePointer(bitPattern: 0x5052)!
         var callbacks: [CapturedPreviewCallback] = []
+        var startCompletions: [GhosttyPanePreviewSession.PreviewRequestClient.StartCompletion] = []
         var releasedRequests: [ghostty_surface_preview_request_t] = []
         let client = GhosttyPanePreviewSession.PreviewRequestClient(
-            start: { _, _, userdata, callback in
+            start: { _, _, userdata, callback, completion in
                 callbacks.append(.init(userdata: userdata, callback: callback))
-                return .started(request)
+                startCompletions.append(completion)
             },
             cancel: { _ in },
             release: { releasedRequests.append($0) },
@@ -191,6 +192,9 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         }
         XCTAssertTrue(refreshingImage.image === cachedImage)
         XCTAssertEqual(callbacks.count, 1)
+        XCTAssertEqual(startCompletions.count, 1)
+
+        startCompletions[0](.started(request))
 
         callbacks[0].callback(
             callbacks[0].userdata,
@@ -212,9 +216,9 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         var capturedOptions: ghostty_surface_preview_image_options_s?
 
         let client = GhosttyPanePreviewSession.PreviewRequestClient(
-            start: { _, options, _, _ in
+            start: { _, options, _, _, completion in
                 capturedOptions = options
-                return .started(request)
+                completion(.started(request))
             },
             cancel: { _ in },
             release: { _ in }
@@ -239,12 +243,13 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         var startedPaneIDs: [UUID] = []
 
         let client = GhosttyPanePreviewSession.PreviewRequestClient(
-            start: { requestedPaneID, _, _, _ in
+            start: { requestedPaneID, _, _, _, completion in
                 startedPaneIDs.append(requestedPaneID)
                 guard startedPaneIDs.count > 1 else {
-                    return .surfaceUnavailable
+                    completion(.surfaceUnavailable)
+                    return
                 }
-                return .started(fakeRequest)
+                completion(.started(fakeRequest))
             },
             cancel: { _ in },
             release: { _ in }
@@ -282,9 +287,9 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         var startedPaneIDs: [UUID] = []
 
         let client = GhosttyPanePreviewSession.PreviewRequestClient(
-            start: { requestedPaneID, _, _, _ in
+            start: { requestedPaneID, _, _, _, completion in
                 startedPaneIDs.append(requestedPaneID)
-                return .failed(GHOSTTY_SURFACE_PREVIEW_STATUS_INVALID_OPTIONS)
+                completion(.failed(GHOSTTY_SURFACE_PREVIEW_STATUS_INVALID_OPTIONS))
             },
             cancel: { _ in },
             release: { _ in }
@@ -315,10 +320,10 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         var releasedRequests: [ghostty_surface_preview_request_t] = []
 
         let client = GhosttyPanePreviewSession.PreviewRequestClient(
-            start: { requestedPaneID, _, userdata, callback in
+            start: { requestedPaneID, _, userdata, callback, completion in
                 startedPaneIDs.append(requestedPaneID)
                 callbacks.append(.init(userdata: userdata, callback: callback))
-                return .started(startedPaneIDs.count == 1 ? firstRequest : secondRequest)
+                completion(.started(startedPaneIDs.count == 1 ? firstRequest : secondRequest))
             },
             cancel: { _ in },
             release: { releasedRequests.append($0) }
@@ -353,6 +358,80 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         XCTAssertEqual(releasedRequests, [firstRequest, secondRequest])
     }
 
+    func testEachPaneKeepsItsOwnSixRetryBudget() async {
+        let firstPaneID = UUID()
+        let secondPaneID = UUID()
+        var attemptsByPaneID: [UUID: Int] = [:]
+
+        let client = GhosttyPanePreviewSession.PreviewRequestClient(
+            start: { paneID, _, _, _, completion in
+                attemptsByPaneID[paneID, default: 0] += 1
+                completion(.surfaceUnavailable)
+            },
+            cancel: { _ in },
+            release: { _ in }
+        )
+        let session = GhosttyPanePreviewSession(
+            leafIDs: [firstPaneID, secondPaneID],
+            scale: 1,
+            retryDelay: .milliseconds(1),
+            previewRequestClient: client
+        )
+
+        session.startRefreshing()
+
+        let exhaustedBothBudgets = await waitUntil {
+            attemptsByPaneID[firstPaneID] == 7 &&
+                attemptsByPaneID[secondPaneID] == 7
+        }
+        XCTAssertTrue(exhaustedBothBudgets)
+        try? await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(attemptsByPaneID[firstPaneID], 7)
+        XCTAssertEqual(attemptsByPaneID[secondPaneID], 7)
+    }
+
+    func testCancellationBeforeDeferredAcceptanceCancelsAndReleasesAcceptedHandleOnce() async {
+        let paneID = UUID()
+        let request: ghostty_surface_preview_request_t = OpaquePointer(bitPattern: 0x5255)!
+        var capturedCallback: CapturedPreviewCallback?
+        var startCompletion: GhosttyPanePreviewSession.PreviewRequestClient.StartCompletion?
+        var canceledRequests: [ghostty_surface_preview_request_t] = []
+        var releasedRequests: [ghostty_surface_preview_request_t] = []
+
+        let client = GhosttyPanePreviewSession.PreviewRequestClient(
+            start: { _, _, userdata, callback, completion in
+                capturedCallback = .init(userdata: userdata, callback: callback)
+                startCompletion = completion
+            },
+            cancel: { canceledRequests.append($0) },
+            release: { releasedRequests.append($0) }
+        )
+        let session = GhosttyPanePreviewSession(
+            leafIDs: [paneID],
+            scale: 1,
+            previewRequestClient: client
+        )
+
+        session.startRefreshing()
+        XCTAssertPending(session.imagesByPaneID[paneID])
+        session.cancelAll()
+        XCTAssertTrue(canceledRequests.isEmpty)
+        XCTAssertTrue(releasedRequests.isEmpty)
+
+        startCompletion?(.started(request))
+        XCTAssertEqual(canceledRequests, [request])
+        XCTAssertEqual(releasedRequests, [request])
+
+        capturedCallback?.callback(
+            capturedCallback?.userdata,
+            GHOSTTY_SURFACE_PREVIEW_STATUS_CANCELLED,
+            ghostty_surface_preview_image_s()
+        )
+        try? await Task.sleep(for: .milliseconds(10))
+        XCTAssertEqual(canceledRequests, [request])
+        XCTAssertEqual(releasedRequests, [request])
+    }
+
     func testAcceptedRequestReleasesWhenSessionDisappearsBeforeCallback() async {
         let paneID = UUID()
         let request: ghostty_surface_preview_request_t = OpaquePointer(bitPattern: 0x5253)!
@@ -360,9 +439,9 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         var releasedRequests: [ghostty_surface_preview_request_t] = []
 
         let client = GhosttyPanePreviewSession.PreviewRequestClient(
-            start: { _, _, userdata, callback in
+            start: { _, _, userdata, callback, completion in
                 callbacks.append(.init(userdata: userdata, callback: callback))
-                return .started(request)
+                completion(.started(request))
             },
             cancel: { _ in },
             release: { releasedRequests.append($0) }
@@ -399,9 +478,9 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         var releasedRequests: [ghostty_surface_preview_request_t] = []
 
         let client = GhosttyPanePreviewSession.PreviewRequestClient(
-            start: { _, _, userdata, callback in
+            start: { _, _, userdata, callback, completion in
                 callbacks.append(.init(userdata: userdata, callback: callback))
-                return .started(request)
+                completion(.started(request))
             },
             cancel: { _ in },
             release: { releasedRequests.append($0) }
@@ -444,18 +523,18 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         var releasedRequests: [ghostty_surface_preview_request_t] = []
 
         let client = GhosttyPanePreviewSession.PreviewRequestClient(
-            start: { paneID, _, _, _ in
+            start: { paneID, _, _, _, completion in
                 startedPaneIDs.append(paneID)
                 switch paneID {
                 case retainedPaneID:
-                    return .started(retainedRequest)
+                    completion(.started(retainedRequest))
                 case removedPaneID:
-                    return .started(removedRequest)
+                    completion(.started(removedRequest))
                 case addedPaneID:
-                    return .started(addedRequest)
+                    completion(.started(addedRequest))
                 default:
                     XCTFail("unexpected pane request \(paneID)")
-                    return .rejected
+                    completion(.rejected)
                 }
             },
             cancel: { canceledRequests.append($0) },
@@ -499,10 +578,10 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         var startCount = 0
 
         let client = GhosttyPanePreviewSession.PreviewRequestClient(
-            start: { _, _, userdata, callback in
+            start: { _, _, userdata, callback, completion in
                 startCount += 1
                 callbacks.append(.init(userdata: userdata, callback: callback))
-                return .started(startCount == 1 ? firstRequest : secondRequest)
+                completion(.started(startCount == 1 ? firstRequest : secondRequest))
             },
             cancel: { canceledRequests.append($0) },
             release: { releasedRequests.append($0) }

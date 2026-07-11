@@ -636,12 +636,14 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
             leafIDs: leafIDs,
             previewSizing: previewSizing,
             previewRequestClient: GhosttyPanePreviewSession.PreviewRequestClient(
-                start: { [weak self] leafID, options, userdata, callback in
+                start: { [weak self] leafID, options, userdata, callback, completion in
                     guard let self else {
-                        return .surfaceUnavailable
+                        completion(.surfaceUnavailable)
+                        return
                     }
                     guard let paneID = self.paneIDsByUUID[leafID] else {
-                        return .surfaceUnavailable
+                        completion(.surfaceUnavailable)
+                        return
                     }
                     if let activeSurface = self.activeManagedSurface,
                        self.activeManagedPaneID == paneID {
@@ -653,7 +655,8 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                             userdata: userdata,
                             callback: callback
                         ) else {
-                            return .rejected
+                            completion(.rejected)
+                            return
                         }
                         let size = activeSurface.controlSurface.currentSize()
                         let source: GhosttyPanePreviewSession.PreviewSource
@@ -668,34 +671,46 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                         } else {
                             source = .remotePaneGeometry
                         }
-                        return .started(
-                            request,
-                            source: source
+                        completion(
+                            .started(
+                                request,
+                                source: source
+                            )
                         )
+                        return
                     }
                     guard let styleSurface = self.activeManagedSurface?.controlSurface.handle else {
-                        return .surfaceUnavailable
+                        completion(.surfaceUnavailable)
+                        return
                     }
                     guard let renderRequest = self.panePreviewRequest(
                         paneID: paneID,
                         options: options
                     ) else {
-                        return .surfaceUnavailable
+                        completion(.surfaceUnavailable)
+                        return
                     }
                     GhosttyRuntimeTrace.perf(
                         "tmuxPane.preview.request pane=\(paneID) source=remote-split-fallback"
                     )
-                    guard let request = self.controller?.renderPanePreviewImageAsync(
+                    guard let controller = self.controller else {
+                        completion(.rejected)
+                        return
+                    }
+                    controller.renderPanePreviewImageAsync(
                         paneID: paneID,
                         styleSurface: styleSurface,
                         options: renderRequest.options,
                         previewGrid: renderRequest.grid,
                         userdata: userdata,
                         callback: callback
-                    ) else {
-                        return .rejected
+                    ) { request in
+                        guard let request else {
+                            completion(.rejected)
+                            return
+                        }
+                        completion(.started(request, source: .remotePaneGeometry))
                     }
-                    return .started(request, source: .remotePaneGeometry)
                 },
                 cancel: { GhosttyKitControlSurface.cancelPreviewRequest($0) },
                 release: { GhosttyKitControlSurface.releasePreviewRequest($0) },

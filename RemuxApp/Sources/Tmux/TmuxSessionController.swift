@@ -675,28 +675,48 @@ final class TmuxSessionController: @unchecked Sendable {
         options: ghostty_surface_preview_image_options_s,
         previewGrid: ClientSize,
         userdata: UnsafeMutableRawPointer?,
-        callback: ghostty_surface_preview_image_callback_f
-    ) -> ghostty_surface_preview_request_t? {
-        func perform() -> ghostty_surface_preview_request_t? {
-            guard let session, let styleSurface else { return nil }
+        callback: ghostty_surface_preview_image_callback_f,
+        completion: @escaping @MainActor @Sendable (
+            ghostty_surface_preview_request_t?
+        ) -> Void
+    ) {
+        let submission = TmuxPanePreviewSubmission(
+            paneID: paneID,
+            styleSurface: styleSurface,
+            options: options,
+            previewGrid: previewGrid,
+            userdata: userdata,
+            callback: callback
+        )
+        queue.async { [self, submission] in
+            guard let session, let styleSurface = submission.styleSurface else {
+                DispatchQueue.main.async {
+                    completion(nil)
+                }
+                return
+            }
             let tmuxOptions = ghostty_tmux_pane_preview_image_options_s(
-                image: options,
-                preview_cols: previewGrid.cols,
-                preview_rows: previewGrid.rows
+                image: submission.options,
+                preview_cols: submission.previewGrid.cols,
+                preview_rows: submission.previewGrid.rows
             )
             let request = ghostty_tmux_session_render_pane_preview_image_async(
                 session,
                 styleSurface,
-                paneID.rawValue,
+                submission.paneID.rawValue,
                 tmuxOptions,
-                userdata,
-                callback
+                submission.userdata,
+                submission.callback
             )
+            let requestResult = TmuxPanePreviewRequestResult(request: request)
+            // Publish acceptance before the capture-pane command can leave
+            // the writer queue. The callback therefore cannot overtake the
+            // handle/source installation on MainActor.
+            DispatchQueue.main.async {
+                completion(requestResult.request)
+            }
             drainOutbound()
-            return request
         }
-
-        return queue.sync(execute: perform)
     }
 
     private func submit(
@@ -756,6 +776,23 @@ final class TmuxSessionController: @unchecked Sendable {
         guard result != GHOSTTY_TMUX_RESULT_OK else { return }
         DispatchQueue.main.async { self.callbacks.onRequestFailed(request) }
     }
+}
+
+/// Raw C preview arguments cross onto the tmux writer queue but are consumed
+/// there exactly once. The queue remains the sole owner of the C session.
+private struct TmuxPanePreviewSubmission: @unchecked Sendable {
+    let paneID: TmuxPaneID
+    let styleSurface: ghostty_surface_t?
+    let options: ghostty_surface_preview_image_options_s
+    let previewGrid: TmuxSessionController.ClientSize
+    let userdata: UnsafeMutableRawPointer?
+    let callback: ghostty_surface_preview_image_callback_f
+}
+
+/// The opaque request handle is transferred from the writer queue to
+/// MainActor, where the preview lease becomes its sole owner.
+private struct TmuxPanePreviewRequestResult: @unchecked Sendable {
+    let request: ghostty_surface_preview_request_t?
 }
 
 // MARK: - C enum bridging
