@@ -79,14 +79,13 @@ jobs:
           xcrun simctl boot "${udid}"
           xcrun simctl bootstatus "${udid}" -b
 
-      - name: Install Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
-        with:
-          version: 0.15.2
-
-      - name: Install XcodeGen
+      - name: Install build tools
         shell: bash
-        run: brew install xcodegen
+        run: |
+          set -euo pipefail
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen zig
+          xcodegen --version
+          zig version
 
       - name: Link GhosttyKit source
         shell: bash
@@ -103,8 +102,6 @@ jobs:
         if: steps.ghostty-cache.outputs.cache-hit != 'true'
         env:
           GHOSTTY_SOURCE_DIR: ${{ github.workspace }}/ghostty-source
-          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-global-cache
-          ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/ghostty-source/.zig-cache
         shell: bash
         run: scripts/build_release_ghosttykit.sh
 
