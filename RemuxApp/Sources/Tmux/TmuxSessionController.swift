@@ -84,6 +84,7 @@ final class TmuxSessionController: @unchecked Sendable {
         case zoomPane
         case copyMode
         case setClientSize
+        case sendInput
     }
 
     enum SplitDirection: Sendable {
@@ -560,11 +561,28 @@ final class TmuxSessionController: @unchecked Sendable {
 
     // MARK: Input, size, requests (writer queue)
 
+    /// Copies input onto the writer queue without blocking the caller. `true`
+    /// means this controller accepted the bytes for ordered submission, not
+    /// that tmux has already accepted them. A later libghostty rejection is
+    /// published through `onRequestFailed(.sendInput)` on the main queue.
     func sendInput(paneID: TmuxPaneID, _ bytes: Data) -> Bool {
         guard !bytes.isEmpty else { return true }
 
-        return queue.sync { [self] in
-            guard let session else { return false }
+        let enqueuedAt = GhosttyRuntimeTrace.perfEnabled
+            ? GhosttyRuntimeTrace.nowNanos() : 0
+        queue.async { [self, bytes] in
+            let applyStartedAt = GhosttyRuntimeTrace.perfEnabled
+                ? GhosttyRuntimeTrace.nowNanos() : 0
+            guard let session else {
+                GhosttyRuntimeTrace.perf(
+                    "tmuxInput.writer pane=\(paneID) bytes=\(bytes.count) wait_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: enqueuedAt, to: applyStartedAt)) result=detached"
+                )
+                reportImmediateRequestFailureIfNeeded(
+                    GHOSTTY_TMUX_RESULT_DETACHED,
+                    request: .sendInput
+                )
+                return
+            }
             let result = bytes.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
                 ghostty_tmux_session_send_input(
                     session,
@@ -574,8 +592,12 @@ final class TmuxSessionController: @unchecked Sendable {
                 )
             }
             drainOutbound()
-            return result == GHOSTTY_TMUX_RESULT_OK
+            GhosttyRuntimeTrace.perf(
+                "tmuxInput.writer pane=\(paneID) bytes=\(bytes.count) wait_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: enqueuedAt, to: applyStartedAt)) apply_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: applyStartedAt)) result=\(result)"
+            )
+            reportImmediateRequestFailureIfNeeded(result, request: .sendInput)
         }
+        return true
     }
 
     /// Honest viewport reporting. Callable any time, including before

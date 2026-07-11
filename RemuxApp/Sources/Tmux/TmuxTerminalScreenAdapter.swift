@@ -534,6 +534,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         case .zoomPane: "zoom pane"
         case .copyMode: "copy mode"
         case .setClientSize: "resize"
+        case .sendInput: "input"
         }
     }
 }

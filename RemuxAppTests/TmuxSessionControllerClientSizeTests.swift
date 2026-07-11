@@ -108,17 +108,38 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await shutDown(controller)
     }
 
-    func testDetachedInputIsRejectedSynchronously() async throws {
-        let (runtime, controller) = try makeController()
+    func testDetachedInputSubmissionIsAcceptedThenReportsFailure() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let failureReported = expectation(description: "input failure reported")
+        let controller = TmuxSessionController(
+            app: runtime.appHandleForTesting,
+            callbacks: TmuxSessionController.Callbacks(
+                onRequestFailed: { request in
+                    XCTAssertEqual(request, .sendInput)
+                    failureReported.fulfill()
+                }
+            )
+        )
         defer { _ = runtime }
 
-        XCTAssertFalse(controller.sendInput(paneID: 1, Data([0x61])))
+        XCTAssertTrue(controller.sendInput(paneID: 1, Data([0x61])))
+        await fulfillment(of: [failureReported], timeout: 1)
 
         await shutDown(controller)
     }
 
-    func testInputReturnWaitsForEarlierWriterQueueWork() async throws {
-        let (runtime, controller) = try makeController()
+    func testInputSubmissionDoesNotWaitForEarlierWriterQueueWork() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let failureReported = expectation(description: "input failure reported")
+        let controller = TmuxSessionController(
+            app: runtime.appHandleForTesting,
+            callbacks: TmuxSessionController.Callbacks(
+                onRequestFailed: { request in
+                    XCTAssertEqual(request, .sendInput)
+                    failureReported.fulfill()
+                }
+            )
+        )
         defer { _ = runtime }
 
         let blockerStarted = DispatchSemaphore(value: 0)
@@ -129,15 +150,14 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         }
         XCTAssertEqual(blockerStarted.wait(timeout: .now() + 1), .success)
 
-        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(100)) {
-            releaseBlocker.signal()
-        }
         let clock = ContinuousClock()
         let startedAt = clock.now
-        XCTAssertFalse(controller.sendInput(paneID: 1, Data([0x61])))
+        XCTAssertTrue(controller.sendInput(paneID: 1, Data([0x61])))
         let elapsed = startedAt.duration(to: clock.now)
 
-        XCTAssertGreaterThanOrEqual(elapsed, .milliseconds(75))
+        XCTAssertLessThan(elapsed, .milliseconds(25))
+        releaseBlocker.signal()
+        await fulfillment(of: [failureReported], timeout: 1)
         await shutDown(controller)
     }
 
