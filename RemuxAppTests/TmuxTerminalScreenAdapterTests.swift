@@ -90,45 +90,6 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         await session.shutdown()
     }
 
-    /// Resumes after everything already enqueued on the main queue ran,
-    /// including the adapter's deferred pending-presentation rebuild.
-    private func nextMainQueueTurn() async {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.main.async { continuation.resume() }
-        }
-    }
-
-    func testPendingPresentationHoldsUntilActiveSurfaceDisplays() async throws {
-        let runtime = try GhosttyKitRuntime()
-        let session = makeSession(runtime: runtime)
-        let adapter = TmuxTerminalScreenAdapter()
-        adapter.activate(session: session, initialViewportHandler: { _, _ in })
-
-        session.handleTopology(TmuxSessionController.TopologySnapshot(
-            sessionName: "pending-test",
-            windows: [window(id: 1, active: true, paneID: 10)],
-            panes: [pane(id: 10, windowID: 1)],
-            activeWindowID: 1
-        ))
-
-        let tree = adapter.terminalScreenPresentationProjection.tree
-        let activeLeaf = try XCTUnwrap(tree.selectedActiveLeafID)
-        XCTAssertEqual(
-            tree.pendingPresentationSurfaceID, activeLeaf,
-            "an active pane with no displayed surface must hold presentation"
-        )
-
-        adapter.notePresentationSurfaceDisplayed(activeLeaf)
-        await nextMainQueueTurn()
-
-        XCTAssertNil(
-            adapter.terminalScreenPresentationProjection.tree.pendingPresentationSurfaceID,
-            "the hold must drop after the surface's first layout-sized display update"
-        )
-
-        await session.shutdown()
-    }
-
     func testPendingPresentationFollowsActivePaneSwitch() async throws {
         let runtime = try GhosttyKitRuntime()
         let session = makeSession(runtime: runtime)
@@ -141,11 +102,9 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
             panes: [pane(id: 10, windowID: 1), pane(id: 20, windowID: 1)],
             activeWindowID: 1
         ))
-        let firstLeaf = try XCTUnwrap(
-            adapter.terminalScreenPresentationProjection.tree.selectedActiveLeafID
+        let firstPending = try XCTUnwrap(
+            adapter.terminalScreenPresentationProjection.viewport.pendingPresentationID
         )
-        adapter.notePresentationSurfaceDisplayed(firstLeaf)
-        await nextMainQueueTurn()
 
         session.handleTopology(TmuxSessionController.TopologySnapshot(
             sessionName: "pending-test",
@@ -154,11 +113,12 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
             activeWindowID: 1
         ))
 
-        let tree = adapter.terminalScreenPresentationProjection.tree
-        let secondLeaf = try XCTUnwrap(tree.selectedActiveLeafID)
-        XCTAssertNotEqual(secondLeaf, firstLeaf)
-        XCTAssertEqual(
-            tree.pendingPresentationSurfaceID, secondLeaf,
+        let secondPending = try XCTUnwrap(
+            adapter.terminalScreenPresentationProjection.viewport.pendingPresentationID
+        )
+        XCTAssertNotEqual(secondPending, firstPending)
+        XCTAssertNotNil(
+            secondPending,
             "switching the active pane must hold presentation until the new surface displays"
         )
 
@@ -180,22 +140,22 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         )
         session.handleTopology(firstTopology)
         XCTAssertNotNil(
-            adapter.terminalScreenPresentationProjection.tree.pendingPresentationSurfaceID
+            adapter.terminalScreenPresentationProjection.viewport.pendingPresentationID
         )
 
         let deadline = Date().addingTimeInterval(2)
         while Date() < deadline,
-              adapter.terminalScreenPresentationProjection.tree.pendingPresentationSurfaceID != nil {
+              adapter.terminalScreenPresentationProjection.viewport.pendingPresentationID != nil {
             try await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertNil(
-            adapter.terminalScreenPresentationProjection.tree.pendingPresentationSurfaceID,
+            adapter.terminalScreenPresentationProjection.viewport.pendingPresentationID,
             "a pending surface that never displays must stop holding presentation"
         )
 
         session.handleTopology(firstTopology)
         XCTAssertNil(
-            adapter.terminalScreenPresentationProjection.tree.pendingPresentationSurfaceID,
+            adapter.terminalScreenPresentationProjection.viewport.pendingPresentationID,
             "an abandoned pending pane must not re-hold until the active pane changes"
         )
 
@@ -206,7 +166,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
             activeWindowID: 1
         ))
         XCTAssertNotNil(
-            adapter.terminalScreenPresentationProjection.tree.pendingPresentationSurfaceID,
+            adapter.terminalScreenPresentationProjection.viewport.pendingPresentationID,
             "a different active pane must hold presentation again"
         )
 

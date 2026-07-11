@@ -162,9 +162,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     )
 
                     ZStack(alignment: .topLeading) {
-                        GhosttyRuntimePaneTreeView(
+                        GhosttySingleViewportView(
                             materializationContext: model.terminalSurfaceMaterializationContext,
-                            projection: screenProjection.tree,
+                            projection: screenProjection.viewport,
                             terminalTheme: presentation.terminalTheme,
                             onSurfaceTap: handleSurfaceTap,
                             onWindowSwipe: handleWindowSwipe,

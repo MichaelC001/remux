@@ -434,6 +434,39 @@ final class GhosttyTerminalPresentationProjectorTests: XCTestCase {
         )
     }
 
+    func testViewportProjectionKeepsSurfaceInstanceSeparateFromPaneIdentity() {
+        let paneID = UUID()
+        let surfaceInstanceID = UUID()
+        let pendingPaneID = UUID()
+        let snapshot = GhosttyRuntimeSurfaceTopologySnapshot(
+            topLevels: [
+                GhosttyTopLevelSurface(
+                    id: UUID(),
+                    tree: GhosttySurfaceTree(root: .leaf(paneID)),
+                    focusedLeafID: paneID
+                ),
+            ],
+            selectedTopLevelID: nil,
+            pendingPhonePresentationSurfaceID: pendingPaneID
+        )
+
+        let projection = GhosttyTerminalPresentationProjector
+            .terminalScreenPresentationProjection(
+                phase: .running,
+                transportWritable: true,
+                commandFailureMessage: nil,
+                debugStatus: "ready",
+                registryDebugSummary: "one surface",
+                presentedSurfaceID: surfaceInstanceID,
+                snapshot: snapshot
+            )
+
+        XCTAssertEqual(projection.viewport.surfaceID, surfaceInstanceID)
+        XCTAssertEqual(projection.viewport.pendingPresentationID, pendingPaneID)
+        XCTAssertEqual(projection.interaction.selectedActiveLeafID, surfaceInstanceID)
+        XCTAssertNotEqual(projection.viewport.surfaceID, paneID)
+    }
+
     func testTerminalReadyTraceFieldsPreserveExistingKeysAndAddRawReadinessFacts() throws {
         let workspaceID = try XCTUnwrap(UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
         let selectedLeafID = try XCTUnwrap(UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))

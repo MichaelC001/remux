@@ -107,6 +107,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     private var windowIDsByUUID: [UUID: TmuxWindowID] = [:]
 
     private var activeManagedSurface: GhosttyManagedSurface?
+    private var activeManagedPaneID: TmuxPaneID?
     private var pendingRemovalSurfaces: [UUID: GhosttyManagedSurface] = [:]
     private var initialViewportHandler: ((CGSize, CGFloat) -> Void)?
     private var cachedTopologySnapshot = GhosttyRuntimeSurfaceTopologySnapshot.empty
@@ -120,8 +121,8 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     /// completed a layout-sized display update, the snapshot carries the
     /// leaf as pending and the tree view keeps the outgoing pane's frame
     /// on screen (presentation overlay) instead of flashing empty.
-    private var displayedPresentationSurfaceID: UUID?
-    private var abandonedPendingPresentationSurfaceID: UUID?
+    private var displayedPresentationPaneID: TmuxPaneID?
+    private var abandonedPendingPresentationPaneID: TmuxPaneID?
     private var pendingPresentationTimeoutTask: Task<Void, Never>?
     private var pendingPresentationTimeoutSurfaceID: UUID?
     /// Safety net: the visual handoff is allowed to cover a short
@@ -194,6 +195,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         subscriptions.removeAll()
         leaseStore.invalidateActiveLease()
         activeManagedSurface = nil
+        activeManagedPaneID = nil
         pendingRemovalSurfaces.removeAll()
         clearPanePreviewCache(reason: "invalidate")
         session = nil
@@ -204,8 +206,8 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         pendingPresentationTimeoutTask?.cancel()
         pendingPresentationTimeoutTask = nil
         pendingPresentationTimeoutSurfaceID = nil
-        displayedPresentationSurfaceID = nil
-        abandonedPendingPresentationSurfaceID = nil
+        displayedPresentationPaneID = nil
+        abandonedPendingPresentationPaneID = nil
     }
 
     // MARK: ID mapping
@@ -273,18 +275,17 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     private func pendingPresentationSurfaceID(
         in topology: TmuxSessionController.TopologySnapshot
     ) -> UUID? {
-        let activeLeafUUID = topology.activeWindowID
+        let activePaneID = topology.activeWindowID
             .flatMap { activeID in topology.windows.first(where: { $0.id == activeID }) }
             .flatMap(\.activePaneID)
-            .map { paneUUID($0) }
-        if let abandoned = abandonedPendingPresentationSurfaceID, abandoned != activeLeafUUID {
-            abandonedPendingPresentationSurfaceID = nil
+        if let abandoned = abandonedPendingPresentationPaneID, abandoned != activePaneID {
+            abandonedPendingPresentationPaneID = nil
         }
-        guard let activeLeafUUID,
-              activeLeafUUID != displayedPresentationSurfaceID,
-              activeLeafUUID != abandonedPendingPresentationSurfaceID
+        guard let activePaneID,
+              activePaneID != displayedPresentationPaneID,
+              activePaneID != abandonedPendingPresentationPaneID
         else { return nil }
-        return activeLeafUUID
+        return paneUUID(activePaneID)
     }
 
     /// Marks a managed surface as displayed at its laid-out size and, if
@@ -294,10 +295,13 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     /// just-refreshed surface a frame to present before the overlay
     /// clears.
     func notePresentationSurfaceDisplayed(_ surfaceID: UUID) {
-        guard displayedPresentationSurfaceID != surfaceID else { return }
-        displayedPresentationSurfaceID = surfaceID
+        guard activeManagedSurface?.id == surfaceID,
+              let paneID = activeManagedPaneID,
+              displayedPresentationPaneID != paneID
+        else { return }
+        displayedPresentationPaneID = paneID
         schedulePanePreviewWarmup(for: surfaceID)
-        guard cachedTopologySnapshot.pendingPhonePresentationSurfaceID == surfaceID else { return }
+        guard cachedTopologySnapshot.pendingPhonePresentationSurfaceID == paneUUID(paneID) else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.rebuildTopologySnapshot()
@@ -316,7 +320,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
             try? await Task.sleep(for: timeout)
             guard !Task.isCancelled, let self else { return }
             guard self.cachedTopologySnapshot.pendingPhonePresentationSurfaceID == pending else { return }
-            self.abandonedPendingPresentationSurfaceID = pending
+            self.abandonedPendingPresentationPaneID = self.paneIDsByUUID[pending]
             self.rebuildTopologySnapshot()
             self.objectWillChange.send()
         }
@@ -369,22 +373,15 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         if let previous = activeManagedSurface {
             pendingRemovalSurfaces[previous.id] = previous
             activeManagedSurface = nil
+            activeManagedPaneID = nil
+            displayedPresentationPaneID = nil
+            abandonedPendingPresentationPaneID = nil
         }
 
         guard let paneSurface, let controller else { return }
 
         let paneID = paneSurface.paneID
-        let surfaceUUID = paneUUID(paneID)
-        // A rebind of the same pane id produces a NEW surface; the UUID must
-        // be fresh so the tree container swaps views instead of aliasing.
-        let managedID: UUID
-        if pendingRemovalSurfaces[surfaceUUID] != nil {
-            paneUUIDsByID[paneID] = nil
-            paneIDsByUUID[surfaceUUID] = nil
-            managedID = paneUUID(paneID)
-        } else {
-            managedID = surfaceUUID
-        }
+        let managedID = paneSurface.instanceID.rawValue
 
         let windowIDForPane = latestTopology?.panes
             .first(where: { $0.id == paneID })?.windowID
@@ -435,6 +432,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
             releaseBeforePermanentRemoval: {},
             transferRuntimeSurfaceLifetimeToAppShutdown: {}
         )
+        activeManagedPaneID = paneID
         GhosttyRuntimeTrace.flowEventIfActive(
             GhosttyRuntimeTrace.paneSwitchFlow,
             event: "presentation.managedSurface.ready",
@@ -541,6 +539,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
             commandFailureMessage: commandFailureMessage,
             debugStatus: stateTraceLabel,
             registryDebugSummary: "tmux session stack",
+            presentedSurfaceID: activeManagedSurface?.id,
             snapshot: topologySnapshot
         )
     }
@@ -548,6 +547,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     var terminalInteractionProjection: GhosttyTerminalInteractionProjection {
         GhosttyTerminalPresentationProjector.terminalInteractionProjection(
             phase: runtimePhase,
+            presentedSurfaceID: activeManagedSurface?.id,
             snapshot: topologySnapshot
         )
     }
@@ -631,7 +631,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                         return .surfaceUnavailable
                     }
                     if let activeSurface = self.activeManagedSurface,
-                       activeSurface.id == leafID {
+                       self.activeManagedPaneID == paneID {
                         GhosttyRuntimeTrace.perf(
                             "tmuxPane.preview.request pane=\(paneID) source=live"
                         )
@@ -686,7 +686,10 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                     return image
                 },
                 shouldCacheRenderedImage: { [weak self] leafID in
-                    self?.activeManagedSurface?.id == leafID
+                    guard let self,
+                          let paneID = self.paneIDsByUUID[leafID]
+                    else { return false }
+                    return self.activeManagedPaneID == paneID
                 },
                 cacheRenderedImage: { [weak self] leafID, image in
                     guard let self,

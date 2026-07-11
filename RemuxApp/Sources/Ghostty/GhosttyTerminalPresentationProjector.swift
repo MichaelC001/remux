@@ -193,31 +193,23 @@ enum GhosttyTerminalStatusOverlayProjection: Equatable, Sendable {
 struct GhosttyTerminalScreenPresentationProjection: Equatable {
     let readiness: TerminalReadinessSnapshot
     let interaction: GhosttyTerminalInteractionProjection
-    let tree: GhosttyTerminalTreePresentationProjection
+    let viewport: GhosttyTerminalViewportPresentationProjection
     let statusOverlay: GhosttyTerminalStatusOverlayProjection
 }
 
-struct GhosttyTerminalTreeTopLevelPresentation: Equatable {
-    let id: UUID
-    let phonePresentedLeafIDs: [UUID]
-    let phonePresentedTree: GhosttySurfaceTree
-    let resolvedFocusedLeafID: UUID?
-}
+/// Remux presents exactly one tmux pane per app viewport on every supported
+/// device class. Topology identities remain stable for picker actions; this
+/// projection identifies the one native surface instance currently hosted.
+struct GhosttyTerminalViewportPresentationProjection: Equatable {
+    static let empty = GhosttyTerminalViewportPresentationProjection(
+        surfaceID: nil,
+        pendingPresentationID: nil,
+        windowCount: 0
+    )
 
-struct GhosttyTerminalTreePresentationProjection: Equatable {
-    static var empty: GhosttyTerminalTreePresentationProjection {
-        GhosttyTerminalTreePresentationProjection(
-            topLevel: nil,
-            selectedActiveLeafID: nil,
-            windowCount: 0,
-            pendingPresentationSurfaceID: nil
-        )
-    }
-
-    let topLevel: GhosttyTerminalTreeTopLevelPresentation?
-    let selectedActiveLeafID: UUID?
+    let surfaceID: UUID?
+    let pendingPresentationID: UUID?
     let windowCount: Int
-    let pendingPresentationSurfaceID: UUID?
 
     var canNavigateWindows: Bool {
         windowCount > 1
@@ -298,22 +290,28 @@ enum GhosttyTerminalPresentationProjector {
         commandFailureMessage: String?,
         debugStatus: String,
         registryDebugSummary: String,
+        presentedSurfaceID: UUID?,
         snapshot: GhosttyRuntimeSurfaceTopologySnapshot
     ) -> GhosttyTerminalScreenPresentationProjection {
         let readiness = TerminalReadinessProjector.snapshot(
             phase: phase,
             transportWritable: transportWritable,
             topLevelCount: snapshot.topLevels.count,
-            selectedActiveLeafID: snapshot.selectedActiveLeafID
+            selectedActiveLeafID: presentedSurfaceID
         )
 
         return GhosttyTerminalScreenPresentationProjection(
             readiness: readiness,
             interaction: terminalInteractionProjection(
                 phase: phase,
+                presentedSurfaceID: presentedSurfaceID,
                 snapshot: snapshot
             ),
-            tree: terminalTreePresentationProjection(snapshot: snapshot),
+            viewport: GhosttyTerminalViewportPresentationProjection(
+                surfaceID: presentedSurfaceID,
+                pendingPresentationID: snapshot.pendingPhonePresentationSurfaceID,
+                windowCount: snapshot.topLevels.count
+            ),
             statusOverlay: terminalStatusOverlayProjection(
                 readiness: readiness,
                 commandFailureMessage: commandFailureMessage,
@@ -357,15 +355,15 @@ enum GhosttyTerminalPresentationProjector {
 
     static func terminalInteractionProjection(
         phase: GhosttyTerminalRuntimePhase,
+        presentedSurfaceID: UUID?,
         snapshot: GhosttyRuntimeSurfaceTopologySnapshot
     ) -> GhosttyTerminalInteractionProjection {
         let selectedTopLevel = snapshot.selectedTopLevel
-        let selectedActiveLeafID = snapshot.selectedActiveLeafID
         let selectedPaneIndex = selectedTopLevel.flatMap { topLevel -> Int? in
             guard let focusedLeafID = topLevel.resolvedFocusedLeafID else { return nil }
             return topLevel.leafIDs.firstIndex(of: focusedLeafID)
         }
-        let hasFocusedSurface = selectedActiveLeafID != nil
+        let hasFocusedSurface = presentedSurfaceID != nil
 
         return GhosttyTerminalInteractionProjection(
             isInputAvailable: TerminalReadinessProjector.isInputAvailable(
@@ -373,7 +371,7 @@ enum GhosttyTerminalPresentationProjector {
                 hasFocusedSurface: hasFocusedSurface
             ),
             hasFocusedSurface: hasFocusedSurface,
-            selectedActiveLeafID: selectedActiveLeafID,
+            selectedActiveLeafID: presentedSurfaceID,
             selectedWindowIndex: snapshot.selectedTopLevelIndex,
             windowCount: snapshot.topLevels.count,
             selectedPaneIndex: selectedPaneIndex,
@@ -382,26 +380,6 @@ enum GhosttyTerminalPresentationProjector {
                 phase: phase,
                 topLevelCount: snapshot.topLevels.count
             )
-        )
-    }
-
-    static func terminalTreePresentationProjection(
-        snapshot: GhosttyRuntimeSurfaceTopologySnapshot
-    ) -> GhosttyTerminalTreePresentationProjection {
-        let topLevel = snapshot.selectedTopLevel.map { topLevel in
-            GhosttyTerminalTreeTopLevelPresentation(
-                id: topLevel.id,
-                phonePresentedLeafIDs: topLevel.phonePresentedLeafIDs,
-                phonePresentedTree: topLevel.phonePresentedTree,
-                resolvedFocusedLeafID: topLevel.resolvedFocusedLeafID
-            )
-        }
-
-        return GhosttyTerminalTreePresentationProjection(
-            topLevel: topLevel,
-            selectedActiveLeafID: snapshot.selectedActiveLeafID,
-            windowCount: snapshot.topLevels.count,
-            pendingPresentationSurfaceID: snapshot.pendingPhonePresentationSurfaceID
         )
     }
 
