@@ -228,6 +228,10 @@ final class TmuxSessionController: @unchecked Sendable {
         DispatchTime.now().uptimeNanoseconds / 1_000_000
     }
 
+    private func preconditionOnWriterQueue() {
+        dispatchPrecondition(condition: .onQueue(queue))
+    }
+
     // MARK: Transport plumbing (writer queue)
 
     /// Start (or restart, after a detach) a connection attempt. The
@@ -281,6 +285,7 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     private func startTick() {
+        preconditionOnWriterQueue()
         tick?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + 1, repeating: 1)
@@ -297,6 +302,7 @@ final class TmuxSessionController: @unchecked Sendable {
     /// queue after every entry point that can produce output.
     @discardableResult
     private func drainOutbound() -> Int {
+        preconditionOnWriterQueue()
         guard let session else { return 0 }
         var len: UInt = 0
         guard let ptr = ghostty_tmux_session_outbound(session, &len), len > 0 else {
@@ -311,6 +317,7 @@ final class TmuxSessionController: @unchecked Sendable {
     // MARK: Events (writer queue) -> main snapshots
 
     private func handleEvent(_ event: ghostty_tmux_event_s) {
+        preconditionOnWriterQueue()
         switch event.tag {
         case GHOSTTY_TMUX_EVENT_STATE_CHANGED:
             let state = readState()
@@ -356,6 +363,7 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     private func readState() -> SessionState {
+        preconditionOnWriterQueue()
         guard let session else { return .detached(nil) }
         switch ghostty_tmux_session_state(session) {
         case GHOSTTY_TMUX_SESSION_STATE_ATTACHING: return .attaching
@@ -390,6 +398,7 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     private func readReasonString() -> String? {
+        preconditionOnWriterQueue()
         guard let session else { return nil }
         var len: UInt = 0
         guard let ptr = ghostty_tmux_session_reason_string(session, &len), len > 0 else {
@@ -399,6 +408,7 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     private func readTopology() -> TopologySnapshot {
+        preconditionOnWriterQueue()
         guard let session else {
             return TopologySnapshot(sessionName: "", windows: [], panes: [], activeWindowID: nil)
         }
@@ -580,19 +590,38 @@ final class TmuxSessionController: @unchecked Sendable {
         let rows: UInt32
     }
 
-    private(set) var lastClientSize: ClientSize?
+    private var writerLastClientSize: ClientSize?
+
+    var lastClientSize: ClientSize? {
+        dispatchPrecondition(condition: .notOnQueue(queue))
+        return queue.sync { writerLastClientSize }
+    }
 
     /// The last size reported while the host viewport was in its
     /// settled shape (no transient overlay such as the software
     /// keyboard). Reconnects carry this one: a size captured
     /// mid-transient would make the next attach first-paint at the
     /// wrong shape for ~a round trip.
-    private(set) var lastStableClientSize: ClientSize?
-    private var isViewportStable = true
+    private var writerLastStableClientSize: ClientSize?
+    private var writerViewportIsStable = true
+
+    var lastStableClientSize: ClientSize? {
+        dispatchPrecondition(condition: .notOnQueue(queue))
+        return queue.sync { writerLastStableClientSize }
+    }
 
     /// The viewport to carry into a replacement session.
     var carriedClientSize: ClientSize? {
-        lastStableClientSize ?? lastClientSize
+        dispatchPrecondition(condition: .notOnQueue(queue))
+        let startedAt = GhosttyRuntimeTrace.perfEnabled
+            ? GhosttyRuntimeTrace.nowNanos() : 0
+        let size = queue.sync {
+            writerLastStableClientSize ?? writerLastClientSize
+        }
+        GhosttyRuntimeTrace.perf(
+            "tmuxViewport.carriedSnapshot wait_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt))"
+        )
+        return size
     }
 
     /// Host hint that the viewport is (not) in its settled shape.
@@ -603,15 +632,17 @@ final class TmuxSessionController: @unchecked Sendable {
     /// the stable record keeps its previous settled value until that
     /// report arrives.
     func setViewportStability(_ stable: Bool) {
-        isViewportStable = stable
+        queue.async { [self] in
+            writerViewportIsStable = stable
+        }
     }
 
     func setClientSize(cols: UInt32, rows: UInt32) {
-        lastClientSize = ClientSize(cols: cols, rows: rows)
-        if isViewportStable {
-            lastStableClientSize = lastClientSize
-        }
         queue.async { [self] in
+            writerLastClientSize = ClientSize(cols: cols, rows: rows)
+            if writerViewportIsStable {
+                writerLastStableClientSize = writerLastClientSize
+            }
             guard let session else { return }
             let result = ghostty_tmux_session_set_client_size(session, cols, rows)
             drainOutbound()
@@ -773,6 +804,7 @@ final class TmuxSessionController: @unchecked Sendable {
         _ result: ghostty_tmux_result_e,
         request: Request
     ) {
+        preconditionOnWriterQueue()
         guard result != GHOSTTY_TMUX_RESULT_OK else { return }
         DispatchQueue.main.async { self.callbacks.onRequestFailed(request) }
     }
