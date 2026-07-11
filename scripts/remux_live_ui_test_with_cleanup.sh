@@ -112,6 +112,7 @@ fi
 
 require_tool ruby
 require_tool ssh
+require_tool ssh-keygen
 require_tool xcodebuild
 
 json_string() {
@@ -134,12 +135,34 @@ private_key_passphrase="$(json_string privateKeyPassphrase optional)"
 port="$(json_string port optional)"
 port="${port:-22}"
 
+known_host_lookup="$host"
+if [[ "$port" != "22" ]]; then
+  known_host_lookup="[$host]:$port"
+fi
+known_host_line="$(ssh-keygen -F "$known_host_lookup" 2>/dev/null | awk '!/^#/ { print; exit }')"
+if [[ -z "$known_host_line" ]]; then
+  printf 'No trusted OpenSSH host key found for %s; refusing automated Remux trust.\n' "$known_host_lookup" >&2
+  exit 2
+fi
+expected_host_key_type="$(printf '%s\n' "$known_host_line" | awk '{ print $(NF - 1) }')"
+expected_host_key_fingerprint="$(
+  printf '%s\n' "$known_host_line" |
+    ssh-keygen -lf - -E sha256 2>/dev/null |
+    awk '{ print $2 }'
+)"
+if [[ -z "$expected_host_key_type" || -z "$expected_host_key_fingerprint" ]]; then
+  printf 'Could not derive the trusted OpenSSH host fingerprint for %s.\n' "$known_host_lookup" >&2
+  exit 2
+fi
+expected_host_key="$expected_host_key_type $expected_host_key_fingerprint"
+
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/remux-live-ui-cleanup.XXXXXX")"
 manifest="/tmp/remux-live-generated-sessions.txt"
 expectations="/tmp/remux-live-tmux-expectations.txt"
 harness_file="/tmp/remux-live-cleanup-harness.txt"
 fixture_name_file="/tmp/remux-live-prepared-fixture.txt"
 fixture_session_file="/tmp/remux-live-session-name-override.txt"
+expected_host_key_file="/tmp/remux-live-expected-host-key.txt"
 askpass="$work_dir/askpass.sh"
 private_key_file="$work_dir/live_ssh_key"
 log_dir=".local/logs"
@@ -156,6 +179,7 @@ cleanup_local_files() {
   rm -f "$harness_file"
   rm -f "$fixture_name_file"
   rm -f "$fixture_session_file"
+  rm -f "$expected_host_key_file"
 }
 
 ssh_askpass_secret=""
@@ -195,7 +219,9 @@ rm -f "$expectations"
 rm -f "$harness_file"
 rm -f "$fixture_name_file"
 rm -f "$fixture_session_file"
+rm -f "$expected_host_key_file"
 printf 'pid=%s\nstartedAt=%s\n' "$$" "$(date +%s)" >"$harness_file"
+printf '%s\n' "$expected_host_key" >"$expected_host_key_file"
 trap finish_before_remote_cleanup EXIT
 
 fixture_name=""
@@ -694,13 +720,14 @@ for target in "${only_testing[@]}"; do
 done
 
 set +e
+REMUX_TRACE_LATENCY=1 \
+REMUX_TRACE_PERF=1 \
+GHOSTTY_TRACE_SURFACE_INIT=1 \
 REMUX_LIVE_GENERATED_SESSION_MANIFEST="$manifest" \
 REMUX_LIVE_TMUX_EXPECTATION_MANIFEST="$expectations" \
 REMUX_LIVE_PREPARED_FIXTURE="$fixture_name" \
 REMUX_LIVE_SESSION_NAME_OVERRIDE="$fixture_session" \
-REMUX_TRACE_LATENCY=1 \
-REMUX_TRACE_PERF=1 \
-GHOSTTY_TRACE_SURFACE_INIT=1 \
+REMUX_LIVE_EXPECTED_HOST_KEY="$expected_host_key" \
 xcodebuild "${xcode_args[@]}" 2>&1 | tee "$log"
 xcode_status=$?
 set -e

@@ -197,6 +197,39 @@ final class RemuxAppUITests: XCTestCase {
         RunLoop.current.run(until: Date().addingTimeInterval(5))
     }
 
+    func testLiveAgentTUIPaneSwitchProfileWhenConfigured() throws {
+        let sessionName = try liveAgentTUISessionName()
+        app.launchEnvironment["GHOSTTY_TRACE_FRAME_COMPLETION"] = "1"
+        try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
+
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 90)
+
+        openPanesSheet()
+        XCTAssertTrue(app.buttons["terminal.pane.tile.1"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["terminal.pane.tile.2"].waitForExistence(timeout: 10))
+        assertPreviewTileContainsRenderedImage(tileIdentifier: "terminal.pane.tile.1")
+        assertPreviewTileContainsRenderedImage(tileIdentifier: "terminal.pane.tile.2")
+        dismissTopSheetIfPresent()
+
+        for iteration in 0..<24 {
+            openPanesSheet()
+            let targetIndex = iteration.isMultiple(of: 2) ? 2 : 1
+            tapPickerButton(
+                identifier: "terminal.pane.tile.\(targetIndex)",
+                fallbackLabel: "Pane \(targetIndex) of 2"
+            )
+            RunLoop.current.run(until: Date().addingTimeInterval(0.35))
+        }
+
+        XCTAssertFalse(app.staticTexts["terminal.status.failed"].exists)
+        assertLiveTerminalScreenshotContainsRenderedContent(minNonBackgroundPixels: 30_000)
+    }
+
+    /// Deliberately synthetic scrollback/throughput stress. This proves lossless
+    /// high-volume output handling; it is not a representative agent-TUI
+    /// rendering or pane-switch benchmark. Use the gated agent-TUI profile for
+    /// Codex/Claude performance conclusions.
     func testLiveHighOutputRuntimeWhenConfigured() throws {
         let sessionName = try generatedLiveLatencySessionName("flow")
         let doneMarker = "REMUX_FLOW_DONE_\(UUID().uuidString.prefix(8).uppercased())"
@@ -940,6 +973,27 @@ final class RemuxAppUITests: XCTestCase {
         }
     }
 
+    private func liveAgentTUISessionName() throws -> String {
+        try requireLiveSSHConfigurationExists()
+        guard let sessionName = liveHarnessValue(
+            environmentKey: "REMUX_LIVE_AGENT_TUI_SESSION",
+            fallbackPath: "/tmp/remux-live-agent-tui-session.txt"
+        ) else {
+            throw XCTSkip(
+                "Set REMUX_LIVE_AGENT_TUI_SESSION to an existing two-pane tmux session running real agent TUIs."
+            )
+        }
+        guard sessionName.range(
+            of: #"^[A-Za-z0-9._-]+$"#,
+            options: .regularExpression
+        ) != nil else {
+            throw LiveSSHCleanupHarnessError(
+                description: "Refusing unsafe agent TUI tmux session name \(sessionName)."
+            )
+        }
+        return sessionName
+    }
+
     private func requireLivePreparedFixture(_ fixtureName: String) throws {
         let preparedFixture = livePreparedFixtureName()
         guard preparedFixture == fixtureName else {
@@ -1239,6 +1293,11 @@ final class RemuxAppUITests: XCTestCase {
                 return
             }
 
+            if trustExpectedUnknownLiveHostKeyIfNeeded() {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+                continue
+            }
+
             if failedStatuses.firstMatch.exists {
                 let messages = failedStatuses.allElementsBoundByIndex
                     .map { $0.label }
@@ -1255,6 +1314,42 @@ final class RemuxAppUITests: XCTestCase {
         }
 
         XCTFail("Timed out waiting for a live SSH terminal to become ready.")
+    }
+
+    private func trustExpectedUnknownLiveHostKeyIfNeeded() -> Bool {
+        let verifyTitle = app.staticTexts["Verify Server"]
+        guard verifyTitle.exists else { return false }
+        guard let expectedHostKey = liveHarnessValue(
+            environmentKey: "REMUX_LIVE_EXPECTED_HOST_KEY",
+            fallbackPath: "/tmp/remux-live-expected-host-key.txt"
+        )
+        else {
+            XCTFail("Live SSH host-key verification requires REMUX_LIVE_EXPECTED_HOST_KEY.")
+            return false
+        }
+
+        let failureLabels = app.staticTexts
+            .matching(identifier: "terminal.status.failed")
+            .allElementsBoundByIndex
+            .map { $0.label }
+        let expectedVerification = "Received \(expectedHostKey)"
+        guard failureLabels.contains(expectedVerification) else {
+            XCTFail(
+                "Refusing live SSH host trust because Remux did not display the expected fingerprint."
+            )
+            return false
+        }
+
+        let identifiedTrustButton = app.buttons["terminal.status.hostKey.updateTrust"]
+        let trustButton = identifiedTrustButton.exists
+            ? identifiedTrustButton
+            : app.buttons["Trust Server"]
+        guard trustButton.waitForExistence(timeout: 2) else {
+            XCTFail("Expected the Trust Server action for a verified unknown host key.")
+            return false
+        }
+        trustButton.tap()
+        return true
     }
 
     private func waitForLiveTerminalInputReady(timeout: TimeInterval) {
