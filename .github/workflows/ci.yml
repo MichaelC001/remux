@@ -83,6 +83,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if brew tap | grep -qx 'aws/tap'; then
+            brew untap aws/tap
+          fi
           HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen zig@0.15
           zig_bin="$(brew --prefix zig@0.15)/bin"
           printf '%s\n' "${zig_bin}" >> "${GITHUB_PATH}"
