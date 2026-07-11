@@ -119,10 +119,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
 
     private let leaseStore = GhosttyRuntimeCallbackLeaseStore()
 
-    private var paneUUIDsByID: [TmuxPaneID: UUID] = [:]
-    private var paneIDsByUUID: [UUID: TmuxPaneID] = [:]
-    private var windowUUIDsByID: [TmuxWindowID: UUID] = [:]
-    private var windowIDsByUUID: [UUID: TmuxWindowID] = [:]
+    private var identities = TmuxTerminalIdentityRegistry()
 
     private var activeManagedSurface: GhosttyManagedSurface?
     private var activeManagedPaneID: TmuxPaneID?
@@ -228,24 +225,6 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         abandonedPendingPresentationPaneID = nil
     }
 
-    // MARK: ID mapping
-
-    private func paneUUID(_ id: TmuxPaneID) -> UUID {
-        if let existing = paneUUIDsByID[id] { return existing }
-        let uuid = UUID()
-        paneUUIDsByID[id] = uuid
-        paneIDsByUUID[uuid] = id
-        return uuid
-    }
-
-    private func windowUUID(_ id: TmuxWindowID) -> UUID {
-        if let existing = windowUUIDsByID[id] { return existing }
-        let uuid = UUID()
-        windowUUIDsByID[id] = uuid
-        windowIDsByUUID[uuid] = id
-        return uuid
-    }
-
     // MARK: Topology synthesis
 
     private static var emptyTopologySnapshot: GhosttyRuntimeSurfaceTopologySnapshot {
@@ -269,11 +248,11 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
                 .sorted { lhs, rhs in
                     (lhs.y, lhs.x, lhs.id) < (rhs.y, rhs.x, rhs.id)
                 }
-                .map { paneUUID($0.id) }
+                .map { identities.surfaceID(for: $0.id) }
             return GhosttyTopLevelSurface(
-                id: windowUUID(window.id),
+                id: identities.surfaceID(for: window.id),
                 tree: Self.linearTree(of: paneIDs),
-                focusedLeafID: window.activePaneID.map { paneUUID($0) }
+                focusedLeafID: window.activePaneID.map { identities.surfaceID(for: $0) }
             )
         }
 
@@ -281,7 +260,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         updatePendingPresentationTimeout(pending)
         cachedTopologySnapshot = GhosttyRuntimeSurfaceTopologySnapshot(
             topLevels: topLevels,
-            selectedTopLevelID: topology.activeWindowID.map { windowUUID($0) },
+            selectedTopLevelID: topology.activeWindowID.map { identities.surfaceID(for: $0) },
             pendingPhonePresentationSurfaceID: pending
         )
     }
@@ -303,7 +282,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
               activePaneID != displayedPresentationPaneID,
               activePaneID != abandonedPendingPresentationPaneID
         else { return nil }
-        return paneUUID(activePaneID)
+        return identities.surfaceID(for: activePaneID)
     }
 
     /// Marks a managed surface as displayed at its laid-out size and, if
@@ -319,7 +298,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         else { return }
         displayedPresentationPaneID = paneID
         schedulePanePreviewWarmup(for: surfaceID)
-        guard cachedTopologySnapshot.pendingPhonePresentationSurfaceID == paneUUID(paneID) else { return }
+        guard cachedTopologySnapshot.pendingPhonePresentationSurfaceID == identities.surfaceID(for: paneID) else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.rebuildTopologySnapshot()
@@ -338,7 +317,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
             try? await Task.sleep(for: timeout)
             guard !Task.isCancelled, let self else { return }
             guard self.cachedTopologySnapshot.pendingPhonePresentationSurfaceID == pending else { return }
-            self.abandonedPendingPresentationPaneID = self.paneIDsByUUID[pending]
+            self.abandonedPendingPresentationPaneID = self.identities.paneID(for: pending)
             self.rebuildTopologySnapshot()
             self.objectWillChange.send()
         }
@@ -647,7 +626,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                         completion(.surfaceUnavailable)
                         return
                     }
-                    guard let paneID = self.paneIDsByUUID[leafID] else {
+                    guard let paneID = self.identities.paneID(for: leafID) else {
                         completion(.surfaceUnavailable)
                         return
                     }
@@ -722,7 +701,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                 release: { GhosttyKitControlSurface.releasePreviewRequest($0) },
                 cachedPreview: { [weak self] leafID in
                     guard let self,
-                          let paneID = self.paneIDsByUUID[leafID]
+                          let paneID = self.identities.paneID(for: leafID)
                     else { return nil }
                     guard let preview = self.panePreviewCache.preview(for: paneID) else {
                         GhosttyRuntimeTrace.perf(
@@ -737,7 +716,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                 },
                 shouldRefreshCachedImage: { [weak self] leafID in
                     guard let self,
-                          let paneID = self.paneIDsByUUID[leafID],
+                          let paneID = self.identities.paneID(for: leafID),
                           self.activeManagedPaneID == paneID,
                           let surfaceID = self.activeManagedSurface?.id
                     else { return false }
@@ -749,7 +728,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                 cacheRenderedPreview: { [weak self] leafID, preview in
                     guard let self,
                           self.session?.state == .ready,
-                          let paneID = self.paneIDsByUUID[leafID],
+                          let paneID = self.identities.paneID(for: leafID),
                           self.latestTopology?.panes.contains(where: { $0.id == paneID }) == true
                     else { return }
                     let evictedPaneIDs = self.panePreviewCache.store(
@@ -801,14 +780,14 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
             guard let self else { return }
             guard self.session?.state == .ready,
                   self.activeManagedSurface?.id == surfaceID,
-                  let paneID = self.activeManagedPaneID,
-                  let paneUUID = self.paneUUIDsByID[paneID]
+                  let paneID = self.activeManagedPaneID
             else {
                 GhosttyRuntimeTrace.perf(
                     "tmuxPane.preview.prewarm surface=\(ghosttyDiagnosticShortID(surfaceID)) event=skipped"
                 )
                 return
             }
+            let paneUUID = self.identities.surfaceID(for: paneID)
 
             let warmupSession = self.newPanePreviewSession(
                 leafIDs: [paneUUID],
@@ -1032,7 +1011,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     // MARK: tmux topology actions
 
     func focusTmuxPane(_ id: UUID) -> GhosttyTmuxModelActionOutcome {
-        guard let paneID = paneIDsByUUID[id], let controller else {
+        guard let paneID = identities.paneID(for: id), let controller else {
             GhosttyRuntimeTrace.flowEventIfActive(
                 GhosttyRuntimeTrace.paneSwitchFlow,
                 event: "adapter.resolve.failed",
@@ -1054,7 +1033,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     }
 
     func focusTmuxTopLevel(_ id: UUID) -> GhosttyTmuxModelActionOutcome {
-        guard let windowID = windowIDsByUUID[id], let controller else {
+        guard let windowID = identities.windowID(for: id), let controller else {
             return .missingTarget(.window(id))
         }
         controller.requestSelectWindow(windowID: windowID)
@@ -1106,7 +1085,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     }
 
     func closeTmuxPane(_ id: UUID) -> GhosttyTmuxModelActionOutcome {
-        guard let paneID = paneIDsByUUID[id], let controller else {
+        guard let paneID = identities.paneID(for: id), let controller else {
             return .missingTarget(.pane(id))
         }
         controller.requestClosePane(paneID: paneID)
@@ -1114,7 +1093,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     }
 
     func closeTmuxWindow(_ id: UUID) -> GhosttyTmuxModelActionOutcome {
-        guard let windowID = windowIDsByUUID[id], let controller else {
+        guard let windowID = identities.windowID(for: id), let controller else {
             return .missingTarget(.window(id))
         }
         controller.requestCloseWindow(windowID: windowID)

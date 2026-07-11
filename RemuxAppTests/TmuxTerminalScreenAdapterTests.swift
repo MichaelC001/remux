@@ -5,6 +5,28 @@ import XCTest
 
 @MainActor
 final class TmuxTerminalScreenAdapterTests: XCTestCase {
+    func testIdentityRegistryKeepsPaneRoundTripStable() {
+        var registry = TmuxTerminalIdentityRegistry()
+        let paneID = TmuxPaneID(41)
+
+        let surfaceID = registry.surfaceID(for: paneID)
+
+        XCTAssertEqual(registry.surfaceID(for: paneID), surfaceID)
+        XCTAssertEqual(registry.paneID(for: surfaceID), paneID)
+        XCTAssertNil(registry.paneID(for: UUID()))
+    }
+
+    func testIdentityRegistryKeepsWindowRoundTripStable() {
+        var registry = TmuxTerminalIdentityRegistry()
+        let windowID = TmuxWindowID(17)
+
+        let surfaceID = registry.surfaceID(for: windowID)
+
+        XCTAssertEqual(registry.surfaceID(for: windowID), surfaceID)
+        XCTAssertEqual(registry.windowID(for: surfaceID), windowID)
+        XCTAssertNil(registry.windowID(for: UUID()))
+    }
+
     private func makeSession(runtime: GhosttyKitRuntime) -> TmuxTerminalSession {
         TmuxTerminalSession(
             app: runtime.appHandleForTesting,
