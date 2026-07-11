@@ -209,8 +209,10 @@ final class RemuxAppUITests: XCTestCase {
         openPanesSheet()
         XCTAssertTrue(app.buttons["terminal.pane.tile.1"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["terminal.pane.tile.2"].waitForExistence(timeout: 10))
-        assertPreviewTileContainsRenderedImage(tileIdentifier: "terminal.pane.tile.1")
-        assertPreviewTileContainsRenderedImage(tileIdentifier: "terminal.pane.tile.2")
+        assertPreviewTilesContainRenderedImages(
+            tileIdentifiers: ["terminal.pane.tile.1", "terminal.pane.tile.2"],
+            attachmentName: "agent-tui-pane-previews"
+        )
         dismissTopSheetIfPresent()
 
         for iteration in 0..<24 {
@@ -317,8 +319,10 @@ final class RemuxAppUITests: XCTestCase {
         openPanesSheet()
         XCTAssertTrue(app.buttons["terminal.pane.tile.1"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["terminal.pane.tile.2"].waitForExistence(timeout: 10))
-        assertPreviewTileContainsRenderedImage(tileIdentifier: "terminal.pane.tile.1")
-        assertPreviewTileContainsRenderedImage(tileIdentifier: "terminal.pane.tile.2")
+        assertPreviewTilesContainRenderedImages(
+            tileIdentifiers: ["terminal.pane.tile.1", "terminal.pane.tile.2"],
+            attachmentName: "pane-previews"
+        )
         dismissTopSheetIfPresent()
 
         openWindowsSheet()
@@ -332,8 +336,10 @@ final class RemuxAppUITests: XCTestCase {
         openWindowsSheet()
         XCTAssertTrue(app.buttons["terminal.window.tile.1"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["terminal.window.tile.2"].waitForExistence(timeout: 10))
-        assertPreviewTileContainsRenderedImage(tileIdentifier: "terminal.window.tile.1")
-        assertPreviewTileContainsRenderedImage(tileIdentifier: "terminal.window.tile.2")
+        assertPreviewTilesContainRenderedImages(
+            tileIdentifiers: ["terminal.window.tile.1", "terminal.window.tile.2"],
+            attachmentName: "window-previews"
+        )
     }
 
     func testLiveTerminalScrollbackGestureWhenConfigured() throws {
@@ -1617,34 +1623,63 @@ final class RemuxAppUITests: XCTestCase {
         return renderedPixels(cgImage: cgImage, crop: crop)
     }
 
-    private func assertPreviewTileContainsRenderedImage(
-        tileIdentifier: String,
-        minDistinctColors: Int = 6,
-        minNonBackgroundPixels: Int = 400,
+    private func assertPreviewTilesContainRenderedImages(
+        tileIdentifiers: [String],
+        attachmentName: String,
+        minDistinctColors: Int = 8,
+        minNonBackgroundPixels: Int = 2_500,
+        minBrightPixels: Int = 1_000,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        let tile = app.buttons[tileIdentifier]
-        XCTAssertTrue(tile.waitForExistence(timeout: 5), "Missing preview tile \(tileIdentifier)", file: file, line: line)
+        let tiles = tileIdentifiers.map { app.buttons[$0] }
+        for (identifier, tile) in zip(tileIdentifiers, tiles) {
+            XCTAssertTrue(
+                tile.waitForExistence(timeout: 5),
+                "Missing preview tile \(identifier)",
+                file: file,
+                line: line
+            )
+        }
 
         let deadline = Date().addingTimeInterval(15)
         var lastScreenshot: XCUIScreenshot?
-        var lastStats: (distinctColors: Int, nonBackgroundPixels: Int)?
+        var lastStats: [String: (distinctColors: Int, nonBackgroundPixels: Int, brightPixels: Int)] = [:]
+        var lastAccessibilityValues: [String: String] = [:]
 
         while Date() < deadline {
+            lastAccessibilityValues = Dictionary(
+                uniqueKeysWithValues: zip(tileIdentifiers, tiles).map { identifier, tile in
+                    (identifier, tile.value as? String ?? "")
+                }
+            )
+            guard lastAccessibilityValues.values.allSatisfy({ $0 == "Preview ready" }) else {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+                continue
+            }
+
             let screenshot = XCUIScreen.main.screenshot()
             lastScreenshot = screenshot
 
-            if let stats = previewTileRenderedPixelStats(screenshot: screenshot, tile: tile) {
-                lastStats = stats
-                if stats.distinctColors > minDistinctColors &&
-                    stats.nonBackgroundPixels > minNonBackgroundPixels {
-                    let attachment = XCTAttachment(screenshot: screenshot)
-                    attachment.name = "preview-render-check-\(tileIdentifier)"
-                    attachment.lifetime = .keepAlways
-                    add(attachment)
-                    return
+            lastStats = Dictionary(
+                uniqueKeysWithValues: zip(tileIdentifiers, tiles).compactMap { identifier, tile in
+                    previewTileRenderedPixelStats(screenshot: screenshot, tile: tile).map {
+                        (identifier, $0)
+                    }
                 }
+            )
+            let allTilesRendered = tileIdentifiers.allSatisfy { identifier in
+                guard let stats = lastStats[identifier] else { return false }
+                return stats.distinctColors > minDistinctColors &&
+                    stats.nonBackgroundPixels > minNonBackgroundPixels &&
+                    stats.brightPixels > minBrightPixels
+            }
+            if allTilesRendered {
+                let attachment = XCTAttachment(screenshot: screenshot)
+                attachment.name = "preview-render-check-\(attachmentName)"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+                return
             }
 
             RunLoop.current.run(until: Date().addingTimeInterval(0.5))
@@ -1652,17 +1687,24 @@ final class RemuxAppUITests: XCTestCase {
 
         if let lastScreenshot {
             let attachment = XCTAttachment(screenshot: lastScreenshot)
-            attachment.name = "preview-render-check-\(tileIdentifier)"
+            attachment.name = "preview-render-check-\(attachmentName)"
             attachment.lifetime = .keepAlways
             add(attachment)
         }
 
-        let statsSummary = lastStats.map {
-            " distinctColors=\($0.distinctColors) nonBackgroundPixels=\($0.nonBackgroundPixels)"
-        } ?? ""
+        let diagnostics = tileIdentifiers.map { identifier in
+            let value = lastAccessibilityValues[identifier, default: ""]
+            guard let stats = lastStats[identifier] else {
+                return "\(identifier): accessibilityValue=\(value.debugDescription), no pixel sample"
+            }
+            return "\(identifier): accessibilityValue=\(value.debugDescription), " +
+                "distinctColors=\(stats.distinctColors), " +
+                "nonBackgroundPixels=\(stats.nonBackgroundPixels), " +
+                "brightPixels=\(stats.brightPixels)"
+        }.joined(separator: "; ")
 
         XCTFail(
-            "Preview tile \(tileIdentifier) stayed visually flat; expected a rendered terminal preview image.\(statsSummary)",
+            "Preview tiles did not expose rendered terminal previews; \(diagnostics)",
             file: file,
             line: line
         )
@@ -1671,12 +1713,26 @@ final class RemuxAppUITests: XCTestCase {
     private func previewTileRenderedPixelStats(
         screenshot: XCUIScreenshot,
         tile: XCUIElement
-    ) -> (distinctColors: Int, nonBackgroundPixels: Int)? {
+    ) -> (distinctColors: Int, nonBackgroundPixels: Int, brightPixels: Int)? {
         guard let snapshot = previewTileRenderedPixels(
             screenshot: screenshot,
             tile: tile
         ) else { return nil }
-        return pixelStats(snapshot)
+        let stats = pixelStats(snapshot)
+        var brightPixels = 0
+        for offset in stride(from: 0, to: snapshot.pixels.count, by: 4) {
+            let red = Int(snapshot.pixels[offset])
+            let green = Int(snapshot.pixels[offset + 1])
+            let blue = Int(snapshot.pixels[offset + 2])
+            if red + green + blue >= 360 {
+                brightPixels += 1
+            }
+        }
+        return (
+            distinctColors: stats.distinctColors,
+            nonBackgroundPixels: stats.nonBackgroundPixels,
+            brightPixels: brightPixels
+        )
     }
 
     private func previewTileRenderedPixels(

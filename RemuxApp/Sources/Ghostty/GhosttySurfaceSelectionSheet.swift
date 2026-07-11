@@ -686,6 +686,7 @@ private struct GhosttyWindowSelectionTile: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(previewState.accessibilityValue)
         .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
     }
 
@@ -781,6 +782,7 @@ private struct GhosttyPaneSelectionTile: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(state.accessibilityValue)
         .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
     }
 
@@ -835,6 +837,19 @@ private struct GhosttyPaneSelectionTile: View {
             }
         }
         .padding(.horizontal, 2)
+    }
+}
+
+private extension Optional where Wrapped == GhosttyPanePreviewSession.PreviewState {
+    var accessibilityValue: String {
+        switch self {
+        case .ready:
+            "Preview ready"
+        case .failed:
+            "Preview unavailable"
+        case .pending, .none:
+            "Preview loading"
+        }
     }
 }
 
