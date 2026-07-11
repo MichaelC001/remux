@@ -26,7 +26,7 @@ jobs:
 
     steps:
       - name: Check out Remux
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Validate static site
         shell: bash
@@ -48,10 +48,10 @@ jobs:
 
     steps:
       - name: Check out Remux
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Check out GhosttyKit source
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           repository: h3nock/remux-ghostty
           ref: ${{ env.GHOSTTY_REF }}
@@ -103,6 +103,8 @@ jobs:
         if: steps.ghostty-cache.outputs.cache-hit != 'true'
         env:
           GHOSTTY_SOURCE_DIR: ${{ github.workspace }}/ghostty-source
+          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-global-cache
+          ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/ghostty-source/.zig-cache
         shell: bash
         run: scripts/build_release_ghosttykit.sh
 
