@@ -50,6 +50,26 @@ final class TmuxTerminalSession: ObservableObject {
     /// Remux never owns two live pane engines at once.
     private var presentingPaneID: UInt64?
 
+    private enum PaneTransitionPhase {
+        case releasing
+        case awaitingTopology
+        case creating
+    }
+
+    /// Release may start from the picker tap, before tmux confirms the new
+    /// active pane. The phase keeps that overlap explicit and prevents an
+    /// incoming bind until both release and topology confirmation complete.
+    private var paneTransitionPhase: PaneTransitionPhase?
+
+    /// Latest picker intent that tmux has not confirmed yet. This is separate
+    /// from topology: the latter remains the only source of truth for what may
+    /// actually be presented.
+    private var pendingSelectionPaneID: UInt64?
+
+    /// Detach and shutdown can arrive while release is still asynchronous.
+    /// The completion must drain the transition without attempting a bind.
+    private var stopPaneTransitionAfterRelease = false
+
     /// Remux phone policy presents the active pane at full viewport
     /// size. When tmux reports an unzoomed split window, request zoom
     /// and wait for the confirming topology before binding/capturing.
@@ -210,6 +230,16 @@ final class TmuxTerminalSession: ObservableObject {
     func shutdown() async {
         guard !isShutDown else { return }
         isShutDown = true
+        pendingSelectionPaneID = nil
+
+        switch paneTransitionPhase {
+        case .awaitingTopology:
+            finishPaneTransition(redriveLatestTopology: false)
+        case .releasing:
+            stopPaneTransitionAfterRelease = true
+        case .creating, nil:
+            break
+        }
 
         // Drain in-flight creation before freeing the controller: a late
         // completion closes its surface (`ghostty_surface_free` +
@@ -250,6 +280,15 @@ final class TmuxTerminalSession: ObservableObject {
         if case .detached = newState {
             awaitingZoomPaneID = nil
             zoomFailedPaneID = nil
+            pendingSelectionPaneID = nil
+            switch paneTransitionPhase {
+            case .awaitingTopology:
+                finishPaneTransition(redriveLatestTopology: false)
+            case .releasing:
+                stopPaneTransitionAfterRelease = true
+            case .creating, nil:
+                break
+            }
             // Transport links don't outlive the connection; drop ours
             // so a reconnect builds a fresh one. The pane surface
             // stays: its binding (and frozen content) survive the
@@ -258,6 +297,14 @@ final class TmuxTerminalSession: ObservableObject {
                 self.link = nil
                 Task { await link.stop() }
             }
+        } else if newState == .ready,
+                  paneSurface == nil,
+                  paneTransitionPhase == nil,
+                  let topology {
+            // A detach during an eager release intentionally leaves no
+            // surface. Re-drive the retained canonical snapshot on reconnect
+            // even if tmux does not emit a structurally different topology.
+            presentActivePane(from: topology)
         }
     }
 
@@ -277,17 +324,65 @@ final class TmuxTerminalSession: ObservableObject {
     /// and therefore an in-flight create — without a live tmux session.
     func handleTopology(_ snapshot: TmuxSessionController.TopologySnapshot) {
         topology = snapshot
-        presentActivePane(from: snapshot)
+        GhosttyRuntimeTrace.flowEventIfActive(
+            GhosttyRuntimeTrace.paneSwitchFlow,
+            event: "presentation.topology.received",
+            fields: [
+                "active_pane": Self.activePaneID(in: snapshot).map(String.init) ?? "none",
+            ]
+        )
+        if paneTransitionPhase == .awaitingTopology {
+            advanceReleasedPaneTransition()
+        } else {
+            presentActivePane(from: snapshot)
+        }
     }
 
     private func handleRequestFailed(_ request: TmuxSessionController.Request) {
         lastFailedRequest = request
+        if request == .selectPane {
+            pendingSelectionPaneID = nil
+            if paneTransitionPhase == .awaitingTopology {
+                advanceReleasedPaneTransition()
+            }
+            return
+        }
         guard request == .zoomPane else { return }
         guard let paneID = awaitingZoomPaneID else { return }
         awaitingZoomPaneID = nil
         zoomFailedPaneID = paneID
         if let topology {
             presentActivePane(from: topology)
+        }
+    }
+
+    /// Begin releasing the outgoing pane as soon as a validated picker intent
+    /// is queued. Topology still authorizes the incoming bind; this only moves
+    /// teardown under the SSH/tmux round trip.
+    func prepareForPaneSelection(paneID: UInt64) {
+        guard !isShutDown else { return }
+        guard topology?.panes.contains(where: { $0.id == paneID }) == true else { return }
+        guard paneSurface?.paneID != paneID else { return }
+
+        pendingSelectionPaneID = paneID
+        GhosttyRuntimeTrace.flowEventIfActive(
+            GhosttyRuntimeTrace.paneSwitchFlow,
+            event: "presentation.selection.prepared",
+            fields: ["pane": "\(paneID)"]
+        )
+
+        switch paneTransitionPhase {
+        case .releasing:
+            presentingPaneID = paneID
+        case .awaitingTopology:
+            presentingPaneID = paneID
+            advanceReleasedPaneTransition()
+        case .creating:
+            // Creation already owns a native pane binding. Its completion
+            // will discard if the confirmed target moves on, then re-drive.
+            break
+        case nil:
+            beginPaneTransition(to: paneID)
         }
     }
 
@@ -319,12 +414,22 @@ final class TmuxTerminalSession: ObservableObject {
         }
         if !window.zoomed, hasSiblingPane, zoomFailedPaneID != paneID {
             if awaitingZoomPaneID == paneID {
+                GhosttyRuntimeTrace.flowEventOnce(
+                    GhosttyRuntimeTrace.paneSwitchFlow,
+                    event: "presentation.zoom.waiting",
+                    fields: ["pane": "\(paneID)"]
+                )
                 return
             }
             awaitingZoomPaneID = paneID
             #if DEBUG
             requestedZoomPaneIDsForTesting.append(paneID)
             #endif
+            GhosttyRuntimeTrace.flowEventIfActive(
+                GhosttyRuntimeTrace.paneSwitchFlow,
+                event: "presentation.zoom.requested",
+                fields: ["pane": "\(paneID)"]
+            )
             controller.requestZoomPane(paneID: paneID)
             return
         }
@@ -335,6 +440,16 @@ final class TmuxTerminalSession: ObservableObject {
 
         if paneSurface?.paneID == paneID { return }
 
+        if presentingPaneID == paneID {
+            guard paneTransitionPhase == .awaitingTopology else { return }
+            if pendingSelectionPaneID == paneID {
+                pendingSelectionPaneID = nil
+            }
+            paneTransitionPhase = .creating
+            createPaneSurfaceAfterRelease(paneID: paneID)
+            return
+        }
+
         // One transition at a time. If topology moves again while release or
         // creation is in flight, its completion re-drives the latest snapshot.
         guard presentingPaneID == nil else { return }
@@ -344,50 +459,165 @@ final class TmuxTerminalSession: ObservableObject {
 
     private func beginPaneTransition(to paneID: UInt64) {
         presentingPaneID = paneID
+        paneTransitionPhase = .releasing
+        stopPaneTransitionAfterRelease = false
         inFlightCreateCount += 1
+
+        GhosttyRuntimeTrace.flowEventIfActive(
+            GhosttyRuntimeTrace.paneSwitchFlow,
+            event: "presentation.transition.begin",
+            fields: [
+                "incoming": "\(paneID)",
+                "outgoing": paneSurface.map { "\($0.paneID)" } ?? "none",
+            ]
+        )
 
         let previous = paneSurface
         paneSurface = nil
 
         guard let previous else {
-            createPaneSurfaceAfterRelease(paneID: paneID)
+            GhosttyRuntimeTrace.flowEventIfActive(
+                GhosttyRuntimeTrace.paneSwitchFlow,
+                event: "presentation.release.skipped",
+                fields: ["incoming": "\(paneID)"]
+            )
+            paneReleaseCompleted()
             return
         }
 
-        let releaseStartedAt = GhosttyRuntimeTrace.perfEnabled
+        let releaseStartedAt = GhosttyRuntimeTrace.flowTraceEnabled
             ? GhosttyRuntimeTrace.nowNanos() : 0
         let outgoingPaneID = previous.paneID
         GhosttyRuntimeTrace.perf(
             "tmuxPane.transition release.begin outgoing=\(outgoingPaneID) incoming=\(paneID)"
+        )
+        GhosttyRuntimeTrace.flowEventIfActive(
+            GhosttyRuntimeTrace.paneSwitchFlow,
+            event: "presentation.release.begin",
+            fields: [
+                "incoming": "\(paneID)",
+                "outgoing": "\(outgoingPaneID)",
+            ],
+            at: releaseStartedAt == 0 ? nil : releaseStartedAt
         )
         previous.close { [weak self] releaseResult in
             guard let self else { return }
             GhosttyRuntimeTrace.perf(
                 "tmuxPane.transition release.end outgoing=\(outgoingPaneID) incoming=\(paneID) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: releaseStartedAt))"
             )
+            GhosttyRuntimeTrace.flowEventIfActive(
+                GhosttyRuntimeTrace.paneSwitchFlow,
+                event: "presentation.release.end",
+                fields: [
+                    "incoming": "\(paneID)",
+                    "outgoing": "\(outgoingPaneID)",
+                    "result": String(describing: releaseResult),
+                ]
+            )
             guard case .success = releaseResult else {
+                GhosttyRuntimeTrace.flowEndIfActive(
+                    GhosttyRuntimeTrace.paneSwitchFlow,
+                    event: "presentation.release.failed",
+                    fields: [
+                        "incoming": "\(paneID)",
+                        "outgoing": "\(outgoingPaneID)",
+                    ]
+                )
                 self.finishPaneTransition(redriveLatestTopology: false)
                 return
             }
-            self.createPaneSurfaceAfterRelease(paneID: paneID)
+            self.paneReleaseCompleted()
         }
+    }
+
+    private func paneReleaseCompleted() {
+        guard paneTransitionPhase == .releasing else {
+            assertionFailure("pane release completed outside the releasing phase")
+            return
+        }
+        guard !isShutDown, !stopPaneTransitionAfterRelease else {
+            finishPaneTransition(redriveLatestTopology: false)
+            return
+        }
+
+        paneTransitionPhase = .awaitingTopology
+        advanceReleasedPaneTransition()
+    }
+
+    private func advanceReleasedPaneTransition() {
+        guard paneTransitionPhase == .awaitingTopology else { return }
+        guard !isShutDown else {
+            finishPaneTransition(redriveLatestTopology: false)
+            return
+        }
+        guard let topology else { return }
+
+        if let pendingSelectionPaneID,
+           pendingSelectionPaneID != presentingPaneID {
+            presentingPaneID = pendingSelectionPaneID
+        }
+        guard let presentingPaneID else {
+            assertionFailure("awaiting topology without a pane target")
+            finishPaneTransition(redriveLatestTopology: false)
+            return
+        }
+
+        let confirmedPaneID = Self.activePaneID(in: topology)
+        if let pendingSelectionPaneID {
+            guard confirmedPaneID == pendingSelectionPaneID else {
+                GhosttyRuntimeTrace.flowEventOnce(
+                    GhosttyRuntimeTrace.paneSwitchFlow,
+                    event: "presentation.selection.waiting",
+                    fields: [
+                        "confirmed": confirmedPaneID.map(String.init) ?? "none",
+                        "pane": "\(pendingSelectionPaneID)",
+                    ]
+                )
+                return
+            }
+        } else if confirmedPaneID != presentingPaneID {
+            finishPaneTransition(redriveLatestTopology: true)
+            return
+        }
+
+        presentActivePane(from: topology)
     }
 
     private func createPaneSurfaceAfterRelease(paneID: UInt64) {
         guard !isShutDown else {
+            GhosttyRuntimeTrace.flowEndIfActive(
+                GhosttyRuntimeTrace.paneSwitchFlow,
+                event: "presentation.create.cancelled",
+                fields: ["reason": "shutdown"]
+            )
             finishPaneTransition(redriveLatestTopology: false)
             return
         }
 
         let desiredPaneID = topology.flatMap(Self.activePaneID(in:))
         guard desiredPaneID == paneID else {
+            GhosttyRuntimeTrace.flowEndIfActive(
+                GhosttyRuntimeTrace.paneSwitchFlow,
+                event: "presentation.create.cancelled",
+                fields: [
+                    "desired": desiredPaneID.map(String.init) ?? "none",
+                    "pane": "\(paneID)",
+                    "reason": "target_changed",
+                ]
+            )
             finishPaneTransition(redriveLatestTopology: true)
             return
         }
 
-        let createStartedAt = GhosttyRuntimeTrace.perfEnabled
+        let createStartedAt = GhosttyRuntimeTrace.flowTraceEnabled
             ? GhosttyRuntimeTrace.nowNanos() : 0
         GhosttyRuntimeTrace.perf("tmuxPane.transition create.begin pane=\(paneID)")
+        GhosttyRuntimeTrace.flowEventIfActive(
+            GhosttyRuntimeTrace.paneSwitchFlow,
+            event: "presentation.create.begin",
+            fields: ["pane": "\(paneID)"],
+            at: createStartedAt == 0 ? nil : createStartedAt
+        )
         createPaneSurface(
             app,
             controller,
@@ -411,6 +641,7 @@ final class TmuxTerminalSession: ObservableObject {
             // The desired pane may have moved on while binding; re-check
             // against the LATEST snapshot before showing.
             let stillDesired = self.topology.flatMap(Self.activePaneID(in:)) == paneID
+                && (self.pendingSelectionPaneID == nil || self.pendingSelectionPaneID == paneID)
 
             switch Self.createdSurfaceDisposition(
                 isShutDown: self.isShutDown,
@@ -423,7 +654,15 @@ final class TmuxTerminalSession: ObservableObject {
                 GhosttyRuntimeTrace.perf(
                     "tmuxPane.transition create.failed pane=\(paneID) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: createStartedAt))"
                 )
-                self.finishPaneTransition(redriveLatestTopology: false)
+                GhosttyRuntimeTrace.flowEndIfActive(
+                    GhosttyRuntimeTrace.paneSwitchFlow,
+                    event: "presentation.create.failed",
+                    fields: ["pane": "\(paneID)"]
+                )
+                let shouldRedrive = !self.isShutDown
+                    && (self.topology.flatMap(Self.activePaneID(in:)) != paneID
+                        || self.pendingSelectionPaneID != nil)
+                self.finishPaneTransition(redriveLatestTopology: shouldRedrive)
             case .discard:
                 // Shut down mid-flight, or the desired pane moved on:
                 // close the orphan instead of binding it. The transition
@@ -435,12 +674,27 @@ final class TmuxTerminalSession: ObservableObject {
                     return
                 }
                 let shouldRedrive = !self.isShutDown
+                GhosttyRuntimeTrace.flowEventIfActive(
+                    GhosttyRuntimeTrace.paneSwitchFlow,
+                    event: "presentation.create.discarding",
+                    fields: ["pane": "\(paneID)"]
+                )
                 createdSurface.close { [weak self] releaseResult in
                     guard let self else { return }
                     guard case .success = releaseResult else {
+                        GhosttyRuntimeTrace.flowEndIfActive(
+                            GhosttyRuntimeTrace.paneSwitchFlow,
+                            event: "presentation.discard.failed",
+                            fields: ["pane": "\(paneID)"]
+                        )
                         self.finishPaneTransition(redriveLatestTopology: false)
                         return
                     }
+                    GhosttyRuntimeTrace.flowEndIfActive(
+                        GhosttyRuntimeTrace.paneSwitchFlow,
+                        event: "presentation.discard.ready",
+                        fields: ["pane": "\(paneID)"]
+                    )
                     self.finishPaneTransition(
                         redriveLatestTopology: shouldRedrive
                     )
@@ -450,6 +704,14 @@ final class TmuxTerminalSession: ObservableObject {
                 self.paneSurface = createdSurface
                 GhosttyRuntimeTrace.perf(
                     "tmuxPane.transition create.ready pane=\(paneID) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: createStartedAt))"
+                )
+                GhosttyRuntimeTrace.flowEventIfActive(
+                    GhosttyRuntimeTrace.paneSwitchFlow,
+                    event: "presentation.create.ready",
+                    fields: [
+                        "pane": "\(paneID)",
+                        "surface": createdSurface.map { String(describing: $0.rawSurface) } ?? "missing",
+                    ]
                 )
                 self.finishPaneTransition(redriveLatestTopology: false)
             }
@@ -466,7 +728,10 @@ final class TmuxTerminalSession: ObservableObject {
 
     private func finishPaneTransition(redriveLatestTopology: Bool) {
         presentingPaneID = nil
+        paneTransitionPhase = nil
+        stopPaneTransitionAfterRelease = false
         inFlightCreateCount -= 1
+        assert(inFlightCreateCount >= 0)
         resumeShutdownDrainIfQuiescent()
 
         guard redriveLatestTopology, !isShutDown, let topology else { return }

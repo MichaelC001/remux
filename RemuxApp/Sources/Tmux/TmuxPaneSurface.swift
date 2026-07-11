@@ -79,6 +79,11 @@ final class TmuxPaneSurface {
         let wakeTarget = WakeTarget()
         let appBox = UncheckedSendable(value: app)
         let configBox = UncheckedSendable(value: baseConfig)
+        GhosttyRuntimeTrace.flowEventIfActive(
+            GhosttyRuntimeTrace.paneSwitchFlow,
+            event: "materialization.bind.begin",
+            fields: ["pane": "\(paneID)"]
+        )
         controller.bind(
             paneID: paneID,
             wake: { [weak wakeTarget] in
@@ -91,8 +96,26 @@ final class TmuxPaneSurface {
             MainActor.assumeIsolated {
             switch result {
             case .failure(let error):
+                GhosttyRuntimeTrace.flowEndIfActive(
+                    GhosttyRuntimeTrace.paneSwitchFlow,
+                    event: "materialization.bind.failed",
+                    fields: [
+                        "error": String(describing: error),
+                        "pane": "\(paneID)",
+                    ]
+                )
                 completion(.failure(.bindFailed(error)))
             case .success(let binding):
+                GhosttyRuntimeTrace.flowEventIfActive(
+                    GhosttyRuntimeTrace.paneSwitchFlow,
+                    event: "materialization.bind.ready",
+                    fields: ["pane": "\(paneID)"]
+                )
+                GhosttyRuntimeTrace.flowEventIfActive(
+                    GhosttyRuntimeTrace.paneSwitchFlow,
+                    event: "materialization.hostSurface.begin",
+                    fields: ["pane": "\(paneID)"]
+                )
                 if let pane = TmuxPaneSurface(
                     app: appBox.value,
                     controller: controller,
@@ -103,6 +126,14 @@ final class TmuxPaneSurface {
                     theme: theme
                 ) {
                     wakeTarget.install(surface: pane.surface)
+                    GhosttyRuntimeTrace.flowEventIfActive(
+                        GhosttyRuntimeTrace.paneSwitchFlow,
+                        event: "materialization.hostSurface.ready",
+                        fields: [
+                            "pane": "\(paneID)",
+                            "surface": String(describing: pane.surface),
+                        ]
+                    )
                     completion(.success(pane))
                 } else {
                     controller.unbindAndDematerialize(binding) { releaseResult in
@@ -111,6 +142,11 @@ final class TmuxPaneSurface {
                                 "tmuxPane.create releaseFailed pane=\(paneID) error=\(error)"
                             )
                         }
+                        GhosttyRuntimeTrace.flowEndIfActive(
+                            GhosttyRuntimeTrace.paneSwitchFlow,
+                            event: "materialization.hostSurface.failed",
+                            fields: ["pane": "\(paneID)"]
+                        )
                         completion(.failure(.surfaceCreationFailed))
                     }
                 }
@@ -211,9 +247,26 @@ final class TmuxPaneSurface {
         }
         config.manual_focus = { _, _ in true }
 
+        let nativeSurfaceStartedAt = GhosttyRuntimeTrace.flowTraceEnabled
+            ? GhosttyRuntimeTrace.nowNanos() : 0
+        GhosttyRuntimeTrace.flowEventIfActive(
+            GhosttyRuntimeTrace.paneSwitchFlow,
+            event: "materialization.nativeSurface.begin",
+            fields: ["pane": "\(paneID)"],
+            at: nativeSurfaceStartedAt == 0 ? nil : nativeSurfaceStartedAt
+        )
         guard let surface = ghostty_surface_new(app, &config) else {
             return nil
         }
+        GhosttyRuntimeTrace.flowEventIfActive(
+            GhosttyRuntimeTrace.paneSwitchFlow,
+            event: "materialization.nativeSurface.ready",
+            fields: [
+                "elapsed_ms": GhosttyRuntimeTrace.elapsedMilliseconds(from: nativeSurfaceStartedAt),
+                "pane": "\(paneID)",
+                "surface": String(describing: surface),
+            ]
+        )
 
         self.paneID = paneID
         self.view = view
@@ -246,6 +299,15 @@ final class TmuxPaneSurface {
     func refreshAfterInitialLayout() {
         guard let surface = wakeTarget.enableRefreshAfterInitialLayout() else { return }
         ghostty_surface_refresh(surface)
+        GhosttyRuntimeTrace.flowEndIfActive(
+            GhosttyRuntimeTrace.paneSwitchFlow,
+            event: "render.refresh.enqueued",
+            fields: [
+                "pane": "\(paneID)",
+                "surface": String(describing: surface),
+                "wall_ns": "\(GhosttyRuntimeTrace.wallNanos())",
+            ]
+        )
     }
 
     func setVisible(_ visible: Bool) {

@@ -93,6 +93,35 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         )
     }
 
+    private func threePaneSnapshot(activePaneID: UInt64) -> TmuxSessionController.TopologySnapshot {
+        TmuxSessionController.TopologySnapshot(
+            sessionName: "selection-test",
+            windows: [
+                TmuxSessionController.WindowInfo(
+                    id: 1,
+                    name: "w",
+                    active: true,
+                    zoomed: true,
+                    width: 80,
+                    height: 24,
+                    activePaneID: activePaneID
+                )
+            ],
+            panes: [10, 11, 12].map {
+                TmuxSessionController.PaneInfo(
+                    id: $0,
+                    windowID: 1,
+                    x: 0,
+                    y: 0,
+                    width: 80,
+                    height: 24,
+                    state: .live
+                )
+            },
+            activeWindowID: 1
+        )
+    }
+
     func testShutdownBlocksUntilInFlightCreateResolves() throws {
         let runtime = try GhosttyKitRuntime()
         var capturedCompletion: (@MainActor (Result<TmuxPaneSurface, TmuxPaneSurface.CreateError>) -> Void)?
@@ -136,6 +165,99 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
 
         // No topology presented: nothing in flight, so the drain is a
         // no-op and shutdown proceeds straight through.
+        let shutdownFinished = expectation(description: "shutdown returned")
+        Task {
+            await session.shutdown()
+            shutdownFinished.fulfill()
+        }
+        wait(for: [shutdownFinished], timeout: 2.0)
+    }
+
+    func testPreparedPaneSelectionWaitsForConfirmingTopologyBeforeCreate() async throws {
+        let runtime = try GhosttyKitRuntime()
+        var createdPaneIDs: [UInt64] = []
+        let session = makeSession(runtime: runtime) { _, _, paneID, _, _, completion in
+            createdPaneIDs.append(paneID)
+            completion(.failure(.surfaceCreationFailed))
+        }
+
+        session.handleTopology(splitSnapshot(activePaneID: 10, zoomed: true))
+        XCTAssertEqual(createdPaneIDs, [10])
+
+        session.prepareForPaneSelection(paneID: 11)
+        XCTAssertEqual(createdPaneIDs, [10], "picker intent must not authorize an incoming bind")
+
+        session.handleTopology(splitSnapshot(activePaneID: 11, zoomed: true))
+        XCTAssertEqual(createdPaneIDs, [10, 11])
+        await session.shutdown()
+    }
+
+    func testFailedPreparedPaneSelectionRecreatesConfirmedPane() async throws {
+        let runtime = try GhosttyKitRuntime()
+        var createdPaneIDs: [UInt64] = []
+        let session = makeSession(runtime: runtime) { _, _, paneID, _, _, completion in
+            createdPaneIDs.append(paneID)
+            completion(.failure(.surfaceCreationFailed))
+        }
+
+        session.handleTopology(splitSnapshot(activePaneID: 10, zoomed: true))
+        session.prepareForPaneSelection(paneID: 11)
+        session.handleRequestFailedForTesting(.selectPane)
+
+        XCTAssertEqual(
+            createdPaneIDs,
+            [10, 10],
+            "select failure must re-drive the last server-confirmed pane"
+        )
+        await session.shutdown()
+    }
+
+    func testPreparedPaneSelectionRetargetsBeforeCreationStarts() async throws {
+        let runtime = try GhosttyKitRuntime()
+        var createdPaneIDs: [UInt64] = []
+        let session = makeSession(runtime: runtime) { _, _, paneID, _, _, completion in
+            createdPaneIDs.append(paneID)
+            completion(.failure(.surfaceCreationFailed))
+        }
+
+        session.handleTopology(threePaneSnapshot(activePaneID: 10))
+        session.prepareForPaneSelection(paneID: 11)
+        session.prepareForPaneSelection(paneID: 12)
+        session.handleTopology(threePaneSnapshot(activePaneID: 11))
+        XCTAssertEqual(createdPaneIDs, [10], "an intermediate topology must not bind stale intent")
+
+        session.handleTopology(threePaneSnapshot(activePaneID: 12))
+        XCTAssertEqual(createdPaneIDs, [10, 12])
+        await session.shutdown()
+    }
+
+    func testPreparedPaneSelectionStillWaitsForZoomConfirmation() async throws {
+        let runtime = try GhosttyKitRuntime()
+        var createdPaneIDs: [UInt64] = []
+        let session = makeSession(runtime: runtime) { _, _, paneID, _, _, completion in
+            createdPaneIDs.append(paneID)
+            completion(.failure(.surfaceCreationFailed))
+        }
+
+        session.handleTopology(splitSnapshot(activePaneID: 10, zoomed: true))
+        session.prepareForPaneSelection(paneID: 11)
+        session.handleTopology(splitSnapshot(activePaneID: 11, zoomed: false))
+        XCTAssertEqual(createdPaneIDs, [10], "unzoomed confirmation must not bind")
+
+        session.handleTopology(splitSnapshot(activePaneID: 11, zoomed: true))
+        XCTAssertEqual(createdPaneIDs, [10, 11])
+        await session.shutdown()
+    }
+
+    func testShutdownCancelsPreparedSelectionWaitingForTopology() throws {
+        let runtime = try GhosttyKitRuntime()
+        let session = makeSession(runtime: runtime) { _, _, _, _, _, completion in
+            completion(.failure(.surfaceCreationFailed))
+        }
+
+        session.handleTopology(splitSnapshot(activePaneID: 10, zoomed: true))
+        session.prepareForPaneSelection(paneID: 11)
+
         let shutdownFinished = expectation(description: "shutdown returned")
         Task {
             await session.shutdown()

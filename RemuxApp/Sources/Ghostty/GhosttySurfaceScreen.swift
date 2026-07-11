@@ -1852,7 +1852,28 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func selectTmuxPaneFromSelectionSheet(_ id: UUID) {
-        guard model.focusTmuxPane(id).isHandled else { return }
+        GhosttyRuntimeTrace.flowBegin(
+            GhosttyRuntimeTrace.paneSwitchFlow,
+            event: "ui.tap.pane",
+            fields: [
+                "target_uuid": id.uuidString,
+                "wall_ns": "\(GhosttyRuntimeTrace.wallNanos())",
+                "workspace_id": presentation.workspaceID.uuidString,
+            ]
+        )
+        guard model.focusTmuxPane(id).isHandled else {
+            GhosttyRuntimeTrace.flowEndIfActive(
+                GhosttyRuntimeTrace.paneSwitchFlow,
+                event: "ui.select.rejected",
+                fields: ["target_uuid": id.uuidString]
+            )
+            return
+        }
+        GhosttyRuntimeTrace.flowEventIfActive(
+            GhosttyRuntimeTrace.paneSwitchFlow,
+            event: "ui.select.queued",
+            fields: ["target_uuid": id.uuidString]
+        )
         dismissSelectionSheet()
         refocusSystemKeyboardIfActive()
     }

@@ -295,15 +295,17 @@ final class TmuxSessionController: @unchecked Sendable {
 
     /// Drain pending wire bytes to the transport. Called on the writer
     /// queue after every entry point that can produce output.
-    private func drainOutbound() {
-        guard let session else { return }
+    @discardableResult
+    private func drainOutbound() -> Int {
+        guard let session else { return 0 }
         var len: UInt = 0
         guard let ptr = ghostty_tmux_session_outbound(session, &len), len > 0 else {
-            return
+            return 0
         }
         let data = Data(bytes: ptr, count: Int(len))
         ghostty_tmux_session_outbound_consume(session, len)
         outboundSink?(data)
+        return data.count
     }
 
     // MARK: Events (writer queue) -> main snapshots
@@ -315,18 +317,38 @@ final class TmuxSessionController: @unchecked Sendable {
             DispatchQueue.main.async { self.callbacks.onState(state) }
         case GHOSTTY_TMUX_EVENT_TOPOLOGY_CHANGED:
             let snapshot = readTopology()
+            let activePaneID = snapshot.activeWindowID.flatMap { activeWindowID in
+                snapshot.windows.first(where: { $0.id == activeWindowID })?.activePaneID
+            }
+            GhosttyRuntimeTrace.flowEventIfActive(
+                GhosttyRuntimeTrace.paneSwitchFlow,
+                event: "tmux.topology.changed",
+                fields: ["active_pane": activePaneID.map(String.init) ?? "none"]
+            )
             DispatchQueue.main.async { self.callbacks.onTopology(snapshot) }
         case GHOSTTY_TMUX_EVENT_PANE_REMOVED:
             let id = event.pane_id
             DispatchQueue.main.async { self.callbacks.onPaneRemoved(id) }
         case GHOSTTY_TMUX_EVENT_PANE_LIVE:
             let id = event.pane_id
+            GhosttyRuntimeTrace.flowEventIfActive(
+                GhosttyRuntimeTrace.paneSwitchFlow,
+                event: "tmux.pane.live",
+                fields: ["pane": "\(id)"]
+            )
             DispatchQueue.main.async { self.callbacks.onPaneLive(id) }
         case GHOSTTY_TMUX_EVENT_PANE_DEGRADED:
             let id = event.pane_id
             DispatchQueue.main.async { self.callbacks.onPaneDegraded(id) }
         case GHOSTTY_TMUX_EVENT_REQUEST_FAILED:
             let request = Request(event.request)
+            if request == .selectPane {
+                GhosttyRuntimeTrace.flowEndIfActive(
+                    GhosttyRuntimeTrace.paneSwitchFlow,
+                    event: "tmux.request.failed",
+                    fields: ["request": "selectPane"]
+                )
+            }
             DispatchQueue.main.async { self.callbacks.onRequestFailed(request) }
         default:
             break
@@ -624,7 +646,17 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     func requestSelectPane(paneID: UInt64) {
-        submit(request: .selectPane) { ghostty_tmux_session_request_select_pane($0, paneID) }
+        GhosttyRuntimeTrace.flowEventIfActive(
+            GhosttyRuntimeTrace.paneSwitchFlow,
+            event: "tmux.request.enqueued",
+            fields: [
+                "pane": "\(paneID)",
+                "request": "selectPane",
+            ]
+        )
+        submit(request: .selectPane, tracePaneID: paneID) {
+            ghostty_tmux_session_request_select_pane($0, paneID)
+        }
     }
 
     func requestZoomPane(paneID: UInt64) {
@@ -667,12 +699,50 @@ final class TmuxSessionController: @unchecked Sendable {
 
     private func submit(
         request: Request,
+        tracePaneID: UInt64? = nil,
         _ body: @escaping @Sendable (ghostty_tmux_session_t) -> ghostty_tmux_result_e
     ) {
         queue.async { [self] in
-            guard let session else { return }
+            guard let session else {
+                if tracePaneID != nil {
+                    GhosttyRuntimeTrace.flowEndIfActive(
+                        GhosttyRuntimeTrace.paneSwitchFlow,
+                        event: "tmux.request.rejected",
+                        fields: ["reason": "missing_session"]
+                    )
+                }
+                return
+            }
+            if let tracePaneID {
+                GhosttyRuntimeTrace.flowEventIfActive(
+                    GhosttyRuntimeTrace.paneSwitchFlow,
+                    event: "tmux.request.writer.begin",
+                    fields: ["pane": "\(tracePaneID)"]
+                )
+            }
             let result = body(session)
-            drainOutbound()
+            let outboundBytes = drainOutbound()
+            if let tracePaneID {
+                GhosttyRuntimeTrace.flowEventIfActive(
+                    GhosttyRuntimeTrace.paneSwitchFlow,
+                    event: "tmux.request.outbound.drained",
+                    fields: [
+                        "bytes": "\(outboundBytes)",
+                        "pane": "\(tracePaneID)",
+                        "result": "\(result)",
+                    ]
+                )
+                if result != GHOSTTY_TMUX_RESULT_OK {
+                    GhosttyRuntimeTrace.flowEndIfActive(
+                        GhosttyRuntimeTrace.paneSwitchFlow,
+                        event: "tmux.request.rejected",
+                        fields: [
+                            "pane": "\(tracePaneID)",
+                            "result": "\(result)",
+                        ]
+                    )
+                }
+            }
             reportImmediateRequestFailureIfNeeded(result, request: request)
         }
     }

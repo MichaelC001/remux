@@ -479,11 +479,40 @@ private final class SSHTmuxControlConnection: @unchecked Sendable {
         GhosttyRuntimeTrace.latency(
             "ssh.writeAndFlush begin bytes=\(data.count) preview=\(GhosttyRuntimeTrace.preview(data, limit: 160))"
         )
-        try await sessionChannel.writeAndFlush(
-            SSHChannelData(type: .channel, data: .byteBuffer(buffer))
+        GhosttyRuntimeTrace.flowEventIfActive(
+            GhosttyRuntimeTrace.paneSwitchFlow,
+            event: "ssh.writeAndFlush.begin",
+            fields: [
+                "bytes": "\(data.count)",
+                "wall_ns": "\(GhosttyRuntimeTrace.wallNanos())",
+            ],
+            at: start
         )
+        do {
+            try await sessionChannel.writeAndFlush(
+                SSHChannelData(type: .channel, data: .byteBuffer(buffer))
+            )
+        } catch {
+            GhosttyRuntimeTrace.flowEndIfActive(
+                GhosttyRuntimeTrace.paneSwitchFlow,
+                event: "ssh.writeAndFlush.failed",
+                fields: [
+                    "bytes": "\(data.count)",
+                    "error": String(describing: error),
+                ]
+            )
+            throw error
+        }
         GhosttyRuntimeTrace.latency(
             "ssh.writeAndFlush end bytes=\(data.count) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
+        )
+        GhosttyRuntimeTrace.flowEventIfActive(
+            GhosttyRuntimeTrace.paneSwitchFlow,
+            event: "ssh.writeAndFlush.end",
+            fields: [
+                "bytes": "\(data.count)",
+                "elapsed_ms": GhosttyRuntimeTrace.elapsedMilliseconds(from: start),
+            ]
         )
     }
 

@@ -435,12 +435,31 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
             releaseBeforePermanentRemoval: {},
             transferRuntimeSurfaceLifetimeToAppShutdown: {}
         )
+        GhosttyRuntimeTrace.flowEventIfActive(
+            GhosttyRuntimeTrace.paneSwitchFlow,
+            event: "presentation.managedSurface.ready",
+            fields: [
+                "pane": "\(paneID)",
+                "surface": String(describing: paneSurface.rawSurface),
+                "surface_uuid": managedID.uuidString,
+            ]
+        )
         // The first real layout-driven display update opens viewport
         // reporting (the placeholder frame's bogus size never reaches
         // tmux), reports the actual grid once, and ends the presentation
         // hold for this surface.
         activeManagedSurface?.onDisplayUpdate = { [weak self, weak paneSurface] _, size, _ in
             guard size.width > 1, size.height > 1 else { return }
+            GhosttyRuntimeTrace.flowEventOnce(
+                GhosttyRuntimeTrace.paneSwitchFlow,
+                event: "presentation.layout.ready",
+                fields: [
+                    "height": "\(size.height)",
+                    "pane": "\(paneID)",
+                    "surface": paneSurface.map { String(describing: $0.rawSurface) } ?? "released",
+                    "width": "\(size.width)",
+                ]
+            )
             paneSurface?.enableClientSizeReports()
             paneSurface?.refreshAfterInitialLayout()
             self?.notePresentationSurfaceDisplayed(managedID)
@@ -933,9 +952,23 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
 
     func focusTmuxPane(_ id: UUID) -> GhosttyTmuxModelActionOutcome {
         guard let paneID = paneIDsByUUID[id], let controller else {
+            GhosttyRuntimeTrace.flowEventIfActive(
+                GhosttyRuntimeTrace.paneSwitchFlow,
+                event: "adapter.resolve.failed",
+                fields: ["target_uuid": id.uuidString]
+            )
             return .missingTarget(.pane(id))
         }
+        GhosttyRuntimeTrace.flowEventIfActive(
+            GhosttyRuntimeTrace.paneSwitchFlow,
+            event: "adapter.resolve.ready",
+            fields: [
+                "pane": "\(paneID)",
+                "target_uuid": id.uuidString,
+            ]
+        )
         controller.requestSelectPane(paneID: paneID)
+        session?.prepareForPaneSelection(paneID: paneID)
         return .queued
     }
 

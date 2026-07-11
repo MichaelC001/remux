@@ -1,6 +1,7 @@
 import Foundation
 
 enum GhosttyRuntimeTrace {
+    static let paneSwitchFlow = "tmux.paneSwitch"
     static let isEnabled = ProcessInfo.processInfo.environment["REMUX_TRACE_GHOSTTY_IO"] == "1"
     private static let latencyMode = ProcessInfo.processInfo.environment["REMUX_TRACE_LATENCY"]
     static let latencyEnabled = latencyMode == "1" || latencyMode == "minimal"
@@ -16,6 +17,15 @@ enum GhosttyRuntimeTrace {
 
     static func nowNanos() -> UInt64 {
         DispatchTime.now().uptimeNanoseconds
+    }
+
+    /// Wall-clock nanoseconds used only to correlate Remux milestones with
+    /// renderer completion timestamps emitted inside libghostty. Durations
+    /// continue to use the monotonic clock above.
+    static func wallNanos() -> UInt64 {
+        var value = timespec()
+        clock_gettime(CLOCK_REALTIME, &value)
+        return UInt64(value.tv_sec) * 1_000_000_000 + UInt64(value.tv_nsec)
     }
 
     static func diagnostics(_ message: @autoclosure () -> String) {
