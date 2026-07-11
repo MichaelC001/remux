@@ -1,0 +1,149 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GHOSTTY_REF: 1a6f9afa81ab06dbebfe7b133552e385e328dbf2
+  XCODE_DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+
+jobs:
+  site:
+    name: Site
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out Remux
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Validate static site
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check remux-site-tui/script.js
+
+          while IFS= read -r asset; do
+            test -f "remux-site-tui/${asset}" || {
+              printf 'Missing site asset: %s\n' "${asset}" >&2
+              exit 1
+            }
+          done < <(rg -o 'assets/[^"?]+' remux-site-tui/index.html | sort -u)
+
+  app:
+    name: App
+    runs-on: macos-26
+    timeout-minutes: 75
+
+    steps:
+      - name: Check out Remux
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Check out GhosttyKit source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: h3nock/remux-ghostty
+          ref: ${{ env.GHOSTTY_REF }}
+          path: ghostty-source
+          ssh-key: ${{ secrets.REMUX_GHOSTTY_SSH_KEY }}
+          persist-credentials: false
+
+      - name: Select Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "${XCODE_DEVELOPER_DIR}"
+          sudo xcode-select --switch "${XCODE_DEVELOPER_DIR}"
+          xcodebuild -version
+
+      - name: Create simulator
+        id: simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime_id="$(xcrun simctl list runtimes --json | jq -r '[.runtimes[] | select(.isAvailable == true and .platform == "iOS")] | sort_by(.version | split(".") | map(tonumber)) | last.identifier')"
+          test -n "${runtime_id}"
+          udid="$(xcrun simctl create "Remux CI ${GITHUB_RUN_ID}" com.apple.CoreSimulator.SimDeviceType.iPhone-17e "${runtime_id}")"
+          printf 'udid=%s\n' "${udid}" >> "${GITHUB_OUTPUT}"
+          xcrun simctl boot "${udid}"
+          xcrun simctl bootstatus "${udid}" -b
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.15.2
+
+      - name: Install XcodeGen
+        shell: bash
+        run: brew install xcodegen
+
+      - name: Link GhosttyKit source
+        shell: bash
+        run: ln -sfn "${GITHUB_WORKSPACE}/ghostty-source" "${GITHUB_WORKSPACE}/../ghostty-tmux-pane-store-refactor"
+
+      - name: Restore GhosttyKit
+        id: ghostty-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ghostty-source/macos/GhosttyKit.xcframework
+          key: ghosttykit-${{ runner.os }}-${{ runner.arch }}-${{ env.GHOSTTY_REF }}-xcode-26.4.1-zig-0.15.2
+
+      - name: Build GhosttyKit
+        if: steps.ghostty-cache.outputs.cache-hit != 'true'
+        env:
+          GHOSTTY_SOURCE_DIR: ${{ github.workspace }}/ghostty-source
+        shell: bash
+        run: scripts/build_release_ghosttykit.sh
+
+      - name: Verify GhosttyKit
+        env:
+          CONFIGURATION: Release
+          GHOSTTYKIT_XCFRAMEWORK: ${{ github.workspace }}/ghostty-source/macos/GhosttyKit.xcframework
+        shell: bash
+        run: scripts/verify_ghosttykit_release_mode.sh
+
+      - name: Verify generated Xcode project
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodegen generate
+          git diff --exit-code -- Remux.xcodeproj
+
+      - name: Run unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "${RUNNER_TEMP}/RemuxUnitTests.xcresult"
+          xcodebuild test -project Remux.xcodeproj -scheme Remux -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" -only-testing:RemuxTests -resultBundlePath "${RUNNER_TEMP}/RemuxUnitTests.xcresult"
+
+      - name: Run UI smoke tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "${RUNNER_TEMP}/RemuxUISmokeTests.xcresult"
+          xcodebuild test -project Remux.xcodeproj -scheme RemuxUIOnly -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" -only-testing:RemuxUITests/ShortcutPaletteUITests -resultBundlePath "${RUNNER_TEMP}/RemuxUISmokeTests.xcresult"
+
+      - name: Delete simulator
+        if: always() && steps.simulator.outputs.udid != ''
+        shell: bash
+        run: xcrun simctl delete "${{ steps.simulator.outputs.udid }}"
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: remux-test-results-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/*.xcresult
+          if-no-files-found: ignore
+          retention-days: 7
