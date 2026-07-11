@@ -83,9 +83,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen zig
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen zig@0.15
+          zig_bin="$(brew --prefix zig@0.15)/bin"
+          printf '%s\n' "${zig_bin}" >> "${GITHUB_PATH}"
           xcodegen --version
-          zig version
+          "${zig_bin}/zig" version
 
       - name: Link GhosttyKit source
         shell: bash
@@ -93,7 +95,7 @@ jobs:
 
       - name: Restore GhosttyKit
         id: ghostty-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ghostty-source/macos/GhosttyKit.xcframework
           key: ghosttykit-${{ runner.os }}-${{ runner.arch }}-${{ env.GHOSTTY_REF }}-xcode-26.4.1-zig-0.15.2
@@ -140,7 +142,7 @@ jobs:
 
       - name: Upload test results
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: remux-test-results-${{ github.run_attempt }}
           path: ${{ runner.temp }}/*.xcresult
