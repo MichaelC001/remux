@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  scripts/remux_live_ui_test_with_cleanup.sh [--configuration Debug|Release] --only-testing <test-id> [--only-testing <test-id> ...]
+  scripts/remux_live_ui_test_with_cleanup.sh [--configuration Debug|Release] [--development-team <team-id>] [--derived-data-path <path>] --only-testing <test-id> [--only-testing <test-id> ...]
   scripts/remux_live_ui_test_with_cleanup.sh --dry-run-cleanup <manifest-file>
 
 Runs selected Remux live SSH UI tests using /tmp/remux-live-ssh.json and
@@ -19,6 +19,8 @@ USAGE
 config="/tmp/remux-live-ssh.json"
 destination="platform=iOS Simulator,name=iPhone 17,OS=latest"
 configuration="Debug"
+development_team=""
+derived_data_path=""
 declare -a only_testing=()
 dry_run_manifest=""
 
@@ -44,6 +46,16 @@ while [[ $# -gt 0 ]]; do
         Debug|Release) ;;
         *) usage; exit 2 ;;
       esac
+      shift 2
+      ;;
+    --development-team)
+      development_team="${2:-}"
+      [[ "$development_team" =~ ^[A-Za-z0-9]+$ ]] || { usage; exit 2; }
+      shift 2
+      ;;
+    --derived-data-path)
+      derived_data_path="${2:-}"
+      [[ -n "$derived_data_path" ]] || { usage; exit 2; }
       shift 2
       ;;
     --only-testing)
@@ -728,6 +740,17 @@ declare -a xcode_args=(
 for target in "${only_testing[@]}"; do
   xcode_args+=("-only-testing:$target")
 done
+
+if [[ -n "$derived_data_path" ]]; then
+  xcode_args+=(-derivedDataPath "$derived_data_path")
+fi
+if [[ -n "$development_team" ]]; then
+  xcode_args+=(
+    "DEVELOPMENT_TEAM=$development_team"
+    CODE_SIGN_STYLE=Automatic
+    -allowProvisioningUpdates
+  )
+fi
 
 set +e
 REMUX_TRACE_LATENCY=1 \
