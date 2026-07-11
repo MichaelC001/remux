@@ -18,9 +18,9 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
     }
 
     private func window(
-        id: UInt64,
+        id: TmuxWindowID,
         active: Bool,
-        paneID: UInt64
+        paneID: TmuxPaneID
     ) -> TmuxSessionController.WindowInfo {
         TmuxSessionController.WindowInfo(
             id: id,
@@ -33,7 +33,10 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         )
     }
 
-    private func pane(id: UInt64, windowID: UInt64) -> TmuxSessionController.PaneInfo {
+    private func pane(
+        id: TmuxPaneID,
+        windowID: TmuxWindowID
+    ) -> TmuxSessionController.PaneInfo {
         TmuxSessionController.PaneInfo(
             id: id,
             windowID: windowID,

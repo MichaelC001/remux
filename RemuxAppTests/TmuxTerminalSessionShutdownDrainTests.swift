@@ -23,7 +23,9 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         )
     }
 
-    private func snapshotPresentingPane(_ paneID: UInt64) -> TmuxSessionController.TopologySnapshot {
+    private func snapshotPresentingPane(
+        _ paneID: TmuxPaneID
+    ) -> TmuxSessionController.TopologySnapshot {
         TmuxSessionController.TopologySnapshot(
             sessionName: "drain-test",
             windows: [
@@ -53,7 +55,7 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
     }
 
     private func splitSnapshot(
-        activePaneID: UInt64,
+        activePaneID: TmuxPaneID,
         zoomed: Bool
     ) -> TmuxSessionController.TopologySnapshot {
         TmuxSessionController.TopologySnapshot(
@@ -93,7 +95,9 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         )
     }
 
-    private func threePaneSnapshot(activePaneID: UInt64) -> TmuxSessionController.TopologySnapshot {
+    private func threePaneSnapshot(
+        activePaneID: TmuxPaneID
+    ) -> TmuxSessionController.TopologySnapshot {
         TmuxSessionController.TopologySnapshot(
             sessionName: "selection-test",
             windows: [
@@ -107,7 +111,7 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
                     activePaneID: activePaneID
                 )
             ],
-            panes: [10, 11, 12].map {
+            panes: ([10, 11, 12] as [TmuxPaneID]).map {
                 TmuxSessionController.PaneInfo(
                     id: $0,
                     windowID: 1,
@@ -175,7 +179,7 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
 
     func testPreparedPaneSelectionWaitsForConfirmingTopologyBeforeCreate() async throws {
         let runtime = try GhosttyKitRuntime()
-        var createdPaneIDs: [UInt64] = []
+        var createdPaneIDs: [TmuxPaneID] = []
         let session = makeSession(runtime: runtime) { _, _, paneID, _, _, completion in
             createdPaneIDs.append(paneID)
             completion(.failure(.surfaceCreationFailed))
@@ -194,7 +198,7 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
 
     func testFailedPreparedPaneSelectionRecreatesConfirmedPane() async throws {
         let runtime = try GhosttyKitRuntime()
-        var createdPaneIDs: [UInt64] = []
+        var createdPaneIDs: [TmuxPaneID] = []
         let session = makeSession(runtime: runtime) { _, _, paneID, _, _, completion in
             createdPaneIDs.append(paneID)
             completion(.failure(.surfaceCreationFailed))
@@ -214,7 +218,7 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
 
     func testPreparedPaneSelectionRetargetsBeforeCreationStarts() async throws {
         let runtime = try GhosttyKitRuntime()
-        var createdPaneIDs: [UInt64] = []
+        var createdPaneIDs: [TmuxPaneID] = []
         let session = makeSession(runtime: runtime) { _, _, paneID, _, _, completion in
             createdPaneIDs.append(paneID)
             completion(.failure(.surfaceCreationFailed))
@@ -233,7 +237,7 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
 
     func testPreparedPaneSelectionStillWaitsForZoomConfirmation() async throws {
         let runtime = try GhosttyKitRuntime()
-        var createdPaneIDs: [UInt64] = []
+        var createdPaneIDs: [TmuxPaneID] = []
         let session = makeSession(runtime: runtime) { _, _, paneID, _, _, completion in
             createdPaneIDs.append(paneID)
             completion(.failure(.surfaceCreationFailed))

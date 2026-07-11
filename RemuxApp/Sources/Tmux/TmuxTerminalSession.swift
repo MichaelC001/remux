@@ -38,7 +38,7 @@ final class TmuxTerminalSession: ObservableObject {
     typealias PaneSurfaceCreator = @MainActor (
         ghostty_app_t,
         TmuxSessionController,
-        UInt64,
+        TmuxPaneID,
         ghostty_surface_config_s,
         TerminalTheme,
         @escaping @MainActor (Result<TmuxPaneSurface, TmuxPaneSurface.CreateError>) -> Void
@@ -48,7 +48,7 @@ final class TmuxTerminalSession: ObservableObject {
     /// Serialized pane transition in flight. A transition releases and
     /// dematerializes the outgoing pane before binding the incoming pane, so
     /// Remux never owns two live pane engines at once.
-    private var presentingPaneID: UInt64?
+    private var presentingPaneID: TmuxPaneID?
 
     private enum PaneTransitionPhase {
         case releasing
@@ -64,7 +64,7 @@ final class TmuxTerminalSession: ObservableObject {
     /// Latest picker intent that tmux has not confirmed yet. This is separate
     /// from topology: the latter remains the only source of truth for what may
     /// actually be presented.
-    private var pendingSelectionPaneID: UInt64?
+    private var pendingSelectionPaneID: TmuxPaneID?
 
     /// Detach and shutdown can arrive while release is still asynchronous.
     /// The completion must drain the transition without attempting a bind.
@@ -73,12 +73,12 @@ final class TmuxTerminalSession: ObservableObject {
     /// Remux phone policy presents the active pane at full viewport
     /// size. When tmux reports an unzoomed split window, request zoom
     /// and wait for the confirming topology before binding/capturing.
-    private var awaitingZoomPaneID: UInt64?
+    private var awaitingZoomPaneID: TmuxPaneID?
 
     /// If tmux rejects the zoom request, do not spin forever. Present
     /// the pane at the server's current geometry until the active pane
     /// changes or a later topology reports it zoomed.
-    private var zoomFailedPaneID: UInt64?
+    private var zoomFailedPaneID: TmuxPaneID?
 
     /// Number of pane transitions whose completion has not yet run. The
     /// release and create halves both touch the controller's writer queue, so
@@ -309,7 +309,7 @@ final class TmuxTerminalSession: ObservableObject {
     }
 
     #if DEBUG
-    private(set) var requestedZoomPaneIDsForTesting: [UInt64] = []
+    private(set) var requestedZoomPaneIDsForTesting: [TmuxPaneID] = []
 
     func handleStateForTesting(_ newState: TmuxSessionController.SessionState) {
         handleState(newState)
@@ -359,7 +359,7 @@ final class TmuxTerminalSession: ObservableObject {
     /// Begin releasing the outgoing pane as soon as a validated picker intent
     /// is queued. Topology still authorizes the incoming bind; this only moves
     /// teardown under the SSH/tmux round trip.
-    func prepareForPaneSelection(paneID: UInt64) {
+    func prepareForPaneSelection(paneID: TmuxPaneID) {
         guard !isShutDown else { return }
         guard topology?.panes.contains(where: { $0.id == paneID }) == true else { return }
         guard paneSurface?.paneID != paneID else { return }
@@ -457,7 +457,7 @@ final class TmuxTerminalSession: ObservableObject {
         beginPaneTransition(to: paneID)
     }
 
-    private func beginPaneTransition(to paneID: UInt64) {
+    private func beginPaneTransition(to paneID: TmuxPaneID) {
         presentingPaneID = paneID
         paneTransitionPhase = .releasing
         stopPaneTransitionAfterRelease = false
@@ -583,7 +583,7 @@ final class TmuxTerminalSession: ObservableObject {
         presentActivePane(from: topology)
     }
 
-    private func createPaneSurfaceAfterRelease(paneID: UInt64) {
+    private func createPaneSurfaceAfterRelease(paneID: TmuxPaneID) {
         guard !isShutDown else {
             GhosttyRuntimeTrace.flowEndIfActive(
                 GhosttyRuntimeTrace.paneSwitchFlow,
@@ -720,7 +720,7 @@ final class TmuxTerminalSession: ObservableObject {
 
     private static func activePaneID(
         in snapshot: TmuxSessionController.TopologySnapshot
-    ) -> UInt64? {
+    ) -> TmuxPaneID? {
         snapshot.activeWindowID.flatMap { windowID in
             snapshot.windows.first(where: { $0.id == windowID })?.activePaneID
         }

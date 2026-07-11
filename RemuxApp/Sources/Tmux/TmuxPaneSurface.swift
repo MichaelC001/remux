@@ -12,7 +12,8 @@ import UIKit
 /// panes means a new TmuxPaneSurface, never a rebind.
 @MainActor
 final class TmuxPaneSurface {
-    let paneID: UInt64
+    let paneID: TmuxPaneID
+    let instanceID = TerminalSurfaceInstanceID()
     let view: GhosttyKitSurfaceView
 
     private let surface: ghostty_surface_t
@@ -38,7 +39,7 @@ final class TmuxPaneSurface {
     /// address for the C callbacks.
     final class InputBox {
         let controller: TmuxSessionController
-        let paneID: UInt64
+        let paneID: TmuxPaneID
         /// Only the visible pane surface reports the client viewport;
         /// in Remux's zoomed presentation that is this surface. Starts
         /// disabled: the view is created at a placeholder frame, and a
@@ -47,7 +48,7 @@ final class TmuxPaneSurface {
         /// layout-driven display update.
         var reportsClientSize = false
 
-        init(controller: TmuxSessionController, paneID: UInt64) {
+        init(controller: TmuxSessionController, paneID: TmuxPaneID) {
             self.controller = controller
             self.paneID = paneID
         }
@@ -69,7 +70,7 @@ final class TmuxPaneSurface {
     static func create(
         app: ghostty_app_t,
         controller: TmuxSessionController,
-        paneID: UInt64,
+        paneID: TmuxPaneID,
         baseConfig: ghostty_surface_config_s,
         theme: TerminalTheme,
         completion: @escaping @MainActor (Result<TmuxPaneSurface, CreateError>) -> Void
@@ -194,7 +195,7 @@ final class TmuxPaneSurface {
     private init?(
         app: ghostty_app_t,
         controller: TmuxSessionController,
-        paneID: UInt64,
+        paneID: TmuxPaneID,
         binding: TmuxSessionController.PaneBinding,
         wakeTarget: WakeTarget,
         baseConfig: ghostty_surface_config_s,

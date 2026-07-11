@@ -14,7 +14,7 @@ struct TmuxPanePreviewImageCache {
     }
 
     let byteLimit: Int
-    private(set) var entries: [UInt64: Entry] = [:]
+    private(set) var entries: [TmuxPaneID: Entry] = [:]
     private(set) var totalByteCost = 0
     private var accessSequence: UInt64 = 0
 
@@ -23,7 +23,7 @@ struct TmuxPanePreviewImageCache {
         self.byteLimit = byteLimit
     }
 
-    mutating func image(for paneID: UInt64) -> CGImage? {
+    mutating func image(for paneID: TmuxPaneID) -> CGImage? {
         guard var entry = entries[paneID] else { return nil }
         accessSequence &+= 1
         entry.lastAccess = accessSequence
@@ -32,7 +32,7 @@ struct TmuxPanePreviewImageCache {
     }
 
     @discardableResult
-    mutating func store(_ image: CGImage, for paneID: UInt64) -> [UInt64] {
+    mutating func store(_ image: CGImage, for paneID: TmuxPaneID) -> [TmuxPaneID] {
         let (byteCost, overflow) = image.bytesPerRow.multipliedReportingOverflow(by: image.height)
         guard !overflow, byteCost > 0, byteCost <= byteLimit else { return [] }
 
@@ -47,7 +47,7 @@ struct TmuxPanePreviewImageCache {
         )
         totalByteCost += byteCost
 
-        var evictedPaneIDs: [UInt64] = []
+        var evictedPaneIDs: [TmuxPaneID] = []
         while totalByteCost > byteLimit,
               let oldest = entries.min(by: { $0.value.lastAccess < $1.value.lastAccess }) {
             entries.removeValue(forKey: oldest.key)
@@ -58,7 +58,7 @@ struct TmuxPanePreviewImageCache {
     }
 
     @discardableResult
-    mutating func retainOnly(_ paneIDs: Set<UInt64>) -> [UInt64] {
+    mutating func retainOnly(_ paneIDs: Set<TmuxPaneID>) -> [TmuxPaneID] {
         let removedPaneIDs = entries.keys.filter { !paneIDs.contains($0) }
         for paneID in removedPaneIDs {
             if let removed = entries.removeValue(forKey: paneID) {
@@ -101,10 +101,10 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
 
     private let leaseStore = GhosttyRuntimeCallbackLeaseStore()
 
-    private var paneUUIDsByID: [UInt64: UUID] = [:]
-    private var paneIDsByUUID: [UUID: UInt64] = [:]
-    private var windowUUIDsByID: [UInt64: UUID] = [:]
-    private var windowIDsByUUID: [UUID: UInt64] = [:]
+    private var paneUUIDsByID: [TmuxPaneID: UUID] = [:]
+    private var paneIDsByUUID: [UUID: TmuxPaneID] = [:]
+    private var windowUUIDsByID: [TmuxWindowID: UUID] = [:]
+    private var windowIDsByUUID: [UUID: TmuxWindowID] = [:]
 
     private var activeManagedSurface: GhosttyManagedSurface?
     private var pendingRemovalSurfaces: [UUID: GhosttyManagedSurface] = [:]
@@ -210,7 +210,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
 
     // MARK: ID mapping
 
-    private func paneUUID(_ id: UInt64) -> UUID {
+    private func paneUUID(_ id: TmuxPaneID) -> UUID {
         if let existing = paneUUIDsByID[id] { return existing }
         let uuid = UUID()
         paneUUIDsByID[id] = uuid
@@ -218,7 +218,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         return uuid
     }
 
-    private func windowUUID(_ id: UInt64) -> UUID {
+    private func windowUUID(_ id: TmuxWindowID) -> UUID {
         if let existing = windowUUIDsByID[id] { return existing }
         let uuid = UUID()
         windowUUIDsByID[id] = uuid
@@ -756,7 +756,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     }
 
     private func panePreviewRequest(
-        paneID: UInt64,
+        paneID: TmuxPaneID,
         options: ghostty_surface_preview_image_options_s
     ) -> PanePreviewRequest? {
         guard let topology = latestTopology else {

@@ -41,13 +41,13 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     struct WindowInfo: Equatable, Identifiable, Sendable {
-        let id: UInt64
+        let id: TmuxWindowID
         let name: String
         let active: Bool
         let zoomed: Bool
         let width: UInt32
         let height: UInt32
-        let activePaneID: UInt64?
+        let activePaneID: TmuxPaneID?
     }
 
     enum PaneState: Equatable, Sendable {
@@ -58,8 +58,8 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     struct PaneInfo: Equatable, Identifiable, Sendable {
-        let id: UInt64
-        let windowID: UInt64
+        let id: TmuxPaneID
+        let windowID: TmuxWindowID
         let x: UInt32
         let y: UInt32
         let width: UInt32
@@ -71,7 +71,7 @@ final class TmuxSessionController: @unchecked Sendable {
         let sessionName: String
         let windows: [WindowInfo]
         let panes: [PaneInfo]
-        let activeWindowID: UInt64?
+        let activeWindowID: TmuxWindowID?
     }
 
     enum Request: Equatable, Sendable {
@@ -96,9 +96,9 @@ final class TmuxSessionController: @unchecked Sendable {
     struct Callbacks: Sendable {
         var onState: @Sendable (SessionState) -> Void = { _ in }
         var onTopology: @Sendable (TopologySnapshot) -> Void = { _ in }
-        var onPaneRemoved: @Sendable (UInt64) -> Void = { _ in }
-        var onPaneLive: @Sendable (UInt64) -> Void = { _ in }
-        var onPaneDegraded: @Sendable (UInt64) -> Void = { _ in }
+        var onPaneRemoved: @Sendable (TmuxPaneID) -> Void = { _ in }
+        var onPaneLive: @Sendable (TmuxPaneID) -> Void = { _ in }
+        var onPaneDegraded: @Sendable (TmuxPaneID) -> Void = { _ in }
         var onRequestFailed: @Sendable (Request) -> Void = { _ in }
     }
 
@@ -110,11 +110,11 @@ final class TmuxSessionController: @unchecked Sendable {
     /// @unchecked Sendable: immutable lets; crosses from the writer
     /// queue (creation) to the main queue (surface ownership).
     final class PaneBinding: @unchecked Sendable {
-        let paneID: UInt64
+        let paneID: TmuxPaneID
         fileprivate let handle: ghostty_tmux_binding_t
         fileprivate let wakeBox: WakeBox
 
-        fileprivate init(paneID: UInt64, handle: ghostty_tmux_binding_t, wakeBox: WakeBox) {
+        fileprivate init(paneID: TmuxPaneID, handle: ghostty_tmux_binding_t, wakeBox: WakeBox) {
             self.paneID = paneID
             self.handle = handle
             self.wakeBox = wakeBox
@@ -327,10 +327,10 @@ final class TmuxSessionController: @unchecked Sendable {
             )
             DispatchQueue.main.async { self.callbacks.onTopology(snapshot) }
         case GHOSTTY_TMUX_EVENT_PANE_REMOVED:
-            let id = event.pane_id
+            let id = TmuxPaneID(event.pane_id)
             DispatchQueue.main.async { self.callbacks.onPaneRemoved(id) }
         case GHOSTTY_TMUX_EVENT_PANE_LIVE:
-            let id = event.pane_id
+            let id = TmuxPaneID(event.pane_id)
             GhosttyRuntimeTrace.flowEventIfActive(
                 GhosttyRuntimeTrace.paneSwitchFlow,
                 event: "tmux.pane.live",
@@ -338,7 +338,7 @@ final class TmuxSessionController: @unchecked Sendable {
             )
             DispatchQueue.main.async { self.callbacks.onPaneLive(id) }
         case GHOSTTY_TMUX_EVENT_PANE_DEGRADED:
-            let id = event.pane_id
+            let id = TmuxPaneID(event.pane_id)
             DispatchQueue.main.async { self.callbacks.onPaneDegraded(id) }
         case GHOSTTY_TMUX_EVENT_REQUEST_FAILED:
             let request = Request(event.request)
@@ -423,13 +423,13 @@ final class TmuxSessionController: @unchecked Sendable {
                 ""
             }
             windows.append(WindowInfo(
-                id: raw.id,
+                id: TmuxWindowID(raw.id),
                 name: name,
                 active: raw.active,
                 zoomed: raw.zoomed,
                 width: raw.width,
                 height: raw.height,
-                activePaneID: raw.has_active_pane ? raw.active_pane_id : nil
+                activePaneID: raw.has_active_pane ? TmuxPaneID(raw.active_pane_id) : nil
             ))
         }
 
@@ -440,8 +440,8 @@ final class TmuxSessionController: @unchecked Sendable {
             var raw = ghostty_tmux_pane_s()
             guard ghostty_tmux_session_pane_at(session, index, &raw) else { continue }
             panes.append(PaneInfo(
-                id: raw.id,
-                windowID: raw.window_id,
+                id: TmuxPaneID(raw.id),
+                windowID: TmuxWindowID(raw.window_id),
                 x: raw.x,
                 y: raw.y,
                 width: raw.width,
@@ -457,7 +457,7 @@ final class TmuxSessionController: @unchecked Sendable {
             sessionName: sessionName,
             windows: windows,
             panes: panes,
-            activeWindowID: hasActive ? activeWindow : nil
+            activeWindowID: hasActive ? TmuxWindowID(activeWindow) : nil
         )
     }
 
@@ -467,7 +467,7 @@ final class TmuxSessionController: @unchecked Sendable {
     /// the writer queue whenever the pane's content changed; forward it
     /// to the surface's render request (which is thread-safe).
     func bind(
-        paneID: UInt64,
+        paneID: TmuxPaneID,
         wake: @escaping @Sendable () -> Void,
         completion: @escaping @Sendable (Result<PaneBinding, BindError>) -> Void
     ) {
@@ -480,7 +480,7 @@ final class TmuxSessionController: @unchecked Sendable {
             var handle: ghostty_tmux_binding_t?
             let result = ghostty_tmux_session_bind_pane(
                 session,
-                paneID,
+                paneID.rawValue,
                 { ctx in
                     guard let ctx else { return }
                     Unmanaged<WakeBox>.fromOpaque(ctx).takeUnretainedValue().wake()
@@ -526,7 +526,7 @@ final class TmuxSessionController: @unchecked Sendable {
             // Keep the wake box alive until after unbind: no wake can
             // fire past this point.
             _ = binding.wakeBox
-            let result = ghostty_tmux_session_dematerialize_pane(session, binding.paneID)
+            let result = ghostty_tmux_session_dematerialize_pane(session, binding.paneID.rawValue)
             GhosttyRuntimeTrace.perf(
                 "tmuxPane.dematerialize pane=\(binding.paneID) result=\(result) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt))"
             )
@@ -550,7 +550,7 @@ final class TmuxSessionController: @unchecked Sendable {
 
     // MARK: Input, size, requests (writer queue)
 
-    func sendInput(paneID: UInt64, _ bytes: Data) -> Bool {
+    func sendInput(paneID: TmuxPaneID, _ bytes: Data) -> Bool {
         guard !bytes.isEmpty else { return true }
 
         return queue.sync { [self] in
@@ -558,7 +558,7 @@ final class TmuxSessionController: @unchecked Sendable {
             let result = bytes.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
                 ghostty_tmux_session_send_input(
                     session,
-                    paneID,
+                    paneID.rawValue,
                     raw.bindMemory(to: UInt8.self).baseAddress,
                     UInt(raw.count)
                 )
@@ -623,29 +623,31 @@ final class TmuxSessionController: @unchecked Sendable {
         submit(request: .newWindow) { ghostty_tmux_session_request_new_window($0) }
     }
 
-    func requestSplit(paneID: UInt64, direction: SplitDirection, zoom: Bool) {
+    func requestSplit(paneID: TmuxPaneID, direction: SplitDirection, zoom: Bool) {
         let cDirection: ghostty_tmux_split_direction_e = switch direction {
         case .left: GHOSTTY_TMUX_SPLIT_DIRECTION_LEFT
         case .right: GHOSTTY_TMUX_SPLIT_DIRECTION_RIGHT
         case .up: GHOSTTY_TMUX_SPLIT_DIRECTION_UP
         case .down: GHOSTTY_TMUX_SPLIT_DIRECTION_DOWN
         }
-        submit(request: .splitPane) { ghostty_tmux_session_request_split($0, paneID, cDirection, zoom) }
+        submit(request: .splitPane) {
+            ghostty_tmux_session_request_split($0, paneID.rawValue, cDirection, zoom)
+        }
     }
 
-    func requestClosePane(paneID: UInt64) {
-        submit(request: .closePane) { ghostty_tmux_session_request_close_pane($0, paneID) }
+    func requestClosePane(paneID: TmuxPaneID) {
+        submit(request: .closePane) { ghostty_tmux_session_request_close_pane($0, paneID.rawValue) }
     }
 
-    func requestCloseWindow(windowID: UInt64) {
-        submit(request: .closeWindow) { ghostty_tmux_session_request_close_window($0, windowID) }
+    func requestCloseWindow(windowID: TmuxWindowID) {
+        submit(request: .closeWindow) { ghostty_tmux_session_request_close_window($0, windowID.rawValue) }
     }
 
-    func requestSelectWindow(windowID: UInt64) {
-        submit(request: .selectWindow) { ghostty_tmux_session_request_select_window($0, windowID) }
+    func requestSelectWindow(windowID: TmuxWindowID) {
+        submit(request: .selectWindow) { ghostty_tmux_session_request_select_window($0, windowID.rawValue) }
     }
 
-    func requestSelectPane(paneID: UInt64) {
+    func requestSelectPane(paneID: TmuxPaneID) {
         GhosttyRuntimeTrace.flowEventIfActive(
             GhosttyRuntimeTrace.paneSwitchFlow,
             event: "tmux.request.enqueued",
@@ -655,20 +657,20 @@ final class TmuxSessionController: @unchecked Sendable {
             ]
         )
         submit(request: .selectPane, tracePaneID: paneID) {
-            ghostty_tmux_session_request_select_pane($0, paneID)
+            ghostty_tmux_session_request_select_pane($0, paneID.rawValue)
         }
     }
 
-    func requestZoomPane(paneID: UInt64) {
-        submit(request: .zoomPane) { ghostty_tmux_session_request_zoom_pane($0, paneID) }
+    func requestZoomPane(paneID: TmuxPaneID) {
+        submit(request: .zoomPane) { ghostty_tmux_session_request_zoom_pane($0, paneID.rawValue) }
     }
 
-    func requestCopyMode(paneID: UInt64) {
-        submit(request: .copyMode) { ghostty_tmux_session_request_copy_mode($0, paneID) }
+    func requestCopyMode(paneID: TmuxPaneID) {
+        submit(request: .copyMode) { ghostty_tmux_session_request_copy_mode($0, paneID.rawValue) }
     }
 
     func renderPanePreviewImageAsync(
-        paneID: UInt64,
+        paneID: TmuxPaneID,
         styleSurface: ghostty_surface_t?,
         options: ghostty_surface_preview_image_options_s,
         previewGrid: ClientSize,
@@ -685,7 +687,7 @@ final class TmuxSessionController: @unchecked Sendable {
             let request = ghostty_tmux_session_render_pane_preview_image_async(
                 session,
                 styleSurface,
-                paneID,
+                paneID.rawValue,
                 tmuxOptions,
                 userdata,
                 callback
@@ -699,7 +701,7 @@ final class TmuxSessionController: @unchecked Sendable {
 
     private func submit(
         request: Request,
-        tracePaneID: UInt64? = nil,
+        tracePaneID: TmuxPaneID? = nil,
         _ body: @escaping @Sendable (ghostty_tmux_session_t) -> ghostty_tmux_result_e
     ) {
         queue.async { [self] in
