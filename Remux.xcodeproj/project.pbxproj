@@ -666,6 +666,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 9A9EB61A159DAC867ECA3B9D /* Build configuration list for PBXNativeTarget "Remux" */;
 			buildPhases = (
+				67F798A7FA8095C493E2C75E /* Verify GhosttyKit release mode */,
 				204B591A381758166DA82963 /* Sources */,
 				D0FE282CF2A15059754E82C8 /* Resources */,
 				03BDC461530EDD09CDB7FF29 /* Frameworks */,
@@ -768,6 +769,28 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		67F798A7FA8095C493E2C75E /* Verify GhosttyKit release mode */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Verify GhosttyKit release mode";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"$SRCROOT/scripts/verify_ghosttykit_release_mode.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		204B591A381758166DA82963 /* Sources */ = {

@@ -6,8 +6,21 @@ Remux uses XcodeGen. The checked-in project definition is `project.yml`.
 
 - Xcode with iOS 18 SDK support
 - XcodeGen on `PATH`
-- terminal-renderer XCFramework at the relative path configured in
+- Zig and the Ghostty source checkout at the relative path configured in
   [project.yml](../project.yml)
+
+## Build GhosttyKit
+
+Build the XCFramework used by Release and performance profiling with:
+
+```bash
+scripts/build_release_ghosttykit.sh
+```
+
+Set `GHOSTTY_SOURCE_DIR` when the Ghostty checkout is not the configured
+sibling directory. The script always builds `ReleaseFast`, and Remux Release
+builds independently query the resulting XCFramework and fail on any other
+mode. The app also validates the selected iOS slice at launch.
 
 ## Generate Project
 

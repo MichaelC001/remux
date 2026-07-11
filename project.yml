@@ -32,6 +32,11 @@ targets:
     settings:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: Remux
+    preBuildScripts:
+      - name: Verify GhosttyKit release mode
+        basedOnDependencyAnalysis: false
+        script: |
+          "$SRCROOT/scripts/verify_ghosttykit_release_mode.sh"
     dependencies:
       - framework: ../ghostty-tmux-pane-store-refactor/macos/GhosttyKit.xcframework
         embed: false

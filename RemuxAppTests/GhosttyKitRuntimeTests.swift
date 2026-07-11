@@ -5,6 +5,23 @@ import XCTest
 
 @MainActor
 final class GhosttyKitRuntimeTests: XCTestCase {
+    func testReleaseBuildModePolicyAcceptsReleaseFastGhosttyKit() {
+        XCTAssertNil(
+            GhosttyKitBuildModePolicy.releaseValidationFailure(
+                for: GHOSTTY_BUILD_MODE_RELEASE_FAST
+            )
+        )
+    }
+
+    func testReleaseBuildModePolicyRejectsDebugGhosttyKitWithActionableFailure() {
+        XCTAssertEqual(
+            GhosttyKitBuildModePolicy.releaseValidationFailure(
+                for: GHOSTTY_BUILD_MODE_DEBUG
+            ),
+            "Remux Release requires ReleaseFast GhosttyKit; detected Debug. Run scripts/build_release_ghosttykit.sh and rebuild."
+        )
+    }
+
     func testRuntimeInitializesGhosttyBackend() throws {
         _ = try GhosttyKitRuntime()
     }

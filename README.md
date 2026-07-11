@@ -47,7 +47,17 @@ Requirements:
 
 - Xcode with iOS 18 SDK support
 - XcodeGen
-- the GhosttyKit XCFramework configured in [project.yml](project.yml)
+- Zig and the Ghostty checkout configured in [project.yml](project.yml)
+
+Build the ReleaseFast GhosttyKit XCFramework used by production and profiling
+builds:
+
+```bash
+scripts/build_release_ghosttykit.sh
+```
+
+Remux Release builds verify the XCFramework's actual build mode and fail if it
+is not ReleaseFast. Debug Remux builds may use any GhosttyKit build mode.
 
 Generate the Xcode project:
 
