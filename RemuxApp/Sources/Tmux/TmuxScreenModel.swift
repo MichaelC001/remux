@@ -51,7 +51,6 @@ final class TmuxScreenModel: ObservableObject {
     private var runtime: GhosttyKitRuntime?
     private var currentTerminalSettings: TerminalSettings
     private var reportTracker = TerminalRuntimeStateReportTracker()
-    private var pendingReconnectSource: TerminalReconnectSource?
     private var pendingForegroundInactiveReason: TerminalDisconnectReason?
     private var stateObservation: AnyCancellable?
     private var transportFailureObservation: AnyCancellable?
@@ -142,25 +141,10 @@ final class TmuxScreenModel: ObservableObject {
         }
     }
 
-    /// Connect or reconnect; the session keeps its state across
-    /// detaches, so this is the single (re)entry point.
-    func connect() {
-        guard let viewport = reconnectViewport() else {
-            report(currentRuntimeState(for: session?.state ?? .attaching, connecting: true))
-            return
-        }
-        connect(viewport: viewport)
-    }
-
     private func connect(viewport: TmuxControlViewport) {
         initialViewport = viewport
         report(currentRuntimeState(for: session?.state ?? .attaching, connecting: true))
         session?.connect(viewport: viewport)
-    }
-
-    func reconnect(source: TerminalReconnectSource) {
-        pendingReconnectSource = source
-        connect()
     }
 
     private func prepareInitialViewport(size: CGSize, scale: CGFloat) {
@@ -177,13 +161,6 @@ final class TmuxScreenModel: ObservableObject {
             startupFailure = String(describing: error)
             report(.disconnected(Self.initialViewportFailureReason))
         }
-    }
-
-    private func reconnectViewport() -> TmuxControlViewport? {
-        if let size = session?.controller.carriedClientSize {
-            return TmuxControlViewport(clientSize: size)
-        }
-        return initialViewport
     }
 
     func handleAppLifecyclePhase(_ phase: GhosttyAppLifecyclePhase) {
@@ -279,7 +256,6 @@ final class TmuxScreenModel: ObservableObject {
 
     private func handleSessionState(_ state: TmuxSessionController.SessionState) {
         if case .ready = state {
-            pendingReconnectSource = nil
             pendingForegroundInactiveReason = nil
         }
         if case .detached = state,
@@ -297,19 +273,14 @@ final class TmuxScreenModel: ObservableObject {
     ) -> TerminalRuntimeState {
         switch state {
         case .attaching, .syncing:
-            if let source = pendingReconnectSource {
-                return .reconnecting(source)
-            }
             return .connecting
         case .ready:
             return .connected
         case .detached(let reason):
             if connecting {
-                // A (re)connect is being initiated from a detached
-                // session: report progress, not the stale detach.
-                if let source = pendingReconnectSource {
-                    return .reconnecting(source)
-                }
+                // A connection is being initiated from the session's
+                // initial detached state: report progress, not the stale
+                // detach.
                 return .connecting
             }
             if let reason {
