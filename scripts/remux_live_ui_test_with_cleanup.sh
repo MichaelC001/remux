@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  scripts/remux_live_ui_test_with_cleanup.sh --only-testing <test-id> [--only-testing <test-id> ...]
+  scripts/remux_live_ui_test_with_cleanup.sh [--configuration Debug|Release] --only-testing <test-id> [--only-testing <test-id> ...]
   scripts/remux_live_ui_test_with_cleanup.sh --dry-run-cleanup <manifest-file>
 
 Runs selected Remux live SSH UI tests using /tmp/remux-live-ssh.json and
@@ -18,6 +18,7 @@ USAGE
 
 config="/tmp/remux-live-ssh.json"
 destination="platform=iOS Simulator,name=iPhone 17,OS=latest"
+configuration="Debug"
 declare -a only_testing=()
 dry_run_manifest=""
 
@@ -35,6 +36,14 @@ while [[ $# -gt 0 ]]; do
     --destination)
       destination="${2:-}"
       [[ -n "$destination" ]] || { usage; exit 2; }
+      shift 2
+      ;;
+    --configuration)
+      configuration="${2:-}"
+      case "$configuration" in
+        Debug|Release) ;;
+        *) usage; exit 2 ;;
+      esac
       shift 2
       ;;
     --only-testing)
@@ -711,6 +720,7 @@ declare -a xcode_args=(
   test
   -project Remux.xcodeproj
   -scheme RemuxUIOnly
+  -configuration "$configuration"
   -destination "$destination"
   -resultBundlePath "$result_bundle"
 )
