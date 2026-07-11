@@ -81,7 +81,7 @@ final class GhosttyPanePreviewSession: ObservableObject {
         let release: @MainActor (ghostty_surface_preview_request_t) -> Void
         let cachedPreview: @MainActor (UUID) -> RenderedPreview?
         let shouldRefreshCachedImage: @MainActor (UUID) -> Bool
-        let cacheRenderedImage: @MainActor (UUID, CGImage, FullViewportProvenance) -> Void
+        let cacheRenderedPreview: @MainActor (UUID, RenderedPreview) -> Void
 
         init(
             start: @escaping Start,
@@ -89,14 +89,14 @@ final class GhosttyPanePreviewSession: ObservableObject {
             release: @escaping @MainActor (ghostty_surface_preview_request_t) -> Void,
             cachedPreview: @escaping @MainActor (UUID) -> RenderedPreview? = { _ in nil },
             shouldRefreshCachedImage: @escaping @MainActor (UUID) -> Bool = { _ in false },
-            cacheRenderedImage: @escaping @MainActor (UUID, CGImage, FullViewportProvenance) -> Void = { _, _, _ in }
+            cacheRenderedPreview: @escaping @MainActor (UUID, RenderedPreview) -> Void = { _, _ in }
         ) {
             self.start = start
             self.cancel = cancel
             self.release = release
             self.cachedPreview = cachedPreview
             self.shouldRefreshCachedImage = shouldRefreshCachedImage
-            self.cacheRenderedImage = cacheRenderedImage
+            self.cacheRenderedPreview = cacheRenderedPreview
         }
     }
 
@@ -427,10 +427,9 @@ final class GhosttyPanePreviewSession: ObservableObject {
             ?? .remotePaneGeometry
 
         if status == GHOSTTY_SURFACE_PREVIEW_STATUS_OK, let image = image {
-            if case .fullViewport(let provenance) = source {
-                previewRequestClient.cacheRenderedImage(paneID, image, provenance)
-            }
-            imagesByPaneID[paneID] = .ready(RenderedPreview(image: image, source: source))
+            let preview = RenderedPreview(image: image, source: source)
+            previewRequestClient.cacheRenderedPreview(paneID, preview)
+            imagesByPaneID[paneID] = .ready(preview)
         } else {
             let failureStatus = normalizedFailureStatus(status: status, image: image)
             if case .ready? = imagesByPaneID[paneID] {

@@ -195,25 +195,25 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let imageCost = first.bytesPerRow * first.height
         var cache = TmuxPanePreviewImageCache(byteLimit: imageCost * 2)
 
-        XCTAssertEqual(cache.store(first, provenance: provenance(), for: 1), [])
-        XCTAssertEqual(cache.store(second, provenance: provenance(), for: 2), [])
-        XCTAssertNotNil(cache.image(for: 1), "reading pane 1 must refresh its LRU age")
-        XCTAssertEqual(cache.store(third, provenance: provenance(), for: 3), [2])
-        XCTAssertNotNil(cache.image(for: 1))
-        XCTAssertNil(cache.image(for: 2))
-        XCTAssertNotNil(cache.image(for: 3))
+        XCTAssertEqual(cache.store(preview(first), for: 1), [])
+        XCTAssertEqual(cache.store(preview(second), for: 2), [])
+        XCTAssertNotNil(cache.preview(for: 1), "reading pane 1 must refresh its LRU age")
+        XCTAssertEqual(cache.store(preview(third), for: 3), [2])
+        XCTAssertNotNil(cache.preview(for: 1))
+        XCTAssertNil(cache.preview(for: 2))
+        XCTAssertNotNil(cache.preview(for: 3))
         XCTAssertEqual(cache.totalByteCost, imageCost * 2)
     }
 
     func testPanePreviewCacheDropsRemovedTopologyPanes() throws {
         let image = try makeImage(width: 4, height: 4)
         var cache = TmuxPanePreviewImageCache(byteLimit: 1024)
-        cache.store(image, provenance: provenance(), for: 1)
-        cache.store(image, provenance: provenance(), for: 2)
+        cache.store(preview(image), for: 1)
+        cache.store(preview(image), for: 2)
 
         XCTAssertEqual(Set(cache.retainOnly(Set([2]))), Set([1]))
-        XCTAssertNil(cache.image(for: 1))
-        XCTAssertNotNil(cache.image(for: 2))
+        XCTAssertNil(cache.preview(for: 1))
+        XCTAssertNotNil(cache.preview(for: 2))
     }
 
     func testPanePreviewCacheRejectsImageLargerThanByteLimit() throws {
@@ -222,8 +222,8 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
             byteLimit: image.bytesPerRow * image.height - 1
         )
 
-        XCTAssertEqual(cache.store(image, provenance: provenance(), for: 1), [])
-        XCTAssertNil(cache.image(for: 1))
+        XCTAssertEqual(cache.store(preview(image), for: 1), [])
+        XCTAssertNil(cache.preview(for: 1))
         XCTAssertEqual(cache.totalByteCost, 0)
     }
 
@@ -232,13 +232,29 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let expected = provenance()
         var cache = TmuxPanePreviewImageCache(byteLimit: 1024)
 
-        cache.store(image, provenance: expected, for: 1)
+        cache.store(
+            .init(image: image, source: .fullViewport(expected)),
+            for: 1
+        )
 
-        XCTAssertEqual(cache.entries[1]?.provenance, expected)
+        XCTAssertEqual(cache.entries[1]?.preview.source, .fullViewport(expected))
         XCTAssertTrue(cache.containsFullViewportCapture(
             for: 1,
             surfaceID: expected.surfaceID
         ))
+        XCTAssertFalse(cache.containsFullViewportCapture(
+            for: 1,
+            surfaceID: UUID()
+        ))
+    }
+
+    func testPanePreviewCacheRetainsRemoteGeometrySource() throws {
+        let image = try makeImage(width: 4, height: 4)
+        var cache = TmuxPanePreviewImageCache(byteLimit: 1024)
+
+        cache.store(preview(image), for: 1)
+
+        XCTAssertEqual(cache.preview(for: 1)?.source, .remotePaneGeometry)
         XCTAssertFalse(cache.containsFullViewportCapture(
             for: 1,
             surfaceID: UUID()
@@ -340,5 +356,11 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
             pixelWidth: 390,
             pixelHeight: 709
         )
+    }
+
+    private func preview(
+        _ image: CGImage
+    ) -> GhosttyPanePreviewSession.RenderedPreview {
+        .init(image: image, source: .remotePaneGeometry)
     }
 }
