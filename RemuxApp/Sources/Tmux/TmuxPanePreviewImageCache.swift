@@ -33,16 +33,6 @@ struct TmuxPanePreviewImageCache {
         return entry.preview
     }
 
-    func containsFullViewportCapture(
-        for paneID: TmuxPaneID,
-        surfaceID: UUID
-    ) -> Bool {
-        guard case .fullViewport(let provenance) = entries[paneID]?.preview.source else {
-            return false
-        }
-        return provenance.surfaceID == surfaceID
-    }
-
     @discardableResult
     mutating func store(
         _ preview: GhosttyPanePreviewSession.RenderedPreview,

@@ -260,14 +260,6 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         )
 
         XCTAssertEqual(cache.entries[1]?.preview.source, .fullViewport(expected))
-        XCTAssertTrue(cache.containsFullViewportCapture(
-            for: 1,
-            surfaceID: expected.surfaceID
-        ))
-        XCTAssertFalse(cache.containsFullViewportCapture(
-            for: 1,
-            surfaceID: UUID()
-        ))
     }
 
     func testPanePreviewCacheRetainsRemoteGeometrySource() throws {
@@ -277,10 +269,6 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         cache.store(preview(image), for: 1)
 
         XCTAssertEqual(cache.preview(for: 1)?.source, .remotePaneGeometry)
-        XCTAssertFalse(cache.containsFullViewportCapture(
-            for: 1,
-            surfaceID: UUID()
-        ))
     }
 
     func testPanePreviewGridUsesFullWindowGeometry() {
