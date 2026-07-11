@@ -633,6 +633,28 @@ private struct GhosttySheetActionButtonStyle: ButtonStyle {
     }
 }
 
+private struct GhosttyRenderedPreviewSurface: View {
+    let preview: GhosttyPanePreviewSession.RenderedPreview
+    let size: CGSize
+
+    var body: some View {
+        Image(decorative: preview.image, scale: PanePreviewLayout.currentScale())
+            .resizable()
+            .aspectRatio(contentMode: contentMode)
+            .frame(width: size.width, height: size.height)
+            .background(Color.black.opacity(0.30))
+            .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+
+    private var contentMode: ContentMode {
+        switch preview.source {
+        case .fullViewport: .fill
+        case .remotePaneGeometry: .fit
+        }
+    }
+}
+
 private struct GhosttyWindowSelectionTile: View {
     let displayIndex: Int
     let totalCount: Int
@@ -670,18 +692,11 @@ private struct GhosttyWindowSelectionTile: View {
     @ViewBuilder
     private var previewSurface: some View {
         switch previewState {
-        case .ready(let cgImage):
-            Image(decorative: cgImage, scale: PanePreviewLayout.currentScale())
-                .resizable()
-                .scaledToFit()
-                .frame(
-                    width: layout.previewPointSize.width,
-                    height: layout.previewPointSize.height,
-                    alignment: .topLeading
-                )
-                .background(Color.black.opacity(0.30))
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        case .ready(let preview):
+            GhosttyRenderedPreviewSurface(
+                preview: preview,
+                size: layout.previewPointSize
+            )
 
         case .pending, .none, .failed:
             RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -777,18 +792,11 @@ private struct GhosttyPaneSelectionTile: View {
     @ViewBuilder
     private var previewSurface: some View {
         switch state {
-        case .ready(let cgImage):
-            Image(decorative: cgImage, scale: PanePreviewLayout.currentScale())
-                .resizable()
-                .scaledToFit()
-                .frame(
-                    width: layout.previewPointSize.width,
-                    height: layout.previewPointSize.height,
-                    alignment: .topLeading
-                )
-                .background(Color.black.opacity(0.30))
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        case .ready(let preview):
+            GhosttyRenderedPreviewSurface(
+                preview: preview,
+                size: layout.previewPointSize
+            )
 
         case .pending, .none:
             RoundedRectangle(cornerRadius: 6, style: .continuous)

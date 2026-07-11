@@ -223,6 +223,18 @@ final class RemuxAppUITests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(0.35))
         }
 
+        // Both panes have now been presented at the real app viewport. The
+        // inactive tile must come from its last full-viewport live capture,
+        // not the cold split-geometry fallback.
+        openPanesSheet()
+        assertPreviewTileUsesFullViewportWidth(
+            tileIdentifier: "terminal.pane.tile.1"
+        )
+        assertPreviewTileUsesFullViewportWidth(
+            tileIdentifier: "terminal.pane.tile.2"
+        )
+        dismissTopSheetIfPresent()
+
         XCTAssertFalse(app.staticTexts["terminal.status.failed"].exists)
         assertLiveTerminalScreenshotContainsRenderedContent(minNonBackgroundPixels: 30_000)
     }
@@ -1660,6 +1672,17 @@ final class RemuxAppUITests: XCTestCase {
         screenshot: XCUIScreenshot,
         tile: XCUIElement
     ) -> (distinctColors: Int, nonBackgroundPixels: Int)? {
+        guard let snapshot = previewTileRenderedPixels(
+            screenshot: screenshot,
+            tile: tile
+        ) else { return nil }
+        return pixelStats(snapshot)
+    }
+
+    private func previewTileRenderedPixels(
+        screenshot: XCUIScreenshot,
+        tile: XCUIElement
+    ) -> (pixels: [UInt8], width: Int, height: Int)? {
         guard let cgImage = screenshot.image.cgImage else { return nil }
         guard app.frame.width > 0, app.frame.height > 0 else { return nil }
 
@@ -1681,11 +1704,103 @@ final class RemuxAppUITests: XCTestCase {
             height: previewFrame.height * scaleY
         )
 
-        guard let snapshot = renderedPixels(cgImage: cgImage, crop: pixelCrop) else {
-            return nil
+        return renderedPixels(cgImage: cgImage, crop: pixelCrop)
+    }
+
+    private func assertPreviewTileUsesFullViewportWidth(
+        tileIdentifier: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let tile = app.buttons[tileIdentifier]
+        XCTAssertTrue(
+            tile.waitForExistence(timeout: 5),
+            "Missing preview tile \(tileIdentifier)",
+            file: file,
+            line: line
+        )
+
+        let deadline = Date().addingTimeInterval(15)
+        var lastSpan: Double = 0
+        var lastTrailingPixels = 0
+        var lastTrailingRowRatio: Double = 0
+        while Date() < deadline {
+            let screenshot = XCUIScreen.main.screenshot()
+            if let pixels = previewTileRenderedPixels(
+                screenshot: screenshot,
+                tile: tile
+            ) {
+                let coverage = previewWidthCoverage(pixels)
+                lastSpan = coverage.span
+                lastTrailingPixels = coverage.trailingPixels
+                lastTrailingRowRatio = coverage.trailingRowRatio
+                if coverage.span >= 0.72,
+                   coverage.trailingPixels >= 100,
+                   coverage.trailingRowRatio >= 0.18 {
+                    let attachment = XCTAttachment(screenshot: screenshot)
+                    attachment.name = "full-viewport-preview-\(tileIdentifier)"
+                    attachment.lifetime = .keepAlways
+                    add(attachment)
+                    return
+                }
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
         }
 
-        return pixelStats(snapshot)
+        XCTFail(
+            "Preview tile \(tileIdentifier) remained split-width after a live full-viewport visit; span=\(lastSpan) trailingPixels=\(lastTrailingPixels) trailingRowRatio=\(lastTrailingRowRatio)",
+            file: file,
+            line: line
+        )
+    }
+
+    private func previewWidthCoverage(
+        _ snapshot: (pixels: [UInt8], width: Int, height: Int)
+    ) -> (span: Double, trailingPixels: Int, trailingRowRatio: Double) {
+        var columnBackgrounds = Array(repeating: UInt32(0), count: snapshot.width)
+        for x in 0..<snapshot.width {
+            var colorCounts: [UInt32: Int] = [:]
+            for y in 0..<snapshot.height {
+                let offset = (y * snapshot.width + x) * 4
+                colorCounts[quantizedColor(snapshot.pixels, offset: offset), default: 0] += 1
+            }
+            columnBackgrounds[x] = colorCounts.max(by: { $0.value < $1.value })?.key ?? 0
+        }
+
+        var minX = snapshot.width
+        var maxX = -1
+        var trailingPixels = 0
+        var trailingRows = 0
+        let trailingStart = snapshot.width * 3 / 4
+        for y in 0..<snapshot.height {
+            var rowHasTrailingContent = false
+            for x in 0..<snapshot.width {
+                let offset = (y * snapshot.width + x) * 4
+                let color = quantizedColor(snapshot.pixels, offset: offset)
+                guard color != columnBackgrounds[x] else { continue }
+                minX = min(minX, x)
+                maxX = max(maxX, x)
+                if x >= trailingStart {
+                    trailingPixels += 1
+                    rowHasTrailingContent = true
+                }
+            }
+            if rowHasTrailingContent {
+                trailingRows += 1
+            }
+        }
+        guard maxX >= minX else { return (0, 0, 0) }
+        return (
+            span: Double(maxX - minX + 1) / Double(snapshot.width),
+            trailingPixels: trailingPixels,
+            trailingRowRatio: Double(trailingRows) / Double(snapshot.height)
+        )
+    }
+
+    private func quantizedColor(_ pixels: [UInt8], offset: Int) -> UInt32 {
+        UInt32(pixels[offset] / 4) << 16 |
+            UInt32(pixels[offset + 1] / 4) << 8 |
+            UInt32(pixels[offset + 2] / 4)
     }
 
     private func pixelStats(

@@ -25,8 +25,10 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             },
             cancel: { _ in },
             release: { _ in },
-            cachedImage: { requestedPaneID in
-                requestedPaneID == paneID ? cachedImage : nil
+            cachedPreview: { requestedPaneID in
+                requestedPaneID == paneID
+                    ? .init(image: cachedImage, source: .remotePaneGeometry)
+                    : nil
             }
         )
 
@@ -41,7 +43,8 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         guard case .ready(let result)? = session.imagesByPaneID[paneID] else {
             return XCTFail("expected cached preview to be ready")
         }
-        XCTAssertTrue(result === cachedImage)
+        XCTAssertTrue(result.image === cachedImage)
+        XCTAssertEqual(result.source, .remotePaneGeometry)
     }
 
     func testUncachedPreviewDoesNotStartUntilRefreshBegins() {
@@ -95,8 +98,10 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             },
             cancel: { _ in },
             release: { _ in },
-            cachedImage: { paneID in
-                paneID == cachedPaneID ? cachedImage : nil
+            cachedPreview: { paneID in
+                paneID == cachedPaneID
+                    ? .init(image: cachedImage, source: .remotePaneGeometry)
+                    : nil
             }
         )
 
@@ -110,7 +115,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         guard case .ready(let result)? = session.imagesByPaneID[cachedPaneID] else {
             return XCTFail("expected cached pane to be ready during construction")
         }
-        XCTAssertTrue(result === cachedImage)
+        XCTAssertTrue(result.image === cachedImage)
         XCTAssertNil(session.imagesByPaneID[uncachedPaneID])
 
         session.startRefreshing()
@@ -166,10 +171,12 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             },
             cancel: { _ in },
             release: { releasedRequests.append($0) },
-            cachedImage: { requestedPaneID in
-                requestedPaneID == paneID ? cachedImage : nil
+            cachedPreview: { requestedPaneID in
+                requestedPaneID == paneID
+                    ? .init(image: cachedImage, source: .remotePaneGeometry)
+                    : nil
             },
-            shouldCacheRenderedImage: { $0 == paneID }
+            shouldRefreshCachedImage: { $0 == paneID }
         )
         let session = GhosttyPanePreviewSession(
             leafIDs: [paneID],
@@ -182,7 +189,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         guard case .ready(let refreshingImage)? = session.imagesByPaneID[paneID] else {
             return XCTFail("expected cached image to remain visible during refresh")
         }
-        XCTAssertTrue(refreshingImage === cachedImage)
+        XCTAssertTrue(refreshingImage.image === cachedImage)
         XCTAssertEqual(callbacks.count, 1)
 
         callbacks[0].callback(
@@ -196,7 +203,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         guard case .ready(let finalImage)? = session.imagesByPaneID[paneID] else {
             return XCTFail("expected failed refresh to preserve cached image")
         }
-        XCTAssertTrue(finalImage === cachedImage)
+        XCTAssertTrue(finalImage.image === cachedImage)
     }
 
     func testWindowGridPreviewSizingUsesWindowTileBudget() {

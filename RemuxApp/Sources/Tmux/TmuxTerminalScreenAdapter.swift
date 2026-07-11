@@ -9,6 +9,7 @@ import GhosttyKit
 struct TmuxPanePreviewImageCache {
     struct Entry {
         let image: CGImage
+        let provenance: GhosttyPanePreviewSession.FullViewportProvenance
         let byteCost: Int
         var lastAccess: UInt64
     }
@@ -31,8 +32,19 @@ struct TmuxPanePreviewImageCache {
         return entry.image
     }
 
+    func containsFullViewportCapture(
+        for paneID: TmuxPaneID,
+        surfaceID: UUID
+    ) -> Bool {
+        entries[paneID]?.provenance.surfaceID == surfaceID
+    }
+
     @discardableResult
-    mutating func store(_ image: CGImage, for paneID: TmuxPaneID) -> [TmuxPaneID] {
+    mutating func store(
+        _ image: CGImage,
+        provenance: GhosttyPanePreviewSession.FullViewportProvenance,
+        for paneID: TmuxPaneID
+    ) -> [TmuxPaneID] {
         let (byteCost, overflow) = image.bytesPerRow.multipliedReportingOverflow(by: image.height)
         guard !overflow, byteCost > 0, byteCost <= byteLimit else { return [] }
 
@@ -42,6 +54,7 @@ struct TmuxPanePreviewImageCache {
         accessSequence &+= 1
         entries[paneID] = Entry(
             image: image,
+            provenance: provenance,
             byteCost: byteCost,
             lastAccess: accessSequence
         )
@@ -642,7 +655,23 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                         ) else {
                             return .rejected
                         }
-                        return .started(request)
+                        let size = activeSurface.controlSurface.currentSize()
+                        let source: GhosttyPanePreviewSession.PreviewSource
+                        if size.width_px > 0, size.height_px > 0 {
+                            source = .fullViewport(
+                                GhosttyPanePreviewSession.FullViewportProvenance(
+                                    surfaceID: activeSurface.id,
+                                    pixelWidth: size.width_px,
+                                    pixelHeight: size.height_px
+                                )
+                            )
+                        } else {
+                            source = .remotePaneGeometry
+                        }
+                        return .started(
+                            request,
+                            source: source
+                        )
                     }
                     guard let styleSurface = self.activeManagedSurface?.controlSurface.handle else {
                         return .surfaceUnavailable
@@ -666,15 +695,17 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                     ) else {
                         return .rejected
                     }
-                    return .started(request)
+                    return .started(request, source: .remotePaneGeometry)
                 },
                 cancel: { GhosttyKitControlSurface.cancelPreviewRequest($0) },
                 release: { GhosttyKitControlSurface.releasePreviewRequest($0) },
-                cachedImage: { [weak self] leafID in
+                cachedPreview: { [weak self] leafID in
                     guard let self,
                           let paneID = self.paneIDsByUUID[leafID]
                     else { return nil }
-                    guard let image = self.panePreviewCache.image(for: paneID) else {
+                    guard let image = self.panePreviewCache.image(for: paneID),
+                          let provenance = self.panePreviewCache.entries[paneID]?.provenance
+                    else {
                         GhosttyRuntimeTrace.perf(
                             "tmuxPane.preview.cache pane=\(paneID) result=miss"
                         )
@@ -683,21 +714,33 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                     GhosttyRuntimeTrace.perf(
                         "tmuxPane.preview.cache pane=\(paneID) result=hit bytes=\(image.bytesPerRow * image.height)"
                     )
-                    return image
+                    return GhosttyPanePreviewSession.RenderedPreview(
+                        image: image,
+                        source: .fullViewport(provenance)
+                    )
                 },
-                shouldCacheRenderedImage: { [weak self] leafID in
+                shouldRefreshCachedImage: { [weak self] leafID in
                     guard let self,
-                          let paneID = self.paneIDsByUUID[leafID]
+                          let paneID = self.paneIDsByUUID[leafID],
+                          self.activeManagedPaneID == paneID,
+                          let surfaceID = self.activeManagedSurface?.id
                     else { return false }
-                    return self.activeManagedPaneID == paneID
+                    return !self.panePreviewCache.containsFullViewportCapture(
+                        for: paneID,
+                        surfaceID: surfaceID
+                    )
                 },
-                cacheRenderedImage: { [weak self] leafID, image in
+                cacheRenderedImage: { [weak self] leafID, image, provenance in
                     guard let self,
                           self.session?.state == .ready,
                           let paneID = self.paneIDsByUUID[leafID],
                           self.latestTopology?.panes.contains(where: { $0.id == paneID }) == true
                     else { return }
-                    let evictedPaneIDs = self.panePreviewCache.store(image, for: paneID)
+                    let evictedPaneIDs = self.panePreviewCache.store(
+                        image,
+                        provenance: provenance,
+                        for: paneID
+                    )
                     guard self.panePreviewCache.entries[paneID]?.image === image else {
                         GhosttyRuntimeTrace.perf(
                             "tmuxPane.preview.cache pane=\(paneID) result=reject-oversize bytes=\(image.bytesPerRow * image.height) limit=\(self.panePreviewCache.byteLimit)"
@@ -705,7 +748,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                         return
                     }
                     GhosttyRuntimeTrace.perf(
-                        "tmuxPane.preview.cache pane=\(paneID) result=store bytes=\(image.bytesPerRow * image.height) total=\(self.panePreviewCache.totalByteCost)"
+                        "tmuxPane.preview.cache pane=\(paneID) result=store source=full-viewport viewport=\(provenance.pixelWidth)x\(provenance.pixelHeight) bytes=\(image.bytesPerRow * image.height) total=\(self.panePreviewCache.totalByteCost)"
                     )
                     if !evictedPaneIDs.isEmpty {
                         GhosttyRuntimeTrace.perf(
@@ -720,20 +763,29 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     private func schedulePanePreviewWarmup(for surfaceID: UUID) {
         panePreviewWarmupTask?.cancel()
         let delay = Self.panePreviewWarmupDelay
+        GhosttyRuntimeTrace.perf(
+            "tmuxPane.preview.prewarm surface=\(ghosttyDiagnosticShortID(surfaceID)) event=scheduled"
+        )
         panePreviewWarmupTask = Task { @MainActor [weak self] in
             do {
                 try await Task.sleep(for: delay)
             } catch {
                 return
             }
-            guard let self,
-                  self.session?.state == .ready,
+            guard let self else { return }
+            guard self.session?.state == .ready,
                   self.activeManagedSurface?.id == surfaceID,
-                  let paneID = self.paneIDsByUUID[surfaceID]
-            else { return }
+                  let paneID = self.activeManagedPaneID,
+                  let paneUUID = self.paneUUIDsByID[paneID]
+            else {
+                GhosttyRuntimeTrace.perf(
+                    "tmuxPane.preview.prewarm surface=\(ghosttyDiagnosticShortID(surfaceID)) event=skipped"
+                )
+                return
+            }
 
             let warmupSession = self.newPanePreviewSession(
-                leafIDs: [surfaceID],
+                leafIDs: [paneUUID],
                 previewSizing: .paneGridForCurrentScreen
             )
             self.panePreviewWarmupSession?.cancelAll()
