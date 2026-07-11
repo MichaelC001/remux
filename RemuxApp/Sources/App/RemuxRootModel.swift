@@ -189,7 +189,7 @@ final class RemuxRootModel: ObservableObject {
 
     func load() async {
         do {
-#if DEBUG
+#if DEBUG || REMUX_LIVE_UI_TESTING
             try await dependencies.seedDebugConnectionIfRequested()
 #endif
 

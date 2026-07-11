@@ -745,6 +745,9 @@ done
 if [[ -n "$derived_data_path" ]]; then
   xcode_args+=(-derivedDataPath "$derived_data_path")
 fi
+if [[ "$configuration" == "Release" ]]; then
+  xcode_args+=('SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) REMUX_LIVE_UI_TESTING')
+fi
 if [[ -n "$development_team" ]]; then
   xcode_args+=(
     "DEVELOPMENT_TEAM=$development_team"

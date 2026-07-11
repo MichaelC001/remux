@@ -1,6 +1,6 @@
 import Foundation
 
-#if DEBUG
+#if DEBUG || REMUX_LIVE_UI_TESTING
 enum DebugConnectionProfileSeederError: LocalizedError, Sendable {
     case invalidEnvironment(TmuxConnectionDraftValidation)
 

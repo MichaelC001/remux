@@ -78,7 +78,7 @@ struct RemuxAppDependencies: Sendable {
 
     static func launch() -> Result<RemuxAppDependencies, Error> {
         Result {
-#if DEBUG
+#if DEBUG || REMUX_LIVE_UI_TESTING
             if ProcessInfo.processInfo.environment["REMUX_UI_TESTING"] == "1" {
                 return try uiTesting()
             }
@@ -88,7 +88,7 @@ struct RemuxAppDependencies: Sendable {
     }
 
     static func live() throws -> RemuxAppDependencies {
-#if DEBUG
+#if DEBUG || REMUX_LIVE_UI_TESTING
         let environment = ProcessInfo.processInfo.environment
         let usesEphemeralDebugStorage = environment[DebugLiveEnvironmentKey.ephemeralStorage] == "1"
         let root: URL
@@ -288,7 +288,7 @@ struct RemuxAppDependencies: Sendable {
         }
     }
 
-#if DEBUG
+#if DEBUG || REMUX_LIVE_UI_TESTING
     private enum DebugLiveEnvironmentKey {
         static let ephemeralStorage = "REMUX_DEBUG_EPHEMERAL_STORAGE"
     }
@@ -312,7 +312,7 @@ struct RemuxAppDependencies: Sendable {
     }
 #endif
 
-#if DEBUG
+#if DEBUG || REMUX_LIVE_UI_TESTING
     @discardableResult
     func seedDebugConnectionIfRequested() async throws -> Bool {
         try await debugConnectionSeeder(profileRepository, credentialStore)
@@ -337,7 +337,7 @@ struct RemuxAppDependencies: Sendable {
 #endif
 }
 
-#if DEBUG
+#if DEBUG || REMUX_LIVE_UI_TESTING
 private actor InMemoryConnectionProfileRepository: ConnectionProfileRepository {
     private var servers: [SavedServer] = []
     private var workspaces: [SavedWorkspace] = []
