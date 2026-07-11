@@ -20,6 +20,7 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private var app: XCUIApplication!
+    private var acceptedExpectedLiveHostKey = false
 
     override func setUp() {
         super.setUp()
@@ -1354,6 +1355,9 @@ final class RemuxAppUITests: XCTestCase {
             )
             return false
         }
+        if acceptedExpectedLiveHostKey {
+            return true
+        }
 
         let identifiedTrustButton = app.buttons["terminal.status.hostKey.updateTrust"]
         let trustButton = identifiedTrustButton.exists
@@ -1364,6 +1368,7 @@ final class RemuxAppUITests: XCTestCase {
             return false
         }
         trustButton.tap()
+        acceptedExpectedLiveHostKey = true
         return true
     }
 
