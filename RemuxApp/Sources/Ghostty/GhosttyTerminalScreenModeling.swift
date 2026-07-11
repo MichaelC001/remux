@@ -57,7 +57,7 @@ enum GhosttyAppLifecyclePhase: Equatable {
 }
 
 @MainActor
-protocol GhosttyTerminalScreenModeling: ObservableObject {
+protocol GhosttyTerminalRenderingModeling: ObservableObject {
     var terminalScreenPresentationProjection: GhosttyTerminalScreenPresentationProjection { get }
     var terminalInteractionProjection: GhosttyTerminalInteractionProjection { get }
     var terminalSurfaceMaterializationContext: GhosttyRuntimeSurfaceMaterializationContext { get }
@@ -73,12 +73,10 @@ protocol GhosttyTerminalScreenModeling: ObservableObject {
     /// changing the layout. Engines use it to decide which reported
     /// viewport is safe to carry into a reconnect.
     func setViewportStabilityHint(stable: Bool)
+}
 
-    func makePanePreviewSession(
-        leafIDs: [UUID],
-        previewSizing: GhosttyPanePreviewSession.PreviewSizing
-    ) -> GhosttyPanePreviewSession
-
+@MainActor
+protocol GhosttyTerminalInputModeling: ObservableObject {
     // MARK: Focused/targeted input routing
 
     @discardableResult
@@ -125,7 +123,10 @@ protocol GhosttyTerminalScreenModeling: ObservableObject {
         to surfaceID: UUID,
         _ event: GhosttySurfaceMousePressureEvent
     ) -> GhosttyMouseInputSubmissionOutcome
+}
 
+@MainActor
+protocol GhosttyTmuxActionModeling: ObservableObject {
     // MARK: tmux topology actions
 
     @discardableResult
@@ -165,6 +166,14 @@ protocol GhosttyTerminalScreenModeling: ObservableObject {
         _ id: UUID,
         inTopLevel topLevelID: UUID
     ) -> GhosttyTmuxTopologyActionInteractionEffect
+}
+
+@MainActor
+protocol GhosttyTmuxSelectionModeling: ObservableObject {
+    func makePanePreviewSession(
+        leafIDs: [UUID],
+        previewSizing: GhosttyPanePreviewSession.PreviewSizing
+    ) -> GhosttyPanePreviewSession
 
     // MARK: Selection sheets
 
@@ -180,3 +189,11 @@ protocol GhosttyTerminalScreenModeling: ObservableObject {
         topLevelID: UUID
     ) -> GhosttyPaneSelectionSheetRenderProjection
 }
+
+@MainActor
+protocol GhosttyTerminalScreenModeling:
+    GhosttyTerminalRenderingModeling,
+    GhosttyTerminalInputModeling,
+    GhosttyTmuxActionModeling,
+    GhosttyTmuxSelectionModeling
+{}
