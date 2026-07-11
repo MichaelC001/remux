@@ -115,7 +115,7 @@ final class ShortcutPaletteUITests: XCTestCase {
         app.buttons["terminal.shortcuts.add"].tap()
         XCTAssertTrue(app.navigationBars["New Shortcut"].waitForExistence(timeout: 2))
 
-        let titleField = app.textFields["Tile"].firstMatch
+        let titleField = app.textFields["Title"].firstMatch
         XCTAssertTrue(titleField.waitForExistence(timeout: 2))
         titleField.tap()
         titleField.typeText(title)
