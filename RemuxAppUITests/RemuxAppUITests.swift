@@ -967,6 +967,9 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func requireLiveSSHConfigurationExists() throws {
+        if liveSSHConfigurationDataFromEnvironment() != nil {
+            return
+        }
         let configurationPath = "/tmp/remux-live-ssh.json"
         guard FileManager.default.fileExists(atPath: configurationPath) else {
             throw XCTSkip("Create \(configurationPath) inside the simulator to run live SSH UI testing.")
@@ -1270,6 +1273,9 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func liveSSHConfiguration() throws -> LiveSSHConfiguration {
+        if let data = liveSSHConfigurationDataFromEnvironment() {
+            return try JSONDecoder().decode(LiveSSHConfiguration.self, from: data)
+        }
         let configurationURL = URL(fileURLWithPath: "/tmp/remux-live-ssh.json")
         guard FileManager.default.fileExists(atPath: configurationURL.path) else {
             throw XCTSkip("Create /tmp/remux-live-ssh.json inside the simulator to run live SSH UI testing.")
@@ -1277,6 +1283,15 @@ final class RemuxAppUITests: XCTestCase {
 
         let data = try Data(contentsOf: configurationURL)
         return try JSONDecoder().decode(LiveSSHConfiguration.self, from: data)
+    }
+
+    private func liveSSHConfigurationDataFromEnvironment() -> Data? {
+        guard let encoded = ProcessInfo.processInfo.environment[
+            "REMUX_LIVE_SSH_CONFIGURATION_BASE64"
+        ], !encoded.isEmpty else {
+            return nil
+        }
+        return Data(base64Encoded: encoded)
     }
 
     private func waitForLiveTerminalReady(timeout: TimeInterval) {

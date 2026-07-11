@@ -176,6 +176,7 @@ if [[ -z "$expected_host_key_type" || -z "$expected_host_key_fingerprint" ]]; th
   exit 2
 fi
 expected_host_key="$expected_host_key_type $expected_host_key_fingerprint"
+live_ssh_configuration_base64="$(base64 <"$config" | tr -d '\r\n')"
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/remux-live-ui-cleanup.XXXXXX")"
 manifest="/tmp/remux-live-generated-sessions.txt"
@@ -761,6 +762,7 @@ REMUX_LIVE_TMUX_EXPECTATION_MANIFEST="$expectations" \
 REMUX_LIVE_PREPARED_FIXTURE="$fixture_name" \
 REMUX_LIVE_SESSION_NAME_OVERRIDE="$fixture_session" \
 REMUX_LIVE_EXPECTED_HOST_KEY="$expected_host_key" \
+REMUX_LIVE_SSH_CONFIGURATION_BASE64="$live_ssh_configuration_base64" \
 xcodebuild "${xcode_args[@]}" 2>&1 | tee "$log"
 xcode_status=$?
 set -e
