@@ -32,14 +32,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node --check remux-site-tui/script.js
+          node --check remux-site/script.js
 
           while IFS= read -r asset; do
-            test -f "remux-site-tui/${asset}" || {
+            test -f "remux-site/${asset}" || {
               printf 'Missing site asset: %s\n' "${asset}" >&2
               exit 1
             }
-          done < <(rg -o 'assets/[^"?]+' remux-site-tui/index.html | sort -u)
+          done < <(rg -o 'assets/[^"?]+' remux-site/index.html | sort -u)
 
   app:
     name: App

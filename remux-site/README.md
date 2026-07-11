@@ -1,7 +1,6 @@
-# Remux Site — Compact TUI Direction
+# Remux Site
 
-A standalone version that treats the website as a tmux session instead of a long
-editorial landing page. Existing site folders are not modified.
+The production website for Remux, served at `getremux.app`.
 
 ## Design constraints
 
@@ -14,7 +13,7 @@ editorial landing page. Existing site folders are not modified.
 ## Preview
 
 ```bash
-python3 -m http.server 4175 --bind 127.0.0.1 --directory remux-site-tui
+python3 -m http.server 4175 --bind 127.0.0.1 --directory remux-site
 ```
 
 Then open <http://127.0.0.1:4175/>.
