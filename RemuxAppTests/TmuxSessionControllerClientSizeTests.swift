@@ -117,6 +117,30 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await shutDown(controller)
     }
 
+    func testInputReturnWaitsForEarlierWriterQueueWork() async throws {
+        let (runtime, controller) = try makeController()
+        defer { _ = runtime }
+
+        let blockerStarted = DispatchSemaphore(value: 0)
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        controller.queue.async {
+            blockerStarted.signal()
+            releaseBlocker.wait()
+        }
+        XCTAssertEqual(blockerStarted.wait(timeout: .now() + 1), .success)
+
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(100)) {
+            releaseBlocker.signal()
+        }
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+        XCTAssertFalse(controller.sendInput(paneID: 1, Data([0x61])))
+        let elapsed = startedAt.duration(to: clock.now)
+
+        XCTAssertGreaterThanOrEqual(elapsed, .milliseconds(75))
+        await shutDown(controller)
+    }
+
     private func waitUntil(
         _ failureMessage: String,
         timeout: Duration = .seconds(2),
