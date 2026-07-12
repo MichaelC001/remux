@@ -56,6 +56,7 @@ final class TmuxScreenModel: ObservableObject {
     private var transportFailureObservation: AnyCancellable?
     private var stopped = false
     private var initialViewport: TmuxControlViewport?
+    private var lastSubmittedClientSize: TmuxSessionController.ClientSize?
 
     private let initialClientSize: TmuxSessionController.ClientSize?
 
@@ -113,6 +114,9 @@ final class TmuxScreenModel: ObservableObject {
             session: session,
             initialViewportHandler: { [weak self] size, scale in
                 self?.prepareInitialViewport(size: size, scale: scale)
+            },
+            clientSizeHandler: { [weak self] size in
+                self?.submitClientSizeIfChanged(size)
             }
         )
 
@@ -143,6 +147,10 @@ final class TmuxScreenModel: ObservableObject {
 
     private func connect(viewport: TmuxControlViewport) {
         initialViewport = viewport
+        submitClientSizeIfChanged(TmuxSessionController.ClientSize(
+            cols: UInt32(viewport.columns),
+            rows: UInt32(viewport.rows)
+        ))
         report(currentRuntimeState(for: session?.state ?? .attaching, connecting: true))
         session?.connect(viewport: viewport)
     }
@@ -161,6 +169,20 @@ final class TmuxScreenModel: ObservableObject {
             startupFailure = String(describing: error)
             report(.disconnected(Self.initialViewportFailureReason))
         }
+    }
+
+    /// The single host authority for this control connection's client grid.
+    /// Record before queueing so repeated pane layouts cannot enqueue duplicate
+    /// controller work while the first submission is still pending.
+    @discardableResult
+    func submitClientSizeIfChanged(
+        _ size: TmuxSessionController.ClientSize
+    ) -> Bool {
+        guard !stopped, let controller = session?.controller else { return false }
+        guard size != lastSubmittedClientSize else { return false }
+        lastSubmittedClientSize = size
+        controller.setClientSize(cols: size.cols, rows: size.rows)
+        return true
     }
 
     func handleAppLifecyclePhase(_ phase: GhosttyAppLifecyclePhase) {

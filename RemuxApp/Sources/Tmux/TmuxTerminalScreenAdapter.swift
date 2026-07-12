@@ -34,6 +34,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     private var activeManagedSurface: GhosttyManagedSurface?
     private var activeManagedPaneID: TmuxPaneID?
     private var initialViewportHandler: ((CGSize, CGFloat) -> Void)?
+    private var clientSizeHandler: ((TmuxSessionController.ClientSize) -> Void)?
     private var cachedTopologySnapshot = GhosttyRuntimeSurfaceTopologySnapshot.empty
     private var panePreviewCache = TmuxPanePreviewImageCache(
         byteLimit: TmuxTerminalScreenAdapter.panePreviewCacheByteLimit
@@ -78,11 +79,13 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     /// because it is the runtime's surface delegate).
     func activate(
         session: TmuxTerminalSession,
-        initialViewportHandler: @escaping (CGSize, CGFloat) -> Void
+        initialViewportHandler: @escaping (CGSize, CGFloat) -> Void,
+        clientSizeHandler: @escaping (TmuxSessionController.ClientSize) -> Void
     ) {
         self.session = session
         self.controller = session.controller
         self.initialViewportHandler = initialViewportHandler
+        self.clientSizeHandler = clientSizeHandler
 
         session.$state
             .sink { [weak self] state in
@@ -137,6 +140,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         session = nil
         controller = nil
         initialViewportHandler = nil
+        clientSizeHandler = nil
         latestTopology = nil
         cachedTopologySnapshot = Self.emptyTopologySnapshot
         pendingPresentationTimeoutTask?.cancel()
@@ -361,11 +365,10 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
                 "surface_uuid": managedID.uuidString,
             ]
         )
-        // The first real layout-driven display update opens viewport
-        // reporting (the placeholder frame's bogus size never reaches
-        // tmux), reports the actual grid once, and ends the presentation
-        // hold for this surface.
-        activeManagedSurface?.onDisplayUpdate = { [weak self, weak paneSurface] _, size, _ in
+        // The first real layout-driven display update reports the active
+        // viewport's actual grid, then ends the presentation hold. Pane
+        // surfaces never own connection-level client size.
+        activeManagedSurface?.onDisplayUpdate = { [weak self, weak paneSurface] managed, size, _ in
             guard size.width > 1, size.height > 1 else { return }
             GhosttyRuntimeTrace.flowEventOnce(
                 GhosttyRuntimeTrace.paneSwitchFlow,
@@ -377,7 +380,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
                     "width": "\(size.width)",
                 ]
             )
-            paneSurface?.enableClientSizeReports()
+            self?.reportClientSizeIfActive(managed)
             paneSurface?.refreshAfterInitialLayout()
             self?.notePresentationSurfaceDisplayed(managedID)
         }
@@ -406,6 +409,16 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
 
     private var focusedManagedSurface: GhosttyManagedSurface? {
         activeManagedSurface
+    }
+
+    private func reportClientSizeIfActive(_ managed: GhosttyManagedSurface) {
+        guard activeManagedSurface === managed else { return }
+        let size = managed.controlSurface.currentSize()
+        guard size.columns >= 2, size.rows >= 2 else { return }
+        clientSizeHandler?(TmuxSessionController.ClientSize(
+            cols: UInt32(size.columns),
+            rows: UInt32(size.rows)
+        ))
     }
 
     // MARK: Command failures
@@ -1163,6 +1176,18 @@ extension TmuxTerminalScreenAdapter: GhosttyKitRuntimeSurfaceDelegate {
         }
 
         switch action {
+        case .cellSize:
+            // A content-scale update changes the cell size before the same
+            // display update applies its final pixel size. Defer one main turn
+            // and read the completed grid instead of reporting that transient.
+            DispatchQueue.main.async { [weak self, weak managed] in
+                guard let self,
+                      let managed,
+                      self.activeManagedSurface === managed
+                else { return }
+                self.reportClientSizeIfActive(managed)
+            }
+            return true
         case .scrollbar(let state):
             managed.updateScrollState(state)
             return true

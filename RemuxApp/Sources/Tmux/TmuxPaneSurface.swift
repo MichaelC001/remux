@@ -34,19 +34,11 @@ final class TmuxPaneSurface {
     /// use-after-free.
     var onClose: (() -> Void)?
 
-    /// Routes the manual backend's host callbacks (input writes and
-    /// resize reports) to the session controller. Held with a stable
-    /// address for the C callbacks.
+    /// Routes the manual backend's input writes to the session controller.
+    /// Held with a stable address for the C callback.
     final class InputBox {
         let controller: TmuxSessionController
         let paneID: TmuxPaneID
-        /// Only the visible pane surface reports the client viewport;
-        /// in Remux's zoomed presentation that is this surface. Starts
-        /// disabled: the view is created at a placeholder frame, and a
-        /// report from it would force a server relayout at a bogus
-        /// size. The adapter enables reporting on the first real
-        /// layout-driven display update.
-        var reportsClientSize = false
 
         init(controller: TmuxSessionController, paneID: TmuxPaneID) {
             self.controller = controller
@@ -218,8 +210,7 @@ final class TmuxPaneSurface {
         ))
 
         // The projected-terminal capability: manual backing (no PTY),
-        // host input/resize callbacks, the pane binding borrowed at
-        // creation.
+        // host input callbacks, the pane binding borrowed at creation.
         config.backing = GHOSTTY_SURFACE_BACKING_MANUAL
         config.tmux_binding = binding.rawHandle
         config.manual_userdata = Unmanaged.passUnretained(inputBox).toOpaque()
@@ -234,17 +225,6 @@ final class TmuxPaneSurface {
             if linefeed { bytes.append(0x0D) }
             guard !bytes.isEmpty else { return true }
             return box.controller.sendInput(paneID: box.paneID, bytes)
-        }
-        config.manual_resize = { userdata, columns, rows, _, _ in
-            guard let userdata else { return false }
-            let box = Unmanaged<InputBox>.fromOpaque(userdata).takeUnretainedValue()
-            if box.reportsClientSize {
-                box.controller.setClientSize(
-                    cols: UInt32(columns),
-                    rows: UInt32(rows)
-                )
-            }
-            return true
         }
         config.manual_focus = { _, _ in true }
 
@@ -279,20 +259,6 @@ final class TmuxPaneSurface {
     }
 
     var rawSurface: ghostty_surface_t { surface }
-
-    /// Enable viewport reporting after the first real layout and report
-    /// the current grid once (the size changes the placeholder gate
-    /// swallowed are re-derived from the live surface).
-    func enableClientSizeReports() {
-        guard !inputBox.reportsClientSize else { return }
-        inputBox.reportsClientSize = true
-        let size = ghostty_surface_size(surface)
-        guard size.columns >= 2, size.rows >= 2 else { return }
-        controller.setClientSize(
-            cols: UInt32(size.columns),
-            rows: UInt32(size.rows)
-        )
-    }
 
     /// The first render must happen after the real host viewport has
     /// sized the borrowed surface. Rendering before that uses the

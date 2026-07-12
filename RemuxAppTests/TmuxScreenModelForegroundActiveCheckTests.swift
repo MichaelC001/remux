@@ -38,6 +38,44 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
         XCTAssertNotEqual(viewport, .default)
         XCTAssertEqual(viewport?.pixelWidth, 1260)
         XCTAssertEqual(viewport?.pixelHeight, 2268)
+        let measuredViewport = try XCTUnwrap(viewport)
+        let measuredSize = TmuxSessionController.ClientSize(
+            cols: UInt32(measuredViewport.columns),
+            rows: UInt32(measuredViewport.rows)
+        )
+        XCTAssertEqual(model.session?.controller.lastClientSize, measuredSize)
+        XCTAssertFalse(
+            model.submitClientSizeIfChanged(measuredSize),
+            "the measured pre-connect grid must seed the screen-model authority"
+        )
+        await model.stop()
+    }
+
+    func testScreenModelRejectsRepeatedGridBeforeControllerSubmission() async throws {
+        let transport = ForegroundInactiveTransport(isActive: true)
+        let model = TmuxScreenModel(
+            target: makeTarget(),
+            sessionInstanceID: UUID(),
+            transportFactory: { _ in transport },
+            onRuntimeStateChange: { _ in },
+            initialClientSize: Self.initialClientSize
+        )
+        defer {
+            Task { @MainActor in
+                await model.stop()
+            }
+        }
+
+        try await waitUntil("transport did not start") {
+            await transport.didStart()
+        }
+        XCTAssertEqual(model.session?.controller.lastClientSize, Self.initialClientSize)
+        XCTAssertFalse(model.submitClientSizeIfChanged(Self.initialClientSize))
+
+        let changed = TmuxSessionController.ClientSize(cols: 52, rows: 31)
+        XCTAssertTrue(model.submitClientSizeIfChanged(changed))
+        XCTAssertEqual(model.session?.controller.lastClientSize, changed)
+
         await model.stop()
     }
 

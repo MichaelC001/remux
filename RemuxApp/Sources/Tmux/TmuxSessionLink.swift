@@ -8,9 +8,8 @@ import GhosttyKit
 /// queue), and transport loss detaches the session promptly via
 /// `disconnect` instead of waiting for command deadlines.
 ///
-/// Viewport ownership stays in the session model: the link reports
-/// client size through `ghostty_tmux_session_set_client_size`, while
-/// the SSH transport only sees the attach command's initial `-x -y`.
+/// Viewport ownership stays in the screen model. The link only passes the
+/// already-known viewport to the SSH attach command's initial `-x -y`.
 actor TmuxSessionLink {
     let controller: TmuxSessionController
 
@@ -38,11 +37,10 @@ actor TmuxSessionLink {
     }
 
     /// Establish the SSH control channel and attach the session.
-    /// `viewport` (when already known) shapes the attach command's
-    /// `-x -y` for brand-new sessions AND is reported through the
-    /// session's sync batch so existing sessions re-layout before the
-    /// baseline. When unknown, pass nil and report the size later —
-    /// never fabricate one.
+    /// `viewport` (when already known) shapes the attach command's `-x -y`.
+    /// The screen model has already submitted the same grid to the controller
+    /// before starting this link, so the session sync batch applies it before
+    /// the baseline. When unknown, pass nil; never fabricate one.
     func start(viewport: TmuxControlViewport?) async throws {
         // Idempotent transport prewarm (auth/root channel) before the
         // session channel opens.
@@ -69,12 +67,6 @@ actor TmuxSessionLink {
 
         try await transport.start(initialViewport: viewport)
 
-        if let viewport {
-            controller.setClientSize(
-                cols: UInt32(viewport.columns),
-                rows: UInt32(viewport.rows)
-            )
-        }
         controller.connect()
 
         readTask = Task { [transport, controller] in

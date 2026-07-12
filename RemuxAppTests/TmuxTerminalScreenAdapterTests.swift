@@ -5,6 +5,13 @@ import XCTest
 
 @MainActor
 final class TmuxTerminalScreenAdapterTests: XCTestCase {
+    func testCellSizeRuntimeActionIsPreservedAsViewportSignal() {
+        var native = ghostty_action_s()
+        native.tag = GHOSTTY_ACTION_CELL_SIZE
+
+        XCTAssertEqual(GhosttyRuntimeSurfaceAction(native: native), .cellSize)
+    }
+
     func testIdentityRegistryKeepsPaneRoundTripStable() {
         var registry = TmuxTerminalIdentityRegistry()
         let paneID = TmuxPaneID(41)
@@ -74,7 +81,11 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let runtime = try GhosttyKitRuntime()
         let session = makeSession(runtime: runtime)
         let adapter = TmuxTerminalScreenAdapter()
-        adapter.activate(session: session, initialViewportHandler: { _, _ in })
+        adapter.activate(
+            session: session,
+            initialViewportHandler: { _, _ in },
+            clientSizeHandler: { _ in }
+        )
 
         let twoWindows = TmuxSessionController.TopologySnapshot(
             sessionName: "fresh-test",
@@ -116,7 +127,11 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let runtime = try GhosttyKitRuntime()
         let session = makeSession(runtime: runtime)
         let adapter = TmuxTerminalScreenAdapter()
-        adapter.activate(session: session, initialViewportHandler: { _, _ in })
+        adapter.activate(
+            session: session,
+            initialViewportHandler: { _, _ in },
+            clientSizeHandler: { _ in }
+        )
 
         session.handleTopology(TmuxSessionController.TopologySnapshot(
             sessionName: "pending-test",
@@ -152,7 +167,11 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let session = makeSession(runtime: runtime)
         let adapter = TmuxTerminalScreenAdapter()
         adapter.pendingPresentationTimeout = .milliseconds(40)
-        adapter.activate(session: session, initialViewportHandler: { _, _ in })
+        adapter.activate(
+            session: session,
+            initialViewportHandler: { _, _ in },
+            clientSizeHandler: { _ in }
+        )
 
         let firstTopology = TmuxSessionController.TopologySnapshot(
             sessionName: "pending-test",

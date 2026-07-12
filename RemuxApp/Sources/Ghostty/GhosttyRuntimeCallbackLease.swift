@@ -51,6 +51,7 @@ final class GhosttyRuntimeCallbackLeaseStore: @unchecked Sendable {
 
 enum GhosttyRuntimeSurfaceAction: Equatable {
     case render
+    case cellSize
     case scrollbar(GhosttySurfaceScrollState)
     case scrollRoute(GhosttySurfaceScrollRoute)
     case ignored
@@ -59,6 +60,8 @@ enum GhosttyRuntimeSurfaceAction: Equatable {
         switch action.tag {
         case GHOSTTY_ACTION_RENDER:
             self = .render
+        case GHOSTTY_ACTION_CELL_SIZE:
+            self = .cellSize
         case GHOSTTY_ACTION_SCROLLBAR:
             self = .scrollbar(GhosttySurfaceScrollState(cValue: action.action.scrollbar))
         case GHOSTTY_ACTION_SCROLL_ROUTE:

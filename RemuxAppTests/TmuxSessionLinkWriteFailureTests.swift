@@ -6,6 +6,32 @@ import XCTest
 
 @MainActor
 final class TmuxSessionLinkWriteFailureTests: XCTestCase {
+    func testLinkDoesNotSubmitInitialViewportToController() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let transport = WriteFailingTransport()
+        let controller = TmuxSessionController(
+            app: runtime.appHandleForTesting,
+            callbacks: TmuxSessionController.Callbacks()
+        )
+        let link = TmuxSessionLink(controller: controller, transport: transport)
+
+        try await link.start(viewport: TmuxControlViewport(
+            columns: 91,
+            rows: 37,
+            pixelWidth: 1_092,
+            pixelHeight: 888
+        ))
+
+        XCTAssertNil(
+            controller.lastClientSize,
+            "the screen model, not the transport link, owns client-size submission"
+        )
+        await link.stop()
+        await withCheckedContinuation { continuation in
+            controller.shutdown { continuation.resume() }
+        }
+    }
+
     func testSendFailureInvalidatesTransportBeforeDisconnectingController() async throws {
         let runtime = try GhosttyKitRuntime()
         let stateRecorder = SessionStateRecorder()
