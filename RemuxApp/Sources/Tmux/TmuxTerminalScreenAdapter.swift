@@ -547,6 +547,13 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                             completion(.rejected)
                             return
                         }
+                        if case .beforeRelease = purpose {
+                            GhosttyRuntimeTrace.flowEventIfActive(
+                                GhosttyRuntimeTrace.paneSwitchFlow,
+                                event: "preview.capture.accepted.beforeRelease",
+                                fields: ["pane": "\(paneID)"]
+                            )
+                        }
                         let size = activeSurface.controlSurface.currentSize()
                         let source: GhosttyPanePreviewSession.PreviewSource
                         if size.width_px > 0, size.height_px > 0 {

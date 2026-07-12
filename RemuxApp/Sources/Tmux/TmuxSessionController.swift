@@ -325,13 +325,32 @@ final class TmuxSessionController: @unchecked Sendable {
             DispatchQueue.main.async { self.callbacks.onState(state) }
         case GHOSTTY_TMUX_EVENT_TOPOLOGY_CHANGED:
             let snapshot = readTopology()
-            let activePaneID = snapshot.activeWindowID.flatMap { activeWindowID in
-                snapshot.windows.first(where: { $0.id == activeWindowID })?.activePaneID
-            }
             GhosttyRuntimeTrace.flowEventIfActive(
                 GhosttyRuntimeTrace.paneSwitchFlow,
                 event: "tmux.topology.changed",
-                fields: ["active_pane": activePaneID.map(String.init) ?? "none"]
+                fields: {
+                    let window = snapshot.activeWindowID.flatMap { id in
+                        snapshot.windows.first { $0.id == id }
+                    }
+                    let pane = window?.activePaneID.flatMap { id in
+                        snapshot.panes.first { $0.id == id }
+                    }
+                    let siblingCount = pane.map { active in
+                        snapshot.panes.count { $0.windowID == active.windowID && $0.id != active.id }
+                    }
+                    return [
+                        "active_pane": pane.map { "\($0.id)" } ?? "none",
+                        "active_window": snapshot.activeWindowID.map { "\($0)" } ?? "none",
+                        "pane_height": pane.map { "\($0.height)" } ?? "none",
+                        "pane_width": pane.map { "\($0.width)" } ?? "none",
+                        "pane_x": pane.map { "\($0.x)" } ?? "none",
+                        "pane_y": pane.map { "\($0.y)" } ?? "none",
+                        "sibling_count": siblingCount.map(String.init) ?? "none",
+                        "window_height": window.map { "\($0.height)" } ?? "none",
+                        "window_width": window.map { "\($0.width)" } ?? "none",
+                        "window_zoomed": window.map { "\($0.zoomed)" } ?? "none",
+                    ]
+                }()
             )
             DispatchQueue.main.async { self.callbacks.onTopology(snapshot) }
         case GHOSTTY_TMUX_EVENT_PANE_REMOVED:
@@ -660,6 +679,9 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     func setClientSize(cols: UInt32, rows: UInt32) {
+        GhosttyRuntimeTrace.tmuxViewport(
+            "client_size.local_submit cols=\(cols) rows=\(rows)"
+        )
         queue.async { [self] in
             writerLastClientSize = ClientSize(cols: cols, rows: rows)
             if writerViewportIsStable {
@@ -667,7 +689,10 @@ final class TmuxSessionController: @unchecked Sendable {
             }
             guard let session else { return }
             let result = ghostty_tmux_session_set_client_size(session, cols, rows)
-            drainOutbound()
+            let outboundBytes = drainOutbound()
+            GhosttyRuntimeTrace.tmuxViewport(
+                "client_size.writer_result cols=\(cols) rows=\(rows) result=\(result) outbound_bytes=\(outboundBytes)"
+            )
             reportImmediateRequestFailureIfNeeded(result, request: .setClientSize)
         }
     }
