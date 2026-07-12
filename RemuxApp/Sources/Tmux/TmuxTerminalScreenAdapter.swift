@@ -520,11 +520,6 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         }
     }
 
-    func reportRuntimeReadinessIfNeeded() {
-        // Readiness is structural in the new stack: the root model receives
-        // domain runtime states straight from the session model.
-    }
-
     func setViewportStabilityHint(stable: Bool) {
         controller?.setViewportStability(stable)
     }

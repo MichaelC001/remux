@@ -17,8 +17,6 @@ struct GhosttySingleViewportView: View {
     let submitMousePosition: ((UUID, CGPoint, GhosttySurfaceKeyEvent.Mods) -> GhosttyMouseInputSubmissionOutcome)?
     let submitMouseScroll: ((UUID, GhosttySurfaceMouseScrollEvent) -> GhosttyMouseInputSubmissionOutcome)?
     let submitMousePressure: ((UUID, GhosttySurfaceMousePressureEvent) -> GhosttyMouseInputSubmissionOutcome)?
-    let onDismantle: () -> Void
-    let onMount: () -> Void
 
     var body: some View {
         GhosttySingleViewportRepresentable(
@@ -34,9 +32,7 @@ struct GhosttySingleViewportView: View {
             submitMouseButton: submitMouseButton,
             submitMousePosition: submitMousePosition,
             submitMouseScroll: submitMouseScroll,
-            submitMousePressure: submitMousePressure,
-            onDismantle: onDismantle,
-            onMount: onMount
+            submitMousePressure: submitMousePressure
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -56,22 +52,17 @@ private struct GhosttySingleViewportRepresentable: UIViewRepresentable {
     let submitMousePosition: ((UUID, CGPoint, GhosttySurfaceKeyEvent.Mods) -> GhosttyMouseInputSubmissionOutcome)?
     let submitMouseScroll: ((UUID, GhosttySurfaceMouseScrollEvent) -> GhosttyMouseInputSubmissionOutcome)?
     let submitMousePressure: ((UUID, GhosttySurfaceMousePressureEvent) -> GhosttyMouseInputSubmissionOutcome)?
-    let onDismantle: () -> Void
-    let onMount: () -> Void
 
     func makeUIView(context: Context) -> GhosttySingleViewportContainerView {
         let view = GhosttySingleViewportContainerView()
         view.terminalTheme = terminalTheme
         view.backgroundColor = terminalTheme.terminalBackgroundUIColor
-        view.onDismantle = onDismantle
-        onMount()
         return view
     }
 
     func updateUIView(_ view: GhosttySingleViewportContainerView, context: Context) {
         view.terminalTheme = terminalTheme
         view.backgroundColor = terminalTheme.terminalBackgroundUIColor
-        view.onDismantle = onDismantle
         view.update(
             projection: projection,
             materializationContext: materializationContext,
@@ -133,7 +124,6 @@ private final class GhosttySingleViewportContainerView: UIView,
     private var selectionCopyMenuSourcePoint = CGPoint.zero
 
     var terminalTheme: TerminalTheme = .ghosttyDefault
-    var onDismantle: (() -> Void)?
 
     private lazy var panRecognizer: UIPanGestureRecognizer = {
         let recognizer = UIPanGestureRecognizer(
@@ -245,9 +235,6 @@ private final class GhosttySingleViewportContainerView: UIView,
         materializationContext = .empty
         projection = .empty
 
-        let callback = onDismantle
-        onDismantle = nil
-        callback?()
     }
 
     private func disableInteractions() {

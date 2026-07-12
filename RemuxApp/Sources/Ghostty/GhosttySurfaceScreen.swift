@@ -73,8 +73,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private let onEditServer: () -> Void
     private let onTrustHostKey: () -> Void
     private let attachmentTransferServiceFactory: @Sendable () -> any GhosttyAttachmentTransferService
-    private let onMount: (GhosttyTerminalScreenViewComponent) -> Void
-    private let onDismantle: (GhosttyTerminalScreenViewComponent) -> Void
     private static var maxAttachmentPhotoSelectionCount: Int { 10 }
     private static var tmuxPrefixFlushDelay: Duration { .milliseconds(750) }
 
@@ -88,9 +86,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         onEditConnection: @escaping () -> Void,
         onUpdateCredentials: @escaping () -> Void,
         onEditServer: @escaping () -> Void,
-        onTrustHostKey: @escaping () -> Void,
-        onMount: @escaping (GhosttyTerminalScreenViewComponent) -> Void,
-        onDismantle: @escaping (GhosttyTerminalScreenViewComponent) -> Void
+        onTrustHostKey: @escaping () -> Void
     ) {
         self.model = model
         self.presentation = presentation
@@ -102,8 +98,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         self.onUpdateCredentials = onUpdateCredentials
         self.onEditServer = onEditServer
         self.onTrustHostKey = onTrustHostKey
-        self.onMount = onMount
-        self.onDismantle = onDismantle
         // First struct init marks when SwiftUI starts building the
         // pushed screen (SwiftUI re-inits view values repeatedly;
         // only the first is the milestone).
@@ -190,16 +184,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             },
                             submitMousePressure: { surfaceID, event in
                                 model.sendMousePressure(to: surfaceID, event)
-                            },
-                            onDismantle: {
-                                onDismantle(.surfaceTree)
-                            },
-                            onMount: {
-                                GhosttyRuntimeTrace.flowEventOnce(
-                                    sessionOpenFlowID,
-                                    event: "ui.surfaceTree.mount"
-                                )
-                                onMount(.surfaceTree)
                             }
                         )
                             .frame(
@@ -488,7 +472,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 ]
             )
             handleScenePhaseChange(scenePhase)
-            model.reportRuntimeReadinessIfNeeded()
         }
         .onChange(of: scenePhase) { _, newPhase in
             handleScenePhaseChange(newPhase)

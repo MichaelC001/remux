@@ -55,11 +55,6 @@ struct TerminalRuntimeAttemptKey: Hashable, Sendable {
     }
 }
 
-enum GhosttyTerminalScreenViewComponent: Hashable, Sendable {
-    case hostSurface
-    case surfaceTree
-}
-
 struct ActiveTerminalScreenEntry: Identifiable {
     let id: SavedWorkspace.ID
     let instanceID: UUID

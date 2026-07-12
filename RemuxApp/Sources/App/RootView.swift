@@ -293,9 +293,7 @@ private struct ActiveTerminalSessionView: View {
             onEditConnection: onShowLibrary,
             onUpdateCredentials: onUpdateCredentials,
             onEditServer: onEditServer,
-            onTrustHostKey: onTrustHostKey,
-            onMount: { _ in },
-            onDismantle: { _ in }
+            onTrustHostKey: onTrustHostKey
         )
     }
 }
