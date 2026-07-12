@@ -88,7 +88,10 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
     private let scrollView = UIScrollView()
     private let contentView = UIView()
 
-    private weak var surface: GhosttyManagedSurface?
+    /// The viewport owns the one surface it has attached. This makes surface
+    /// lifetime match UIKit attachment lifetime and avoids a second adapter-
+    /// side registry for surfaces waiting to be detached.
+    private var surface: GhosttyManagedSurface?
     private var displayScale: CGFloat = max(UIScreen.main.scale, 1)
     private var displayLink: CADisplayLink?
     private var pendingContentOffset: CGPoint?

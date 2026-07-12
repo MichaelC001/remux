@@ -4,7 +4,23 @@ import XCTest
 
 @MainActor
 final class GhosttyRuntimeSurfaceMaterializationContextTests: XCTestCase {
+    func testScrollContainerOwnsAttachedSurfaceUntilDetach() {
+        let container = GhosttyPaneScrollContainerView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
+        var managed: GhosttyManagedSurface? = Self.managedSurface()
+        let weakManaged = WeakBox(managed)
 
+        container.update(
+            surface: managed!,
+            displayScale: 2,
+            submitRouteForwardedMouseScroll: nil,
+            submitRouteForwardedMousePosition: nil
+        )
+        managed = nil
+
+        XCTAssertNotNil(weakManaged.value)
+        container.detachCurrentSurfaceForRemoval()
+        XCTAssertNil(weakManaged.value)
+    }
 
     func testScrollContainerDetachCurrentSurfaceForRemovalClearsAttachedSurface() {
         let container = GhosttyPaneScrollContainerView(frame: CGRect(x: 0, y: 0, width: 320, height: 240))
