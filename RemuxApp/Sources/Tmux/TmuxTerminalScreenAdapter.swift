@@ -33,7 +33,6 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
 
     private var activeManagedSurface: GhosttyManagedSurface?
     private var activeManagedPaneID: TmuxPaneID?
-    private var pendingRemovalSurfaces: [UUID: GhosttyManagedSurface] = [:]
     private var initialViewportHandler: ((CGSize, CGFloat) -> Void)?
     private var cachedTopologySnapshot = GhosttyRuntimeSurfaceTopologySnapshot.empty
     private var panePreviewCache = TmuxPanePreviewImageCache(
@@ -134,7 +133,6 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         leaseStore.invalidateActiveLease()
         activeManagedSurface = nil
         activeManagedPaneID = nil
-        pendingRemovalSurfaces.removeAll()
         clearPanePreviewCache(reason: "invalidate")
         session = nil
         controller = nil
@@ -292,8 +290,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         if paneSurface == nil {
             captureActivePanePreviewBeforeRelease()
         }
-        if let previous = activeManagedSurface {
-            pendingRemovalSurfaces[previous.id] = previous
+        if activeManagedSurface != nil {
             activeManagedSurface = nil
             activeManagedPaneID = nil
             displayedPresentationPaneID = nil
@@ -385,7 +382,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
             self?.notePresentationSurfaceDisplayed(managedID)
         }
         // The session frees the pane surface on pane changes while the
-        // tree may still hold this wrapper in an inactive container;
+        // viewport may still hold this wrapper in its outgoing container;
         // invalidate the borrowed handle the moment the close starts.
         paneSurface.onClose = { [weak controlSurface] in
             controlSurface?.invalidate()
@@ -404,7 +401,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         if let active = activeManagedSurface, active.controlSurface.handle == handle {
             return active
         }
-        return pendingRemovalSurfaces.values.first { $0.controlSurface.handle == handle }
+        return nil
     }
 
     private var focusedManagedSurface: GhosttyManagedSurface? {
@@ -485,27 +482,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         GhosttyRuntimeSurfaceMaterializationContext(
             sourceIdentity: ObjectIdentifier(self),
             isAvailable: { [weak self] in self?.session != nil },
-            isRuntimeRemovalInProgress: { [weak self] in self?.session == nil },
-            allManagedSurfaces: { [weak self] in
-                self?.activeManagedSurface.map { [$0] } ?? []
-            },
-            managedSurfaceCount: { [weak self] in
-                self?.activeManagedSurface != nil ? 1 : 0
-            },
-            managedSurface: { [weak self] id in self?.managedSurface(for: id) },
-            surfacePendingPermanentRemoval: { [weak self] id in
-                self?.pendingRemovalSurfaces[id]
-            },
-            completePermanentRemoval: { [weak self] id in
-                self?.pendingRemovalSurfaces[id] = nil
-            },
-            diagnosticSelectionSummary: { [weak self] in
-                guard let self else { return "tmux adapter released" }
-                let active = self.activeManagedSurface
-                    .map { ghosttyDiagnosticShortID($0.id) } ?? "none"
-                return "tmux active pane surface=\(active)"
-            },
-            recordSurfacePresentation: { _, _ in }
+            managedSurface: { [weak self] id in self?.managedSurface(for: id) }
         )
     }
 

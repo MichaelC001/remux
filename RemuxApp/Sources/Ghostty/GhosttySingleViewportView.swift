@@ -175,13 +175,6 @@ private final class GhosttySingleViewportContainerView: UIView,
         submitMouseScroll: ((UUID, GhosttySurfaceMouseScrollEvent) -> GhosttyMouseInputSubmissionOutcome)?,
         submitMousePressure: ((UUID, GhosttySurfaceMousePressureEvent) -> GhosttyMouseInputSubmissionOutcome)?
     ) {
-        guard !materializationContext.isRuntimeRemovalInProgress else {
-            self.materializationContext = materializationContext
-            disableInteractions()
-            resetActivePanState()
-            return
-        }
-
         let previousSourceIdentity = self.materializationContext.sourceIdentity
         updatePresentationHold(
             pendingID: projection.pendingPresentationID,
@@ -219,11 +212,11 @@ private final class GhosttySingleViewportContainerView: UIView,
     func dismantle() {
         disableInteractions()
         resetActivePanState()
-        if let container = activeContainer, let surfaceID = activeSurfaceID {
-            retire(container: container, surfaceID: surfaceID)
+        if let container = activeContainer {
+            retire(container: container)
         }
-        if let container = heldContainer, let surfaceID = heldSurfaceID {
-            retire(container: container, surfaceID: surfaceID)
+        if let container = heldContainer {
+            retire(container: container)
         }
         presentationOverlayView?.removeFromSuperview()
         activeContainer = nil
@@ -310,33 +303,19 @@ private final class GhosttySingleViewportContainerView: UIView,
     }
 
     private func retireActiveContainer() {
-        guard let container = activeContainer, let surfaceID = activeSurfaceID else {
+        guard let container = activeContainer else {
             activeContainer?.removeFromSuperview()
             activeContainer = nil
             activeSurfaceID = nil
             return
         }
-        retire(container: container, surfaceID: surfaceID)
+        retire(container: container)
         activeContainer = nil
         activeSurfaceID = nil
     }
 
-    private func retire(container: GhosttyPaneScrollContainerView, surfaceID: UUID) {
-        if let retiring = materializationContext.surfacePendingPermanentRemoval(for: surfaceID) {
-            retiring.setFocused(false)
-            retiring.setVisible(false)
-            container.detachSurfaceIfNeeded(retiring)
-            container.removeFromSuperview()
-            materializationContext.completePermanentRemoval(of: surfaceID)
-            return
-        }
-        if let surface = materializationContext.managedSurface(for: surfaceID) {
-            surface.setFocused(false)
-            surface.setVisible(false)
-            container.detachSurfaceIfNeeded(surface)
-        } else {
-            container.detachCurrentSurfaceForRemoval()
-        }
+    private func retire(container: GhosttyPaneScrollContainerView) {
+        container.detachCurrentSurfaceForRemoval()
         container.removeFromSuperview()
     }
 
@@ -366,8 +345,6 @@ private final class GhosttySingleViewportContainerView: UIView,
         }
         surface.setVisible(true)
         surface.setFocused(true)
-        materializationContext.recordSurfacePresentation(surfaceID, reason: "viewport.layout")
-
         if let startedAt {
             GhosttyRuntimeTrace.perf(
                 "viewport.layout bounds=\(ghosttyDiagnosticRect(bounds)) changed=\(changedFrame || changedContainer) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt))"
@@ -444,7 +421,7 @@ private final class GhosttySingleViewportContainerView: UIView,
                 activeContainer = container
                 activeSurfaceID = surfaceID
             } else {
-                retire(container: container, surfaceID: surfaceID)
+                retire(container: container)
             }
         }
 

@@ -142,7 +142,7 @@ final class GhosttyKitControlSurface: GhosttyControlSurface {
     }
 
     /// The pane surface's owner (TmuxTerminalSession) frees borrowed
-    /// surfaces on pane changes while tree containers may still hold
+    /// surfaces on pane changes while the viewport may still hold
     /// the wrapper; invalidation makes every late call a no-op
     /// instead of a use-after-free.
     func invalidate() {
