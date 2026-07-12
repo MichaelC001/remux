@@ -126,6 +126,22 @@ if [[ "${#only_testing[@]}" -eq 0 ]]; then
   exit 2
 fi
 
+if declare -p REMUX_PROFILE_PANE_SWITCH_COUNT >/dev/null 2>&1; then
+  value="$REMUX_PROFILE_PANE_SWITCH_COUNT"
+  if [[ ! "$value" =~ ^[0-9]+$ ]] || (( 10#$value < 1 || 10#$value > 1000 )); then
+    printf 'REMUX_PROFILE_PANE_SWITCH_COUNT must be an integer from 1 through 1000; got %s.\n' "$value" >&2
+    exit 1
+  fi
+fi
+for name in REMUX_TRACE_FLOWS REMUX_TRACE_TMUX_VIEWPORT REMUX_TRACE_LATENCY REMUX_TRACE_PERF GHOSTTY_TRACE_SURFACE_INIT GHOSTTY_TRACE_FRAME_COMPLETION; do
+  declare -p "$name" >/dev/null 2>&1 || continue
+  value="${!name}"
+  if [[ "$value" != "0" && "$value" != "1" ]]; then
+    printf '%s must be 0 or 1; got %s.\n' "$name" "$value" >&2
+    exit 1
+  fi
+done
+
 if [[ ! -f "$config" ]]; then
   printf 'Missing %s; cannot run live SSH UI tests.\n' "$config" >&2
   exit 2
@@ -243,6 +259,19 @@ rm -f "$fixture_name_file"
 rm -f "$fixture_session_file"
 rm -f "$expected_host_key_file"
 printf 'pid=%s\nstartedAt=%s\n' "$$" "$(date +%s)" >"$harness_file"
+for name in \
+  REMUX_PROFILE_PANE_SWITCH_COUNT \
+  REMUX_TRACE_FLOWS \
+  REMUX_TRACE_TMUX_VIEWPORT \
+  REMUX_TRACE_LATENCY \
+  REMUX_TRACE_PERF \
+  GHOSTTY_TRACE_SURFACE_INIT \
+  GHOSTTY_TRACE_FRAME_COMPLETION
+do
+  if declare -p "$name" >/dev/null 2>&1; then
+    printf '%s=%s\n' "$name" "${!name}" >>"$harness_file"
+  fi
+done
 printf '%s\n' "$expected_host_key" >"$expected_host_key_file"
 trap finish_before_remote_cleanup EXIT
 
@@ -757,9 +786,9 @@ if [[ -n "$development_team" ]]; then
 fi
 
 set +e
-REMUX_TRACE_LATENCY=1 \
-REMUX_TRACE_PERF=1 \
-GHOSTTY_TRACE_SURFACE_INIT=1 \
+REMUX_TRACE_LATENCY="${REMUX_TRACE_LATENCY:-1}" \
+REMUX_TRACE_PERF="${REMUX_TRACE_PERF:-1}" \
+GHOSTTY_TRACE_SURFACE_INIT="${GHOSTTY_TRACE_SURFACE_INIT:-1}" \
 REMUX_LIVE_GENERATED_SESSION_MANIFEST="$manifest" \
 REMUX_LIVE_TMUX_EXPECTATION_MANIFEST="$expectations" \
 REMUX_LIVE_PREPARED_FIXTURE="$fixture_name" \

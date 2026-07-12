@@ -200,6 +200,13 @@ final class RemuxAppUITests: XCTestCase {
 
     func testLiveAgentTUIPaneSwitchProfileWhenConfigured() throws {
         let sessionName = try liveAgentTUISessionName()
+        let switchCountValue = liveCleanupHarnessOverride("REMUX_PROFILE_PANE_SWITCH_COUNT") ?? "24"
+        guard let switchCount = Int(switchCountValue), (1...1_000).contains(switchCount) else {
+            throw LiveSSHCleanupHarnessError(
+                description: "REMUX_PROFILE_PANE_SWITCH_COUNT must be an integer from 1 through 1000; got \(switchCountValue)."
+            )
+        }
+        print("Remux profile switch_count=\(switchCount)")
         app.launchEnvironment["GHOSTTY_TRACE_FRAME_COMPLETION"] = "1"
         try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
 
@@ -207,22 +214,36 @@ final class RemuxAppUITests: XCTestCase {
         waitForLiveTerminalReady(timeout: 90)
 
         openPanesSheet()
-        XCTAssertTrue(app.buttons["terminal.pane.tile.1"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["terminal.pane.tile.2"].waitForExistence(timeout: 10))
+        let firstPaneTile = app.buttons["terminal.pane.tile.1"]
+        XCTAssertTrue(firstPaneTile.waitForExistence(timeout: 10))
+        let secondPaneTile = app.buttons["terminal.pane.tile.2"]
+        XCTAssertTrue(secondPaneTile.waitForExistence(timeout: 10))
+        XCTAssertTrue(
+            secondPaneTile.label.hasPrefix("Pane 2 of 2"),
+            "The live agent TUI profiling fixture must contain exactly two panes; got \(secondPaneTile.label)."
+        )
         assertPreviewTilesContainRenderedImages(
             tileIdentifiers: ["terminal.pane.tile.1", "terminal.pane.tile.2"],
             attachmentName: "agent-tui-pane-previews"
         )
+        let firstPaneIsActive = firstPaneTile.label.hasSuffix(", active")
+        let secondPaneIsActive = secondPaneTile.label.hasSuffix(", active")
+        XCTAssertNotEqual(
+            firstPaneIsActive,
+            secondPaneIsActive,
+            "Exactly one profiling pane must be active."
+        )
+        var targetIndex = firstPaneIsActive ? 2 : 1
         dismissTopSheetIfPresent()
 
-        for iteration in 0..<24 {
+        for _ in 0..<switchCount {
             openPanesSheet()
-            let targetIndex = iteration.isMultiple(of: 2) ? 2 : 1
             tapPickerButton(
                 identifier: "terminal.pane.tile.\(targetIndex)",
                 fallbackLabel: "Pane \(targetIndex) of 2"
             )
             RunLoop.current.run(until: Date().addingTimeInterval(0.35))
+            targetIndex = targetIndex == 1 ? 2 : 1
         }
 
         // Both panes have now been presented at the real app viewport. The
@@ -943,12 +964,16 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func liveCleanupHarnessEnabled() -> Bool {
+        liveCleanupHarnessFieldsIfEnabled() != nil
+    }
+
+    private func liveCleanupHarnessFieldsIfEnabled() -> [String: String]? {
         let url = URL(fileURLWithPath: "/tmp/remux-live-cleanup-harness.txt")
         guard
             let data = try? Data(contentsOf: url),
             let value = String(data: data, encoding: .utf8)
         else {
-            return false
+            return nil
         }
 
         let fields = value
@@ -965,13 +990,20 @@ final class RemuxAppUITests: XCTestCase {
             let startedAtString = fields["startedAt"],
             let startedAt = TimeInterval(startedAtString)
         else {
-            return false
+            return nil
         }
 
         let markerAge = Date().timeIntervalSince1970 - startedAt
-        guard markerAge >= 0, markerAge <= 30 * 60 else { return false }
+        guard markerAge >= 0, markerAge <= 30 * 60 else { return nil }
 
-        return liveCleanupHarnessProcessExists(pid)
+        return liveCleanupHarnessProcessExists(pid) ? fields : nil
+    }
+
+    private func liveCleanupHarnessOverride(_ key: String) -> String? {
+        if let value = ProcessInfo.processInfo.environment[key] {
+            return value
+        }
+        return liveCleanupHarnessFieldsIfEnabled()?[key]
     }
 
     private func liveCleanupHarnessProcessExists(_ pid: Int32) -> Bool {
@@ -1001,9 +1033,11 @@ final class RemuxAppUITests: XCTestCase {
             environmentKey: "REMUX_LIVE_AGENT_TUI_SESSION",
             fallbackPath: "/tmp/remux-live-agent-tui-session.txt"
         ) else {
-            throw XCTSkip(
-                "Set REMUX_LIVE_AGENT_TUI_SESSION to an existing two-pane tmux session running real agent TUIs."
-            )
+            let description = "Set REMUX_LIVE_AGENT_TUI_SESSION to an existing two-pane tmux session running real agent TUIs."
+            if liveCleanupHarnessEnabled() {
+                throw LiveSSHCleanupHarnessError(description: description)
+            }
+            throw XCTSkip(description)
         }
         guard sessionName.range(
             of: #"^[A-Za-z0-9._-]+$"#,
@@ -1272,7 +1306,10 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func forwardTraceEnvironment() {
+        let processEnvironment = ProcessInfo.processInfo.environment
+        let harnessFields = liveCleanupHarnessFieldsIfEnabled()
         for key in [
+            "REMUX_TRACE_FLOWS",
             "REMUX_TRACE_PERF",
             "REMUX_TRACE_LATENCY",
             "REMUX_TRACE_GHOSTTY_IO",
@@ -1280,11 +1317,12 @@ final class RemuxAppUITests: XCTestCase {
             "REMUX_TRACE_TMUX_VIEWPORT",
             "REMUX_TRACE_TMUX_VIEWPORT_FULL",
             "GHOSTTY_TRACE_SURFACE_INIT",
+            "GHOSTTY_TRACE_FRAME_COMPLETION",
             "REMUX_DEBUG_LATENCY_PROBE",
             "REMUX_DEBUG_LATENCY_PROBE_DELAY_MS",
             "REMUX_SCROLL_PRECISE_GAIN",
         ] {
-            guard let value = ProcessInfo.processInfo.environment[key] else {
+            guard let value = processEnvironment[key] ?? harnessFields?[key] else {
                 continue
             }
             app.launchEnvironment[key] = value
