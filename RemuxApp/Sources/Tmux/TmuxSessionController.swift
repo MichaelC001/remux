@@ -749,7 +749,7 @@ final class TmuxSessionController: @unchecked Sendable {
 
     func renderPanePreviewImageAsync(
         paneID: TmuxPaneID,
-        styleSurface: ghostty_surface_t?,
+        styleSurface: GhosttyKitControlSurface,
         options: ghostty_surface_preview_image_options_s,
         previewGrid: ClientSize,
         userdata: UnsafeMutableRawPointer?,
@@ -767,7 +767,7 @@ final class TmuxSessionController: @unchecked Sendable {
             callback: callback
         )
         queue.async { [self, submission] in
-            guard let session, let styleSurface = submission.styleSurface else {
+            guard let session else {
                 DispatchQueue.main.async {
                     completion(nil)
                 }
@@ -778,15 +778,30 @@ final class TmuxSessionController: @unchecked Sendable {
                 preview_cols: submission.previewGrid.cols,
                 preview_rows: submission.previewGrid.rows
             )
-            let request = ghostty_tmux_session_render_pane_preview_image_async(
-                session,
-                styleSurface,
-                submission.paneID.rawValue,
-                tmuxOptions,
-                submission.userdata,
-                submission.callback
-            )
-            let requestResult = TmuxPanePreviewRequestResult(request: request)
+            // This lock-scoped borrow intentionally covers the synchronous C
+            // call. It fences the external owner's invalidate-then-free path
+            // while libghostty copies the style, font, colors, and preview
+            // subsystem identity. The C call invokes no synchronous callback
+            // and retains no Surface pointer after it returns.
+            let requestResult = submission.styleSurface
+                .withSynchronousBorrowedSurface { styleSurface in
+                    TmuxPanePreviewRequestResult(
+                        request: ghostty_tmux_session_render_pane_preview_image_async(
+                            session,
+                            styleSurface,
+                            submission.paneID.rawValue,
+                            tmuxOptions,
+                            submission.userdata,
+                            submission.callback
+                        )
+                    )
+                }
+            guard let requestResult else {
+                DispatchQueue.main.async {
+                    completion(nil)
+                }
+                return
+            }
             // Publish acceptance before the capture-pane command can leave
             // the writer queue. The callback therefore cannot overtake the
             // handle/source installation on MainActor.
@@ -857,11 +872,13 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 }
 
-/// Raw C preview arguments cross onto the tmux writer queue but are consumed
-/// there exactly once. The queue remains the sole owner of the C session.
+/// Preview arguments cross onto the tmux writer queue and are consumed there
+/// exactly once. The strong style wrapper owns the borrowed-handle fence; no
+/// raw surface pointer crosses the queue. The queue remains the sole owner of
+/// the C session.
 private struct TmuxPanePreviewSubmission: @unchecked Sendable {
     let paneID: TmuxPaneID
-    let styleSurface: ghostty_surface_t?
+    let styleSurface: GhosttyKitControlSurface
     let options: ghostty_surface_preview_image_options_s
     let previewGrid: TmuxSessionController.ClientSize
     let userdata: UnsafeMutableRawPointer?

@@ -235,4 +235,93 @@ final class GhosttyKitControlSurfaceTests: XCTestCase {
         XCTAssertTrue(surface.isInvalidated)
     }
 
+    func testSynchronousBorrowedSurfaceRejectsAfterInvalidation() throws {
+        let runtime = try GhosttyKitRuntime()
+        let view = GhosttyKitSurfaceView(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
+        let owner = try runtime.makeManualHostSurface(view: view)
+        let borrowed = GhosttyKitControlSurface(
+            surface: owner.handle,
+            ownership: .borrowed,
+            retainedObjects: [owner]
+        )
+        var bodyCallCount = 0
+
+        borrowed.invalidate()
+        let result = borrowed.withSynchronousBorrowedSurface { _ in
+            bodyCallCount += 1
+            return 1
+        }
+
+        XCTAssertNil(result)
+        XCTAssertEqual(bodyCallCount, 0)
+    }
+
+    func testSynchronousBorrowedSurfaceFencesInvalidationUntilBodyReturns() throws {
+        let runtime = try GhosttyKitRuntime()
+        let view = GhosttyKitSurfaceView(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
+        let owner = try runtime.makeManualHostSurface(view: view)
+        let borrowed = GhosttyKitControlSurface(
+            surface: owner.handle,
+            ownership: .borrowed,
+            retainedObjects: [owner]
+        )
+        let borrowedBox = UncheckedSendableTestBox(borrowed)
+        let borrowEntered = DispatchSemaphore(value: 0)
+        let allowBorrowReturn = DispatchSemaphore(value: 0)
+        let borrowFinished = DispatchSemaphore(value: 0)
+        let invalidationStarted = DispatchSemaphore(value: 0)
+        let invalidationFinished = DispatchSemaphore(value: 0)
+
+        let borrowThread = Thread {
+            _ = borrowedBox.value.withSynchronousBorrowedSurface { _ in
+                borrowEntered.signal()
+                _ = allowBorrowReturn.wait(timeout: .now() + 10)
+            }
+            borrowFinished.signal()
+        }
+        borrowThread.qualityOfService = .userInteractive
+        borrowThread.start()
+
+        guard borrowEntered.wait(timeout: .now() + 10) == .success else {
+            allowBorrowReturn.signal()
+            _ = borrowFinished.wait(timeout: .now() + 10)
+            return XCTFail("borrow body did not start")
+        }
+
+        let invalidationThread = Thread {
+            invalidationStarted.signal()
+            borrowedBox.value.invalidate()
+            invalidationFinished.signal()
+        }
+        invalidationThread.qualityOfService = .userInteractive
+        invalidationThread.start()
+
+        XCTAssertEqual(invalidationStarted.wait(timeout: .now() + 10), .success)
+        XCTAssertEqual(
+            invalidationFinished.wait(timeout: .now() + 0.05),
+            .timedOut,
+            "invalidation must not pass an active native-handle borrow"
+        )
+
+        allowBorrowReturn.signal()
+        XCTAssertEqual(borrowFinished.wait(timeout: .now() + 10), .success)
+        XCTAssertEqual(invalidationFinished.wait(timeout: .now() + 10), .success)
+
+        var laterBorrowExecuted = false
+        let laterResult = borrowed.withSynchronousBorrowedSurface { _ in
+            laterBorrowExecuted = true
+            return 1
+        }
+        XCTAssertNil(laterResult)
+        XCTAssertFalse(laterBorrowExecuted)
+    }
+
+}
+
+private struct UncheckedSendableTestBox<Value>: @unchecked Sendable {
+    let value: Value
+
+    init(_ value: Value) {
+        self.value = value
+    }
 }

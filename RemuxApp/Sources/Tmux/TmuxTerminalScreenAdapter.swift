@@ -575,7 +575,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                         )
                         return
                     }
-                    guard let styleSurface = self.activeManagedSurface?.controlSurface.handle else {
+                    guard let styleSurface = self.activeManagedSurface?.controlSurface else {
                         completion(.surfaceUnavailable)
                         return
                     }

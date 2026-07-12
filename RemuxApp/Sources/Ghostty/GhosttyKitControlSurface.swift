@@ -149,6 +149,20 @@ final class GhosttyKitControlSurface: GhosttyControlSurface {
         storage.invalidate()
     }
 
+    /// Borrows this wrapper's native handle only while its external owner is
+    /// unable to invalidate and free it. The body must be synchronous and
+    /// must not retain or otherwise escape the handle.
+    ///
+    /// Unlike ordinary state locks, the body intentionally runs while the
+    /// lock is held: the lock is the native lifetime fence, not merely state
+    /// protection. This is restricted to externally-owned surfaces whose
+    /// owner calls `invalidate()` immediately before `ghostty_surface_free`.
+    func withSynchronousBorrowedSurface<Result>(
+        _ body: (ghostty_surface_t) -> Result
+    ) -> Result? {
+        storage.withSynchronousBorrowedSurface(body)
+    }
+
     var isInvalidated: Bool {
         storage.isInvalidated
     }
@@ -490,6 +504,19 @@ private final class GhosttyKitControlSurfaceStorage: @unchecked Sendable {
     /// after this, every wrapper call is a benign no-op.
     func invalidate() {
         invalidationLock.withLock { _isInvalidated = true }
+    }
+
+    func withSynchronousBorrowedSurface<Result>(
+        _ body: (ghostty_surface_t) -> Result
+    ) -> Result? {
+        invalidationLock.lock()
+        defer { invalidationLock.unlock() }
+        guard ownership == .borrowed else {
+            assertionFailure("synchronous surface borrowing requires borrowed ownership")
+            return nil
+        }
+        guard !_isInvalidated else { return nil }
+        return body(surface)
     }
 
     private let ownership: GhosttyKitControlSurfaceOwnership
