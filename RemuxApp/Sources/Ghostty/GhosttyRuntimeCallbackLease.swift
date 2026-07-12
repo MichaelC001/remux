@@ -1,22 +1,6 @@
 import Foundation
 import GhosttyKit
 
-struct GhosttyRuntimeSurfaceCreationRequest {
-    let parentHandle: ghostty_surface_t?
-    let splitDirection: ghostty_action_split_direction_e
-    let baseConfig: ghostty_surface_config_s?
-
-    init(native request: ghostty_runtime_create_surface_s) {
-        parentHandle = request.parent
-        splitDirection = request.split_direction
-        baseConfig = request.config?.pointee
-    }
-
-    var context: ghostty_surface_context_e? {
-        baseConfig?.context
-    }
-}
-
 struct GhosttyRuntimeCallbackLease: Equatable, Sendable {
     let registryID: ObjectIdentifier
     let epoch: UInt64
@@ -111,27 +95,6 @@ protocol GhosttyKitRuntimeSurfaceDelegate: AnyObject {
     func withRuntimeCallbackBatch(
         lease: GhosttyRuntimeCallbackLease,
         _ body: () -> Void
-    )
-
-    @MainActor
-    func runtimeCreateSurface(
-        app: ghostty_app_t?,
-        request: GhosttyRuntimeSurfaceCreationRequest,
-        lease: GhosttyRuntimeCallbackLease
-    ) -> ghostty_surface_t?
-
-    @MainActor
-    func runtimeCreateSurfaceTree(
-        app: ghostty_app_t?,
-        request: GhosttyRuntimeSurfaceTreeCreationRequest,
-        lease: GhosttyRuntimeCallbackLease
-    ) -> Bool
-
-    @MainActor
-    func runtimeSelectSurface(
-        app: ghostty_app_t?,
-        surface: ghostty_surface_t?,
-        lease: GhosttyRuntimeCallbackLease
     )
 
     @MainActor

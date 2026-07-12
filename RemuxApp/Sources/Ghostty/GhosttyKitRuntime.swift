@@ -404,9 +404,9 @@ private final class GhosttyKitRuntimeState {
             confirm_read_clipboard_cb: nil,
             write_clipboard_cb: nil,
             close_surface_cb: nil,
-            select_surface_cb: GhosttyKitRuntimeCallbacks.selectSurfaceCallback,
-            create_surface_cb: GhosttyKitRuntimeCallbacks.createSurfaceCallback,
-            create_surface_tree_cb: GhosttyKitRuntimeCallbacks.createSurfaceTreeCallback
+            select_surface_cb: nil,
+            create_surface_cb: nil,
+            create_surface_tree_cb: nil
         )
 
         guard let app = ghostty_app_new(&runtimeConfig, config) else {
@@ -522,31 +522,6 @@ private final class GhosttyKitRuntimeCallbacks: @unchecked Sendable {
         Thread.isMainThread ? "main" : "background"
     }
 
-    private static func createSurfaceTraceFields(
-        request: GhosttyRuntimeSurfaceCreationRequest,
-        route: String
-    ) -> [String: String] {
-        [
-            "context": request.context.map { String(describing: $0) } ?? "nil",
-            "route": route,
-            "thread": callbackThreadField(),
-        ]
-    }
-
-    private static func createSurfaceTreeTraceFields(
-        request: GhosttyRuntimeSurfaceTreeCreationRequest,
-        route: String
-    ) -> [String: String] {
-        [
-            "focusedIndex": "\(request.focusedLeafIndex)",
-            "focusedValid": "\(request.focusedLeafIndexIsValid)",
-            "leaves": "\(request.leafSurfaceCount)",
-            "nodes": "\(request.nodeCount)",
-            "route": route,
-            "thread": callbackThreadField(),
-        ]
-    }
-
     private static func wakeupTraceFields(
         route: String,
         entryThread: String
@@ -568,26 +543,6 @@ private final class GhosttyKitRuntimeCallbacks: @unchecked Sendable {
             GhosttyKitRuntimeCallbacks.action(app, target: target, action: action)
         }
     }
-
-
-    static var selectSurfaceCallback: ghostty_runtime_select_surface_cb {
-        { app, surface in
-            GhosttyKitRuntimeCallbacks.selectSurface(app, surface: surface)
-        }
-    }
-
-    static var createSurfaceCallback: ghostty_runtime_create_surface_cb {
-        { app, request in
-            GhosttyKitRuntimeCallbacks.createSurface(app, request: request)
-        }
-    }
-
-    static var createSurfaceTreeCallback: ghostty_runtime_create_surface_tree_cb {
-        { app, request in
-            GhosttyKitRuntimeCallbacks.createSurfaceTree(app, request: request)
-        }
-    }
-
 
     static func wakeup(_ userdata: UnsafeMutableRawPointer?) {
         guard let callbacks = from(userdata: userdata) else { return }
@@ -666,165 +621,6 @@ private final class GhosttyKitRuntimeCallbacks: @unchecked Sendable {
             }
         }
     }
-
-
-    static func createSurface(
-        _ app: ghostty_app_t?,
-        request: ghostty_runtime_create_surface_s
-    ) -> ghostty_surface_t? {
-        guard let callbacks = from(app: app) else { return nil }
-        guard let lease = callbacks.callbackLease,
-              callbacks.acceptsRuntimeCallback()
-        else {
-            return nil
-        }
-        let appBox = UnsafeSendable(app)
-        let requestBox = UnsafeSendable(GhosttyRuntimeSurfaceCreationRequest(native: request))
-        let leaseBox = UnsafeSendable(lease)
-        if Thread.isMainThread {
-            GhosttyRuntimeTrace.perf("runtime.createSurface route=main")
-            traceTopologyCallback(
-                "runtime.callback.createSurface.entry",
-                fields: createSurfaceTraceFields(request: requestBox.value, route: "direct")
-            )
-            traceTopologyCallback(
-                "runtime.callback.createSurface.mainActor.begin",
-                fields: createSurfaceTraceFields(request: requestBox.value, route: "direct")
-            )
-            return MainActor.assumeIsolated {
-                UnsafeSendable(callbacks.surfaceDelegate?.runtimeCreateSurface(
-                    app: appBox.value,
-                    request: requestBox.value,
-                    lease: leaseBox.value
-                ))
-            }.value
-        } else {
-            traceTopologyCallback(
-                "runtime.callback.createSurface.entry",
-                fields: createSurfaceTraceFields(request: requestBox.value, route: "sync")
-            )
-            traceTopologyCallback(
-                "runtime.callback.createSurface.mainActor.schedule",
-                fields: createSurfaceTraceFields(request: requestBox.value, route: "sync")
-            )
-            return GhosttyRuntimeTrace.perfMeasure("runtime.createSurface route=sync") {
-                let result: UnsafeSendable<ghostty_surface_t?> = DispatchQueue.main.sync {
-                    traceTopologyCallback(
-                        "runtime.callback.createSurface.mainActor.begin",
-                        fields: createSurfaceTraceFields(request: requestBox.value, route: "sync")
-                    )
-                    return MainActor.assumeIsolated {
-                        UnsafeSendable(callbacks.surfaceDelegate?.runtimeCreateSurface(
-                            app: appBox.value,
-                            request: requestBox.value,
-                            lease: leaseBox.value
-                        ))
-                    }
-                }
-                return result
-            }.value
-        }
-    }
-
-    static func createSurfaceTree(
-        _ app: ghostty_app_t?,
-        request: ghostty_runtime_create_surface_tree_s
-    ) -> Bool {
-        guard let callbacks = from(app: app) else { return false }
-        guard let lease = callbacks.callbackLease,
-              callbacks.acceptsRuntimeCallback()
-        else {
-            return false
-        }
-        let appBox = UnsafeSendable(app)
-        let requestBox = UnsafeSendable(
-            GhosttyRuntimeTrace.perfMeasure("runtime.createSurfaceTree.decode") {
-                GhosttyRuntimeSurfaceTreeCreationRequest(native: request)
-            }
-        )
-        let leaseBox = UnsafeSendable(lease)
-        if Thread.isMainThread {
-            GhosttyRuntimeTrace.perf("runtime.createSurfaceTree route=main")
-            traceTopologyCallback(
-                "runtime.callback.createSurfaceTree.entry",
-                fields: createSurfaceTreeTraceFields(request: requestBox.value, route: "direct")
-            )
-            traceTopologyCallback(
-                "runtime.callback.createSurfaceTree.mainActor.begin",
-                fields: createSurfaceTreeTraceFields(request: requestBox.value, route: "direct")
-            )
-            return MainActor.assumeIsolated {
-                callbacks.surfaceDelegate?.runtimeCreateSurfaceTree(
-                    app: appBox.value,
-                    request: requestBox.value,
-                    lease: leaseBox.value
-                ) ?? false
-            }
-        } else {
-            traceTopologyCallback(
-                "runtime.callback.createSurfaceTree.entry",
-                fields: createSurfaceTreeTraceFields(request: requestBox.value, route: "sync")
-            )
-            traceTopologyCallback(
-                "runtime.callback.createSurfaceTree.mainActor.schedule",
-                fields: createSurfaceTreeTraceFields(request: requestBox.value, route: "sync")
-            )
-            return GhosttyRuntimeTrace.perfMeasure("runtime.createSurfaceTree route=sync") {
-                let result: Bool = DispatchQueue.main.sync {
-                    traceTopologyCallback(
-                        "runtime.callback.createSurfaceTree.mainActor.begin",
-                        fields: createSurfaceTreeTraceFields(request: requestBox.value, route: "sync")
-                    )
-                    return MainActor.assumeIsolated {
-                        callbacks.surfaceDelegate?.runtimeCreateSurfaceTree(
-                            app: appBox.value,
-                            request: requestBox.value,
-                            lease: leaseBox.value
-                        ) ?? false
-                    }
-                }
-                return result
-            }
-        }
-    }
-
-    static func selectSurface(
-        _ app: ghostty_app_t?,
-        surface: ghostty_surface_t?
-    ) {
-        guard let callbacks = from(app: app) else { return }
-        guard let lease = callbacks.callbackLease,
-              callbacks.acceptsRuntimeCallback()
-        else {
-            return
-        }
-        let appBox = UnsafeSendable(app)
-        let surfaceBox = UnsafeSendable(surface)
-        let leaseBox = UnsafeSendable(lease)
-        if Thread.isMainThread {
-            GhosttyRuntimeTrace.perf("runtime.selectSurface route=main")
-            MainActor.assumeIsolated {
-                callbacks.surfaceDelegate?.runtimeSelectSurface(
-                    app: appBox.value,
-                    surface: surfaceBox.value,
-                    lease: leaseBox.value
-                )
-            }
-        } else {
-            GhosttyRuntimeTrace.perfMeasure("runtime.selectSurface route=sync") {
-                DispatchQueue.main.sync {
-                    MainActor.assumeIsolated {
-                        callbacks.surfaceDelegate?.runtimeSelectSurface(
-                            app: appBox.value,
-                            surface: surfaceBox.value,
-                            lease: leaseBox.value
-                        )
-                    }
-                }
-            }
-        }
-    }
-
 
     private static func from(app: ghostty_app_t?) -> GhosttyKitRuntimeCallbacks? {
         guard let app else { return nil }

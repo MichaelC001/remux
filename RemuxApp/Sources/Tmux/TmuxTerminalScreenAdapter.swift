@@ -1166,30 +1166,6 @@ extension TmuxTerminalScreenAdapter: GhosttyKitRuntimeSurfaceDelegate {
         leaseStore.invalidate(lease)
     }
 
-    func runtimeCreateSurface(
-        app: ghostty_app_t?,
-        request: GhosttyRuntimeSurfaceCreationRequest,
-        lease: GhosttyRuntimeCallbackLease
-    ) -> ghostty_surface_t? {
-        // The new stack creates surfaces host-side only (pane bindings); the
-        // runtime never asks for one.
-        nil
-    }
-
-    func runtimeCreateSurfaceTree(
-        app: ghostty_app_t?,
-        request: GhosttyRuntimeSurfaceTreeCreationRequest,
-        lease: GhosttyRuntimeCallbackLease
-    ) -> Bool {
-        false
-    }
-
-    func runtimeSelectSurface(
-        app: ghostty_app_t?,
-        surface: ghostty_surface_t?,
-        lease: GhosttyRuntimeCallbackLease
-    ) {}
-
     func runtimeAction(
         app: ghostty_app_t?,
         target: GhosttyRuntimeSurfaceActionTarget,
