@@ -77,16 +77,16 @@ final class GhosttyPanePreviewSession: ObservableObject {
         ) -> Void
 
         let start: Start
-        let cancel: @MainActor (ghostty_surface_preview_request_t) -> Void
-        let release: @MainActor (ghostty_surface_preview_request_t) -> Void
+        let cancel: @Sendable (ghostty_surface_preview_request_t) -> Void
+        let release: @Sendable (ghostty_surface_preview_request_t) -> Void
         let cachedPreview: @MainActor (UUID) -> RenderedPreview?
         let shouldRefreshCachedImage: @MainActor (UUID) -> Bool
         let cacheRenderedPreview: @MainActor (UUID, RenderedPreview) -> Void
 
         init(
             start: @escaping Start,
-            cancel: @escaping @MainActor (ghostty_surface_preview_request_t) -> Void,
-            release: @escaping @MainActor (ghostty_surface_preview_request_t) -> Void,
+            cancel: @escaping @Sendable (ghostty_surface_preview_request_t) -> Void,
+            release: @escaping @Sendable (ghostty_surface_preview_request_t) -> Void,
             cachedPreview: @escaping @MainActor (UUID) -> RenderedPreview? = { _ in nil },
             shouldRefreshCachedImage: @escaping @MainActor (UUID) -> Bool = { _ in false },
             cacheRenderedPreview: @escaping @MainActor (UUID, RenderedPreview) -> Void = { _, _ in }
@@ -409,8 +409,8 @@ final class GhosttyPanePreviewSession: ObservableObject {
     }
 
     /// Called from the C callback after main-actor hop. The callback has
-    /// already done generation/liveness checks and built (or chose not to
-    /// build) a CGImage. We finalize state and release the handle.
+    /// already released the request handle, done generation/liveness checks,
+    /// and built (or chose not to build) a CGImage. We finalize image state.
     fileprivate func deliver(
         paneID: UUID,
         generation: UInt64,
@@ -575,10 +575,11 @@ private final class PreviewCallbackBox: @unchecked Sendable {
 /// 2. Capture image metadata (width/height/stride/status) into local
 ///    constants, copy pixels into a Swift-owned buffer, then call
 ///    `ghostty_surface_free_preview_image` immediately.
-/// 3. Hop to MainActor; verify session liveness + generation match.
-/// 4. Build a `CGImage` from the Swift-owned copy if status is OK; otherwise
+/// 3. Release the request handle on this callback thread.
+/// 4. Hop to MainActor; verify session liveness + generation match.
+/// 5. Build a `CGImage` from the Swift-owned copy if status is OK; otherwise
 ///    deallocate the copy.
-/// 5. Hand off to the session's `deliver` for state transition.
+/// 6. Hand off to the session's `deliver` for state transition.
 private let previewImageCallback: ghostty_surface_preview_image_callback_f = { userdata, status, image in
     guard let userdata else { return }
     let box = Unmanaged<PreviewCallbackBox>.fromOpaque(userdata).takeRetainedValue()
@@ -607,11 +608,15 @@ private let previewImageCallback: ghostty_surface_preview_image_callback_f = { u
     let capturedRetryAttempts = box.remainingRetryAttempts
     let capturedRequestLease = box.requestLease
 
+    // Releasing here closes native request ownership before teardown can
+    // overtake delayed MainActor delivery. The lease defers this action if
+    // request acceptance has not installed the handle yet.
+    capturedRequestLease.release()
+
     Task { @MainActor in
         // Local mutable copy so makeCGImage can null it out on ownership
         // transfer to a CGDataProvider.
         var localPixelCopy = capturedPixelBuffer.pointer
-        capturedRequestLease.release()
 
         // Stale check: session gone, or generation mismatch, or pane already
         // removed via reconcile.

@@ -1,48 +1,71 @@
 import CoreGraphics
+import Foundation
 import GhosttyKit
 
-@MainActor
-final class GhosttyPreviewRequestLease {
-    private let cancelAction: @MainActor (ghostty_surface_preview_request_t) -> Void
-    private let releaseAction: @MainActor (ghostty_surface_preview_request_t) -> Void
+final class GhosttyPreviewRequestLease: @unchecked Sendable {
+    private struct Actions {
+        let request: ghostty_surface_preview_request_t
+        let cancel: Bool
+    }
+
+    private let lock = NSLock()
+    private let cancelAction: @Sendable (ghostty_surface_preview_request_t) -> Void
+    private let releaseAction: @Sendable (ghostty_surface_preview_request_t) -> Void
     private var request: ghostty_surface_preview_request_t?
-    private var cancelWhenInstalled = false
-    private var releaseWhenInstalled = false
+    private var didInstall = false
+    private var cancelRequested = false
+    private var releaseRequested = false
 
     init(
-        cancel: @escaping @MainActor (ghostty_surface_preview_request_t) -> Void,
-        release: @escaping @MainActor (ghostty_surface_preview_request_t) -> Void
+        cancel: @escaping @Sendable (ghostty_surface_preview_request_t) -> Void,
+        release: @escaping @Sendable (ghostty_surface_preview_request_t) -> Void
     ) {
         self.cancelAction = cancel
         self.releaseAction = release
     }
 
     func install(_ request: ghostty_surface_preview_request_t) {
-        guard self.request == nil else { return }
-        guard !releaseWhenInstalled else {
-            if cancelWhenInstalled {
-                cancelAction(request)
+        let actions: Actions? = lock.withLock {
+            precondition(!didInstall, "preview request handle installed more than once")
+            didInstall = true
+            if releaseRequested {
+                return Actions(request: request, cancel: cancelRequested)
             }
-            releaseAction(request)
-            return
+            self.request = request
+            return nil
         }
-        self.request = request
+        perform(actions)
     }
 
     func cancelAndRelease() {
-        cancelWhenInstalled = true
-        releaseWhenInstalled = true
-        guard let request else { return }
-        self.request = nil
-        cancelAction(request)
-        releaseAction(request)
+        let actions: Actions? = lock.withLock {
+            guard !releaseRequested else { return nil }
+            cancelRequested = true
+            releaseRequested = true
+            guard let request else { return nil }
+            self.request = nil
+            return Actions(request: request, cancel: true)
+        }
+        perform(actions)
     }
 
     func release() {
-        releaseWhenInstalled = true
-        guard let request else { return }
-        self.request = nil
-        releaseAction(request)
+        let actions: Actions? = lock.withLock {
+            guard !releaseRequested else { return nil }
+            releaseRequested = true
+            guard let request else { return nil }
+            self.request = nil
+            return Actions(request: request, cancel: false)
+        }
+        perform(actions)
+    }
+
+    private func perform(_ actions: Actions?) {
+        guard let actions else { return }
+        if actions.cancel {
+            cancelAction(actions.request)
+        }
+        releaseAction(actions.request)
     }
 }
 
