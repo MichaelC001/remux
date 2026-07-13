@@ -786,12 +786,12 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         guard let windowID = identities.windowID(for: id), let controller else {
             return .missingTarget(.window(id))
         }
-        if latestTopology?.activeWindowID != windowID,
-           let targetPaneID = latestTopology?.windows
-               .first(where: { $0.id == windowID })?.activePaneID {
-            session?.prepareForPaneSelection(paneID: targetPaneID)
+        if let topology = latestTopology,
+           let targetWindow = topology.windows.first(where: { $0.id == windowID }) {
+            requestWindowSelection(targetWindow, in: topology, controller: controller)
+        } else {
+            controller.requestSelectWindow(windowID: windowID)
         }
-        controller.requestSelectWindow(windowID: windowID)
         return .queued
     }
 
@@ -816,11 +816,52 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
             return .missingTarget(.adjacentWindow)
         }
         let targetWindow = topology.windows[targetIndex]
-        if let targetPaneID = targetWindow.activePaneID {
+        requestWindowSelection(targetWindow, in: topology, controller: controller)
+        return .queued
+    }
+
+    static func groupedWindowSelectionPane(
+        for targetWindow: TmuxSessionController.WindowInfo,
+        in topology: TmuxSessionController.TopologySnapshot
+    ) -> TmuxPaneID? {
+        guard let activeWindowID = topology.activeWindowID,
+              activeWindowID != targetWindow.id,
+              !targetWindow.zoomed,
+              let activePaneID = targetWindow.activePaneID
+        else { return nil }
+
+        var containsActivePane = false
+        var containsSiblingPane = false
+        for pane in topology.panes where pane.windowID == targetWindow.id {
+            if pane.id == activePaneID {
+                containsActivePane = true
+            } else {
+                containsSiblingPane = true
+            }
+            if containsActivePane, containsSiblingPane { return activePaneID }
+        }
+        return nil
+    }
+
+    private func requestWindowSelection(
+        _ targetWindow: TmuxSessionController.WindowInfo,
+        in topology: TmuxSessionController.TopologySnapshot,
+        controller: TmuxSessionController
+    ) {
+        if topology.activeWindowID != targetWindow.id,
+           let targetPaneID = targetWindow.activePaneID {
             session?.prepareForPaneSelection(paneID: targetPaneID)
         }
-        controller.requestSelectWindow(windowID: targetWindow.id)
-        return .queued
+
+        guard let paneID = Self.groupedWindowSelectionPane(
+            for: targetWindow,
+            in: topology
+        ) else {
+            controller.requestSelectWindow(windowID: targetWindow.id)
+            return
+        }
+        session?.prepareForGroupedWindowSelection(paneID: paneID)
+        controller.requestSelectWindowZoomedPane(windowID: targetWindow.id, paneID: paneID)
     }
 
     func createTmuxWindow() -> GhosttyTmuxModelActionOutcome {

@@ -236,6 +236,24 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         await session.shutdown()
     }
 
+    func testFailedGroupedWindowSelectionClearsPrearmedZoomWait() async throws {
+        let runtime = try GhosttyKitRuntime()
+        var createdPaneIDs: [TmuxPaneID] = []
+        let session = makeSession(runtime: runtime) { _, _, paneID, _, _, completion in
+            createdPaneIDs.append(paneID)
+            completion(.failure(.surfaceCreationFailed))
+        }
+
+        session.handleTopology(splitSnapshot(activePaneID: 10, zoomed: true))
+        session.prepareForPaneSelection(paneID: 11)
+        session.prepareForGroupedWindowSelection(paneID: 11)
+        session.handleRequestFailedForTesting(.selectWindow)
+
+        XCTAssertNil(session.pendingPaneIDForTesting)
+        XCTAssertEqual(createdPaneIDs, [10, 10])
+        await session.shutdown()
+    }
+
     func testRepeatedTopologyStartsOnlyOneCreate() async throws {
         let runtime = try GhosttyKitRuntime()
         var createdPaneIDs: [TmuxPaneID] = []
@@ -376,6 +394,27 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         await session.shutdown()
     }
 
+    func testGroupedWindowSelectionWaitsWithoutRequestingDuplicateZoom() async throws {
+        let runtime = try GhosttyKitRuntime()
+        var createdPaneIDs: [TmuxPaneID] = []
+        let session = makeSession(runtime: runtime) { _, _, paneID, _, _, completion in
+            createdPaneIDs.append(paneID)
+            completion(.failure(.surfaceCreationFailed))
+        }
+
+        session.handleTopology(splitSnapshot(activePaneID: 10, zoomed: true))
+        session.prepareForPaneSelection(paneID: 11)
+        session.prepareForGroupedWindowSelection(paneID: 11)
+        session.handleTopology(splitSnapshot(activePaneID: 11, zoomed: false))
+
+        XCTAssertEqual(createdPaneIDs, [10], "intermediate geometry must not bind")
+        XCTAssertEqual(session.requestedZoomPaneIDsForTesting, [])
+
+        session.handleTopology(splitSnapshot(activePaneID: 11, zoomed: true))
+        XCTAssertEqual(createdPaneIDs, [10, 11])
+        await session.shutdown()
+    }
+
     func testShutdownCancelsPreparedSelectionWaitingForTopology() throws {
         let runtime = try GhosttyKitRuntime()
         let session = makeSession(runtime: runtime) { _, _, _, _, _, completion in
@@ -464,6 +503,34 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
 
         session.handleRequestFailedForTesting(.zoomPane)
         XCTAssertEqual(createCount, 1, "zoom rejection should bind current server geometry")
+        await session.shutdown()
+    }
+
+    func testGroupedWindowZoomFailurePublishesIntermediateGeometry() async throws {
+        let runtime = try GhosttyKitRuntime()
+        var createdPaneIDs: [TmuxPaneID] = []
+        let session = makeSession(runtime: runtime) { _, _, paneID, _, _, completion in
+            createdPaneIDs.append(paneID)
+            completion(.failure(.surfaceCreationFailed))
+        }
+
+        session.handleTopology(splitSnapshot(activePaneID: 10, zoomed: true))
+        session.prepareForPaneSelection(paneID: 11)
+        session.prepareForGroupedWindowSelection(paneID: 11)
+        session.handleRequestFailedForTesting(.zoomPane)
+        XCTAssertEqual(
+            createdPaneIDs,
+            [10],
+            "the pending target must keep the old confirmed pane hidden"
+        )
+
+        session.handleTopology(splitSnapshot(activePaneID: 11, zoomed: false))
+        XCTAssertEqual(
+            createdPaneIDs,
+            [10, 11],
+            "grouped zoom rejection should bind current server geometry"
+        )
+        XCTAssertEqual(session.requestedZoomPaneIDsForTesting, [])
         await session.shutdown()
     }
 

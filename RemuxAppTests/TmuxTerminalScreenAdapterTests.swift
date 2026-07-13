@@ -49,13 +49,14 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
     private func window(
         id: TmuxWindowID,
         active: Bool,
-        paneID: TmuxPaneID
+        paneID: TmuxPaneID?,
+        zoomed: Bool = true
     ) -> TmuxSessionController.WindowInfo {
         TmuxSessionController.WindowInfo(
             id: id,
             name: "w\(id)",
             active: active,
-            zoomed: true,
+            zoomed: zoomed,
             width: 80,
             height: 24,
             activePaneID: paneID
@@ -75,6 +76,39 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
             height: 24,
             state: .live
         )
+    }
+
+    func testGroupedWindowSelectionRequiresCanonicalUnzoomedSplitTarget() {
+        let targetWindow = window(id: 2, active: false, paneID: 20, zoomed: false)
+        let targetPanes = [pane(id: 20, windowID: 2), pane(id: 21, windowID: 2)]
+        func groupedPane(
+            for target: TmuxSessionController.WindowInfo,
+            panes: [TmuxSessionController.PaneInfo] = targetPanes,
+            activeWindowID: TmuxWindowID? = 1
+        ) -> TmuxPaneID? {
+            let topology = TmuxSessionController.TopologySnapshot(
+                sessionName: "grouped-selection",
+                windows: [window(id: 1, active: true, paneID: 10), target],
+                panes: [pane(id: 10, windowID: 1)] + panes,
+                activeWindowID: activeWindowID
+            )
+            return TmuxTerminalScreenAdapter.groupedWindowSelectionPane(
+                for: target,
+                in: topology
+            )
+        }
+
+        XCTAssertEqual(groupedPane(for: targetWindow), 20)
+        XCTAssertNil(groupedPane(for: targetWindow, activeWindowID: 2))
+        XCTAssertNil(groupedPane(for: targetWindow, activeWindowID: nil))
+        XCTAssertNil(groupedPane(
+            for: window(id: 2, active: false, paneID: 20, zoomed: true)
+        ))
+        XCTAssertNil(groupedPane(
+            for: window(id: 2, active: false, paneID: nil, zoomed: false)
+        ))
+        XCTAssertNil(groupedPane(for: targetWindow, panes: [targetPanes[0]]))
+        XCTAssertNil(groupedPane(for: targetWindow, panes: [targetPanes[1]]))
     }
 
     func testWindowProjectionReflectsEmittedTopologyImmediately() async throws {

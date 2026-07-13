@@ -751,6 +751,16 @@ final class TmuxSessionController: @unchecked Sendable {
         submit(request: .selectWindow) { ghostty_tmux_session_request_select_window($0, windowID.rawValue) }
     }
 
+    func requestSelectWindowZoomedPane(windowID: TmuxWindowID, paneID: TmuxPaneID) {
+        submit(request: .selectWindow) {
+            ghostty_tmux_session_request_select_window_zoomed_pane(
+                $0,
+                windowID.rawValue,
+                paneID.rawValue
+            )
+        }
+    }
+
     func requestSelectPane(paneID: TmuxPaneID) {
         GhosttyRuntimeTrace.flowEventIfActive(
             GhosttyRuntimeTrace.paneSwitchFlow,

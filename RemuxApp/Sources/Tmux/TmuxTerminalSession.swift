@@ -284,6 +284,11 @@ final class TmuxTerminalSession: ObservableObject {
         }
     }
 
+    func prepareForGroupedWindowSelection(paneID: TmuxPaneID) {
+        guard pendingPaneID == paneID else { return }
+        paneZoomState = .awaiting(paneID)
+    }
+
     private func presentActivePane(
         from snapshot: TmuxSessionController.TopologySnapshot
     ) {
