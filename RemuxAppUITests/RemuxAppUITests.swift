@@ -143,11 +143,12 @@ final class RemuxAppUITests: XCTestCase {
 
         waitForLiveTerminalReady(timeout: 60)
 
-        let keyboard = app.buttons["terminal.keyboard"]
-        XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
-        keyboard.tap()
+        let terminal = app.otherElements["terminal.screen"].firstMatch
+        XCTAssertTrue(terminal.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        terminal.tap()
         XCTAssertNotNil(
-            waitForKeyboardPresence(true, label: "initial system show")
+            waitForKeyboardPresence(true, label: "terminal tap show")
         )
 
         waitForLiveTerminalInputReady(timeout: 10)
@@ -155,6 +156,9 @@ final class RemuxAppUITests: XCTestCase {
             "for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do echo REMUX_KEYBOARD_RESIZE_RENDER_$n ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789; done\r"
         )
         assertLiveTerminalScreenshotContainsRenderedContent()
+
+        let keyboard = app.buttons["terminal.keyboard"]
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
         keyboard.tap()
         XCTAssertNotNil(
             waitForKeyboardPresence(false, label: "system hide")

@@ -528,7 +528,23 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func showSystemKeyboard() {
         GhosttyRuntimeTrace.flowEventIfActive("terminal.input", event: "ui.showSystemKeyboard")
-        inputCoordinator.showSystemKeyboard(isInputAvailable: isTerminalInputAvailable)
+        let isInputAvailable = isTerminalInputAvailable
+        guard isInputAvailable else { return }
+
+        performKeyboardChromeStateChange {
+            if inputCoordinator.keyboardMode == .hidden {
+                let projection = GhosttyKeyboardToggleProjection(
+                    keyboardMode: inputCoordinator.keyboardMode,
+                    isInputAvailable: isInputAvailable
+                )
+                if let request = keyboardViewportTransitionCoordinator.transitionRequest(
+                    forToggle: projection
+                ) {
+                    _ = beginKeyboardViewportTransition(request)
+                }
+            }
+            inputCoordinator.showSystemKeyboard(isInputAvailable: isInputAvailable)
+        }
     }
 
     private func handleSurfaceTap(_ surfaceID: UUID) {
@@ -540,12 +556,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 "workspaceID": presentation.workspaceID.uuidString,
             ]
         )
-        let didActivatePane = model.focusTmuxPane(surfaceID).isHandled
-        inputCoordinator.handleSurfaceTap(isInputAvailable: didActivatePane)
+        let isInputAvailable = isTerminalInputAvailable
+        showSystemKeyboard()
         GhosttyRuntimeTrace.flowEvent(
             "terminal.input",
             event: "ui.tap.surface.end",
-            fields: ["activated": "\(didActivatePane)"]
+            fields: ["activated": "\(isInputAvailable)"]
         )
     }
 

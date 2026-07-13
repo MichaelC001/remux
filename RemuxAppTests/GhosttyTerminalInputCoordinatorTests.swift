@@ -21,26 +21,6 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.terminalActivationToken, 0)
     }
 
-    func testSurfaceTapFromHiddenActivatesSystemKeyboard() {
-        var coordinator = GhosttyTerminalInputCoordinator()
-
-        coordinator.handleSurfaceTap(isInputAvailable: true)
-
-        XCTAssertEqual(coordinator.keyboardMode, .system)
-        XCTAssertEqual(coordinator.terminalActivationToken, 1)
-    }
-
-    func testSurfaceTapFromSystemRequestsFreshActivation() {
-        var coordinator = GhosttyTerminalInputCoordinator()
-        coordinator.showSystemKeyboard(isInputAvailable: true)
-
-        coordinator.handleSurfaceTap(isInputAvailable: true)
-
-        XCTAssertEqual(coordinator.keyboardMode, .system)
-        XCTAssertEqual(coordinator.terminalActivationToken, 2)
-        XCTAssertFalse(coordinator.isDismissSystemKeyboardRequested)
-    }
-
     func testToggleKeyboardFromHiddenShowsSystemKeyboard() {
         var coordinator = GhosttyTerminalInputCoordinator()
 

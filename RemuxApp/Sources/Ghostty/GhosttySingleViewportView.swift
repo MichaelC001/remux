@@ -126,11 +126,22 @@ private final class GhosttySingleViewportContainerView: UIView,
         return recognizer
     }()
 
-    private lazy var inputActivationTapRecognizer: UITapGestureRecognizer = {
+    private lazy var surfaceTapRecognizer: UITapGestureRecognizer = {
         let recognizer = UITapGestureRecognizer(
             target: self,
-            action: #selector(handleInputActivationTap(_:))
+            action: #selector(handleSurfaceTap(_:))
         )
+        recognizer.cancelsTouchesInView = false
+        recognizer.delegate = self
+        return recognizer
+    }()
+
+    private lazy var selectionLongPressRecognizer: UILongPressGestureRecognizer = {
+        let recognizer = UILongPressGestureRecognizer(
+            target: self,
+            action: #selector(handleSelectionLongPress(_:))
+        )
+        recognizer.minimumPressDuration = 0.45
         recognizer.cancelsTouchesInView = false
         recognizer.delegate = self
         return recognizer
@@ -142,8 +153,10 @@ private final class GhosttySingleViewportContainerView: UIView,
         super.init(frame: frame)
         clipsToBounds = true
         panRecognizer.delegate = self
+        surfaceTapRecognizer.require(toFail: selectionLongPressRecognizer)
         addGestureRecognizer(panRecognizer)
-        addGestureRecognizer(inputActivationTapRecognizer)
+        addGestureRecognizer(selectionLongPressRecognizer)
+        addGestureRecognizer(surfaceTapRecognizer)
         addInteraction(selectionEditMenuInteraction)
     }
 
@@ -260,7 +273,6 @@ private final class GhosttySingleViewportContainerView: UIView,
         activeContainer = container
         activeSurfaceID = desiredID
         container.backgroundColor = .clear
-        ensureInteractionRecognizers(for: surface.view)
         let changed = container.update(
             surface: surface,
             displayScale: effectiveScale,
@@ -342,47 +354,11 @@ private final class GhosttySingleViewportContainerView: UIView,
         layoutActiveSurface()
     }
 
-    private func ensureInteractionRecognizers(for view: UIView) {
-        let recognizers = view.gestureRecognizers ?? []
-        let existingLongPress = recognizers.compactMap { $0 as? UILongPressGestureRecognizer }.first
-        let existingTap = recognizers.compactMap { $0 as? UITapGestureRecognizer }.first
-        let longPress = existingLongPress ?? makeSelectionLongPressRecognizer(for: view)
-        let tap = existingTap ?? makeTapRecognizer(for: view)
-        longPress.delegate = self
-        tap.delegate = self
-        if existingLongPress == nil || existingTap == nil {
-            tap.require(toFail: longPress)
-        }
-    }
-
-    private func makeTapRecognizer(for view: UIView) -> UITapGestureRecognizer {
-        let recognizer = UITapGestureRecognizer(
-            target: self,
-            action: #selector(handleSurfaceTap(_:))
-        )
-        view.addGestureRecognizer(recognizer)
-        return recognizer
-    }
-
-    private func makeSelectionLongPressRecognizer(
-        for view: UIView
-    ) -> UILongPressGestureRecognizer {
-        let recognizer = UILongPressGestureRecognizer(
-            target: self,
-            action: #selector(handleSelectionLongPress(_:))
-        )
-        recognizer.minimumPressDuration = 0.45
-        recognizer.cancelsTouchesInView = false
-        view.addGestureRecognizer(recognizer)
-        return recognizer
-    }
-
     @objc
     private func handleSelectionLongPress(_ recognizer: UILongPressGestureRecognizer) {
         guard materializationContext.isAvailable,
               let surfaceID = projection.surfaceID,
               let surface = materializationContext.managedSurface(for: surfaceID),
-              recognizer.view === surface.view,
               let phase = GhosttySurfaceLongPressSelectionGesture.Phase(recognizer.state)
         else { return }
 
@@ -442,10 +418,10 @@ private final class GhosttySingleViewportContainerView: UIView,
 
     @objc
     private func handleSurfaceTap(_ recognizer: UITapGestureRecognizer) {
-        guard materializationContext.isAvailable,
+        guard recognizer.state == .ended,
+              materializationContext.isAvailable,
               let surfaceID = projection.surfaceID,
-              let surface = materializationContext.managedSurface(for: surfaceID),
-              recognizer.view === surface.view
+              let surface = materializationContext.managedSurface(for: surfaceID)
         else { return }
 
         let mouseCaptured = isMouseCaptured(surfaceID)
@@ -466,12 +442,6 @@ private final class GhosttySingleViewportContainerView: UIView,
                 _ = submitMouseButton?(surfaceID, event)
             }
         }
-    }
-
-    @objc
-    private func handleInputActivationTap(_ recognizer: UITapGestureRecognizer) {
-        guard recognizer.state == .ended, let surfaceID = projection.surfaceID else { return }
-        onSurfaceTap?(surfaceID)
     }
 
     @objc

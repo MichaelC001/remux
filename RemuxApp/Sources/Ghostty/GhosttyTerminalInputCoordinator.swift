@@ -13,11 +13,6 @@ struct GhosttyTerminalInputCoordinator: Equatable {
         terminalActivationToken += 1
     }
 
-    mutating func handleSurfaceTap(isInputAvailable: Bool) {
-        guard isInputAvailable else { return }
-        showSystemKeyboard(isInputAvailable: true)
-    }
-
     mutating func toggleKeyboard(isInputAvailable: Bool) {
         switch keyboardMode.toggledKeyboard() {
         case .system:
