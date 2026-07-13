@@ -785,7 +785,8 @@ final class RemuxAppUITests: XCTestCase {
         openPanesSheet()
         XCTAssertTrue(app.buttons["terminal.pane.tile.1"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["terminal.pane.tile.2"].waitForExistence(timeout: 10))
-        dismissTopSheetIfPresent()
+        tapPickerButton(identifier: "terminal.pane.tile.1", fallbackLabel: "Pane 1 of 2")
+        waitForLiveTerminalReady(timeout: 30)
 
         sendTerminalCommand("echo REMUX_FOREGROUND_BEFORE")
         backgroundAndReactivateApp(backgroundDuration: 4)
