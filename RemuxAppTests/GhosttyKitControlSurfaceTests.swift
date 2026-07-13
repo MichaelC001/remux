@@ -210,6 +210,27 @@ final class GhosttyKitControlSurfaceTests: XCTestCase {
 
         XCTAssertEqual(decoded, value)
     }
+
+    func testManagedSurfaceReportsOnlyRealVisibilityTransitions() throws {
+        let runtime = try GhosttyKitRuntime()
+        let view = GhosttyKitSurfaceView(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
+        let controlSurface = try runtime.makeManualHostSurface(view: view)
+        var transitions: [Bool] = []
+        let surface = GhosttyManagedSurface(
+            id: UUID(),
+            view: view,
+            controlSurface: controlSurface,
+            visibilityChanged: { transitions.append($0) }
+        )
+
+        surface.setVisible(true)
+        surface.setVisible(true)
+        surface.setVisible(false)
+        surface.setVisible(false)
+
+        XCTAssertEqual(transitions, [true, false])
+    }
+
     @MainActor
     func testInvalidatedControlSurfaceNoOpsSafely() throws {
         let runtime = try GhosttyKitRuntime()

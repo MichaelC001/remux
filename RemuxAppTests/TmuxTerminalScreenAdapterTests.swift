@@ -123,7 +123,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         await session.shutdown()
     }
 
-    func testPendingPresentationFollowsActivePaneSwitch() async throws {
+    func testTopologyNeverPublishesOutgoingFrameHold() async throws {
         let runtime = try GhosttyKitRuntime()
         let session = makeSession(runtime: runtime)
         let adapter = TmuxTerminalScreenAdapter()
@@ -134,81 +134,23 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         )
 
         session.handleTopology(TmuxSessionController.TopologySnapshot(
-            sessionName: "pending-test",
+            sessionName: "background-test",
             windows: [window(id: 1, active: true, paneID: 10)],
             panes: [pane(id: 10, windowID: 1), pane(id: 20, windowID: 1)],
             activeWindowID: 1
         ))
-        let firstPending = try XCTUnwrap(
+        XCTAssertNil(
             adapter.terminalScreenPresentationProjection.viewport.pendingPresentationID
         )
 
         session.handleTopology(TmuxSessionController.TopologySnapshot(
-            sessionName: "pending-test",
+            sessionName: "background-test",
             windows: [window(id: 1, active: true, paneID: 20)],
             panes: [pane(id: 10, windowID: 1), pane(id: 20, windowID: 1)],
             activeWindowID: 1
         ))
-
-        let secondPending = try XCTUnwrap(
-            adapter.terminalScreenPresentationProjection.viewport.pendingPresentationID
-        )
-        XCTAssertNotEqual(secondPending, firstPending)
-        XCTAssertNotNil(
-            secondPending,
-            "switching the active pane must hold presentation until the new surface displays"
-        )
-
-        await session.shutdown()
-    }
-
-    func testPendingPresentationTimeoutDropsHoldUntilPaneChanges() async throws {
-        let runtime = try GhosttyKitRuntime()
-        let session = makeSession(runtime: runtime)
-        let adapter = TmuxTerminalScreenAdapter()
-        adapter.pendingPresentationTimeout = .milliseconds(40)
-        adapter.activate(
-            session: session,
-            initialViewportHandler: { _, _ in },
-            clientSizeHandler: { _ in }
-        )
-
-        let firstTopology = TmuxSessionController.TopologySnapshot(
-            sessionName: "pending-test",
-            windows: [window(id: 1, active: true, paneID: 10)],
-            panes: [pane(id: 10, windowID: 1), pane(id: 20, windowID: 1)],
-            activeWindowID: 1
-        )
-        session.handleTopology(firstTopology)
-        XCTAssertNotNil(
-            adapter.terminalScreenPresentationProjection.viewport.pendingPresentationID
-        )
-
-        let deadline = Date().addingTimeInterval(2)
-        while Date() < deadline,
-              adapter.terminalScreenPresentationProjection.viewport.pendingPresentationID != nil {
-            try await Task.sleep(for: .milliseconds(20))
-        }
         XCTAssertNil(
-            adapter.terminalScreenPresentationProjection.viewport.pendingPresentationID,
-            "a pending surface that never displays must stop holding presentation"
-        )
-
-        session.handleTopology(firstTopology)
-        XCTAssertNil(
-            adapter.terminalScreenPresentationProjection.viewport.pendingPresentationID,
-            "an abandoned pending pane must not re-hold until the active pane changes"
-        )
-
-        session.handleTopology(TmuxSessionController.TopologySnapshot(
-            sessionName: "pending-test",
-            windows: [window(id: 1, active: true, paneID: 20)],
-            panes: [pane(id: 10, windowID: 1), pane(id: 20, windowID: 1)],
-            activeWindowID: 1
-        ))
-        XCTAssertNotNil(
-            adapter.terminalScreenPresentationProjection.viewport.pendingPresentationID,
-            "a different active pane must hold presentation again"
+            adapter.terminalScreenPresentationProjection.viewport.pendingPresentationID
         )
 
         await session.shutdown()
@@ -290,71 +232,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         XCTAssertEqual(cache.preview(for: 1)?.source, .remotePaneGeometry)
     }
 
-    func testPanePreviewGridUsesFullWindowGeometry() {
-        let grid = TmuxTerminalScreenAdapter.panePreviewGrid(
-            windowWidth: 160,
-            windowHeight: 24,
-            cellWidthPx: 10,
-            cellHeightPx: 20,
-            budgetWidthPx: 400,
-            budgetHeightPx: 300
-        )
-        XCTAssertEqual(grid, TmuxSessionController.ClientSize(cols: 160, rows: 24))
-    }
-
-    func testPanePreviewGridCropsTallPanesToTileAspect() {
-        let grid = TmuxTerminalScreenAdapter.panePreviewGrid(
-            windowWidth: 160,
-            windowHeight: 200,
-            cellWidthPx: 10,
-            cellHeightPx: 20,
-            budgetWidthPx: 400,
-            budgetHeightPx: 300
-        )
-        XCTAssertEqual(grid, TmuxSessionController.ClientSize(cols: 160, rows: 60))
-    }
-
-    func testPanePreviewGridRequiresRealGeometry() {
-        XCTAssertNil(
-            TmuxTerminalScreenAdapter.panePreviewGrid(
-                windowWidth: 0,
-                windowHeight: 24,
-                cellWidthPx: 10,
-                cellHeightPx: 20,
-                budgetWidthPx: 400,
-                budgetHeightPx: 300
-            )
-        )
-        XCTAssertNil(
-            TmuxTerminalScreenAdapter.panePreviewGrid(
-                windowWidth: 160,
-                windowHeight: 0,
-                cellWidthPx: 10,
-                cellHeightPx: 20,
-                budgetWidthPx: 400,
-                budgetHeightPx: 300
-            )
-        )
-        XCTAssertNil(
-            TmuxTerminalScreenAdapter.panePreviewGrid(
-                windowWidth: 160,
-                windowHeight: 24,
-                cellWidthPx: 0,
-                cellHeightPx: 20,
-                budgetWidthPx: 400,
-                budgetHeightPx: 300
-            )
-        )
-        XCTAssertNil(
-            TmuxTerminalScreenAdapter.panePreviewGrid(
-                windowWidth: 160,
-                windowHeight: 24,
-                cellWidthPx: 10,
-                cellHeightPx: 20,
-                budgetWidthPx: 0,
-                budgetHeightPx: 300
-            )
-        )
+    func testPanePreviewOptionsRequireNonzeroPixelBudget() {
         XCTAssertNil(
             TmuxTerminalScreenAdapter.panePreviewOptions(
                 options: ghostty_surface_preview_image_options_s(

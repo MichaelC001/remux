@@ -188,7 +188,7 @@ final class TmuxScreenModel: ObservableObject {
     func handleAppLifecyclePhase(_ phase: GhosttyAppLifecyclePhase) {
         // Presentation discontinuity handling lives in the renderer
         // (visibility-resume full damage); here we gate drawing.
-        session?.paneSurface?.setVisible(phase == .active)
+        session?.setAppActive(phase == .active)
 
         guard phase == .active else { return }
         guard let session, case .ready = session.state else {
@@ -258,7 +258,7 @@ final class TmuxScreenModel: ObservableObject {
     func applyTerminalSettings(_ settings: TerminalSettings) throws {
         currentTerminalSettings = settings
         try runtime?.applyTerminalSettings(settings)
-        session?.paneSurface?.view.applyTerminalTheme(settings.theme)
+        session?.applyTerminalTheme(settings.theme)
     }
 
     func stop() async {

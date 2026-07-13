@@ -55,13 +55,11 @@ private struct GhosttySingleViewportRepresentable: UIViewRepresentable {
 
     func makeUIView(context: Context) -> GhosttySingleViewportContainerView {
         let view = GhosttySingleViewportContainerView()
-        view.terminalTheme = terminalTheme
         view.backgroundColor = terminalTheme.terminalBackgroundUIColor
         return view
     }
 
     func updateUIView(_ view: GhosttySingleViewportContainerView, context: Context) {
-        view.terminalTheme = terminalTheme
         view.backgroundColor = terminalTheme.terminalBackgroundUIColor
         view.update(
             projection: projection,
@@ -95,11 +93,6 @@ private final class GhosttySingleViewportContainerView: UIView,
     private var projection = GhosttyTerminalViewportPresentationProjection.empty
     private var activeContainer: GhosttyPaneScrollContainerView?
     private var activeSurfaceID: UUID?
-    private var heldContainer: GhosttyPaneScrollContainerView?
-    private var heldSurfaceID: UUID?
-    private var heldInteractionEnabled = true
-    private var presentationOverlayView: UIView?
-    private var presentationOverlayPendingID: UUID?
 
     private var onSurfaceTap: ((UUID) -> Void)?
     private var onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?
@@ -122,8 +115,6 @@ private final class GhosttySingleViewportContainerView: UIView,
     private var activeSelectionSurfaceID: UUID?
     private var selectionCopyMenuSurfaceID: UUID?
     private var selectionCopyMenuSourcePoint = CGPoint.zero
-
-    var terminalTheme: TerminalTheme = .ghosttyDefault
 
     private lazy var panRecognizer: UIPanGestureRecognizer = {
         let recognizer = UIPanGestureRecognizer(
@@ -175,13 +166,6 @@ private final class GhosttySingleViewportContainerView: UIView,
         submitMouseScroll: ((UUID, GhosttySurfaceMouseScrollEvent) -> GhosttyMouseInputSubmissionOutcome)?,
         submitMousePressure: ((UUID, GhosttySurfaceMousePressureEvent) -> GhosttyMouseInputSubmissionOutcome)?
     ) {
-        let previousSourceIdentity = self.materializationContext.sourceIdentity
-        updatePresentationHold(
-            pendingID: projection.pendingPresentationID,
-            desiredSurfaceID: projection.surfaceID,
-            canRetainActiveContainer: previousSourceIdentity == materializationContext.sourceIdentity
-        )
-
         self.projection = projection
         self.materializationContext = materializationContext
         self.onSurfaceTap = onSurfaceTap
@@ -215,16 +199,8 @@ private final class GhosttySingleViewportContainerView: UIView,
         if let container = activeContainer {
             retire(container: container)
         }
-        if let container = heldContainer {
-            retire(container: container)
-        }
-        presentationOverlayView?.removeFromSuperview()
         activeContainer = nil
         activeSurfaceID = nil
-        heldContainer = nil
-        heldSurfaceID = nil
-        presentationOverlayView = nil
-        presentationOverlayPendingID = nil
         materializationContext = .empty
         projection = .empty
 
@@ -248,7 +224,6 @@ private final class GhosttySingleViewportContainerView: UIView,
     override func layoutSubviews() {
         super.layoutSubviews()
         layoutActiveSurface()
-        layoutPresentationOverlay()
     }
 
     private func syncActiveSurface() {
@@ -258,7 +233,7 @@ private final class GhosttySingleViewportContainerView: UIView,
         defer {
             if let startedAt {
                 GhosttyRuntimeTrace.perf(
-                    "viewport.sync surface=\(ghosttyDiagnosticShortID(projection.surfaceID)) attached=\(activeContainer == nil ? 0 : 1) held=\(heldContainer == nil ? 0 : 1) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt))"
+                    "viewport.sync surface=\(ghosttyDiagnosticShortID(projection.surfaceID)) attached=\(activeContainer == nil ? 0 : 1) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt))"
                 )
             }
         }
@@ -276,7 +251,6 @@ private final class GhosttySingleViewportContainerView: UIView,
         if activeSurfaceID != desiredID {
             retireActiveContainer()
         }
-        guard heldSurfaceID != desiredID else { return }
         guard let surface = materializationContext.managedSurface(for: desiredID) else {
             retireActiveContainer()
             return
@@ -345,6 +319,14 @@ private final class GhosttySingleViewportContainerView: UIView,
         }
         surface.setVisible(true)
         surface.setFocused(true)
+        GhosttyRuntimeTrace.flowEndIfActive(
+            GhosttyRuntimeTrace.paneSwitchFlow,
+            event: "presentation.reveal.ready",
+            fields: [
+                "surface_uuid": surface.id.uuidString,
+                "wall_ns": "\(GhosttyRuntimeTrace.wallNanos())",
+            ]
+        )
         if let startedAt {
             GhosttyRuntimeTrace.perf(
                 "viewport.layout bounds=\(ghosttyDiagnosticRect(bounds)) changed=\(changedFrame || changedContainer) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt))"
@@ -358,85 +340,6 @@ private final class GhosttySingleViewportContainerView: UIView,
             return
         }
         layoutActiveSurface()
-        layoutPresentationOverlay()
-    }
-
-    private func updatePresentationHold(
-        pendingID: UUID?,
-        desiredSurfaceID: UUID?,
-        canRetainActiveContainer: Bool
-    ) {
-        guard let pendingID else {
-            clearPresentationHold(desiredSurfaceID: desiredSurfaceID)
-            return
-        }
-        // A selection can publish "outgoing pane has no surface" before tmux
-        // confirms the incoming pane. That changes the pending identity, but
-        // it is still one uninterrupted handoff: retain the outgoing frame.
-        if presentationOverlayView != nil, canRetainActiveContainer {
-            presentationOverlayPendingID = pendingID
-            return
-        }
-        clearPresentationHold(desiredSurfaceID: desiredSurfaceID)
-        guard bounds.width > 1, bounds.height > 1 else { return }
-
-        let overlay = UIView(frame: bounds)
-        overlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        overlay.clipsToBounds = true
-        overlay.isUserInteractionEnabled = false
-
-        if canRetainActiveContainer,
-           let container = activeContainer,
-           let surfaceID = activeSurfaceID {
-            heldInteractionEnabled = container.isUserInteractionEnabled
-            container.isUserInteractionEnabled = false
-            container.removeFromSuperview()
-            overlay.addSubview(container)
-            heldContainer = container
-            heldSurfaceID = surfaceID
-            activeContainer = nil
-            activeSurfaceID = nil
-            overlay.backgroundColor = .clear
-        } else {
-            overlay.backgroundColor = terminalTheme.terminalBackgroundUIColor
-        }
-
-        addSubview(overlay)
-        presentationOverlayView = overlay
-        presentationOverlayPendingID = pendingID
-    }
-
-    private func clearPresentationHold(desiredSurfaceID: UUID?) {
-        guard presentationOverlayView != nil || heldContainer != nil else {
-            presentationOverlayPendingID = nil
-            return
-        }
-
-        if let container = heldContainer, let surfaceID = heldSurfaceID {
-            container.isUserInteractionEnabled = heldInteractionEnabled
-            if desiredSurfaceID == surfaceID,
-               materializationContext.managedSurface(for: surfaceID) != nil {
-                container.removeFromSuperview()
-                addSubview(container)
-                activeContainer = container
-                activeSurfaceID = surfaceID
-            } else {
-                retire(container: container)
-            }
-        }
-
-        heldContainer = nil
-        heldSurfaceID = nil
-        presentationOverlayView?.removeFromSuperview()
-        presentationOverlayView = nil
-        presentationOverlayPendingID = nil
-    }
-
-    private func layoutPresentationOverlay() {
-        guard let overlay = presentationOverlayView else { return }
-        overlay.frame = bounds
-        heldContainer?.frame = overlay.bounds
-        bringSubviewToFront(overlay)
     }
 
     private func ensureInteractionRecognizers(for view: UIView) {

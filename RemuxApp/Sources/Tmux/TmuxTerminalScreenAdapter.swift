@@ -9,11 +9,9 @@ import GhosttyKit
 /// full terminal UX — renders it unchanged.
 ///
 /// Topology mapping: tmux window/pane IDs (UInt64) are mapped to stable UUIDs
-/// for the screen's projections; the active window's active pane is the only
-/// materialized surface (the phone presentation shows exactly the focused
-/// leaf, matching the legacy pipeline). The bound pane is wrapped in a
-/// `GhosttyManagedSurface` over a borrowed control surface, so the existing
-/// input, scroll, and selection machinery operates on it directly.
+/// for the screen's projections. The session may retain multiple real pane
+/// surfaces, while this adapter publishes only the active pane's stable
+/// `GhosttyManagedSurface` to the phone viewport.
 @MainActor
 final class TmuxTerminalScreenAdapter: ObservableObject {
     private static let panePreviewCacheByteLimit = 8 * 1024 * 1024
@@ -40,33 +38,8 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         byteLimit: TmuxTerminalScreenAdapter.panePreviewCacheByteLimit
     )
     private var panePreviewCaptureSession: GhosttyPanePreviewSession?
-    private var pickerPreviewGeneration: UInt64 = 0
-    private var pickerPreviewReleaseCoverage: PickerPreviewReleaseCoverage = .inactive
-
-    private enum PanePreviewRequestPurpose {
-        case picker(UInt64)
-        case beforeRelease
-    }
-
-    private enum PickerPreviewReleaseCoverage {
-        case inactive
-        case refreshing(generation: UInt64)
-        case ready(generation: UInt64, surfaceID: UUID)
-        case armed(generation: UInt64, surfaceID: UUID)
-    }
-
-    /// Presentation hold: while the active leaf has no surface that has
-    /// completed a layout-sized display update, the snapshot carries the
-    /// leaf as pending and the tree view keeps the outgoing pane's frame
-    /// on screen (presentation overlay) instead of flashing empty.
-    private var displayedPresentationPaneID: TmuxPaneID?
-    private var abandonedPendingPresentationPaneID: TmuxPaneID?
-    private var pendingPresentationTimeoutTask: Task<Void, Never>?
-    private var pendingPresentationTimeoutSurfaceID: UUID?
-    /// Safety net: the visual handoff is allowed to cover a short
-    /// bind/layout/render race, not wait for an app inside tmux to
-    /// repaint. Tests shorten it further.
-    var pendingPresentationTimeout: Duration = .milliseconds(180)
+    private var warmingPreviewProvenance: GhosttyPanePreviewSession.FullViewportProvenance?
+    private var warmingPreviewPaneID: TmuxPaneID?
 
     private var commandFailureMessage: String?
     private(set) var commandFailureEvent: GhosttyTmuxCommandFailureEvent?
@@ -104,6 +77,11 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
             .sink { [weak self] topology in
                 guard let self else { return }
                 self.latestTopology = topology
+                if let paneSurface = self.session?.paneSurface {
+                    let windowID = topology?.panes
+                        .first(where: { $0.id == paneSurface.paneID })?.windowID
+                    paneSurface.updateWindowID(windowID)
+                }
                 if let topology {
                     self.reconcilePanePreviewCache(with: topology)
                 } else {
@@ -116,7 +94,6 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         session.$paneSurface
             .sink { [weak self] paneSurface in
                 self?.rebuildActiveManagedSurface(for: paneSurface)
-                self?.rebuildTopologySnapshot()
                 self?.objectWillChange.send()
             }
             .store(in: &subscriptions)
@@ -143,12 +120,6 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         clientSizeHandler = nil
         latestTopology = nil
         cachedTopologySnapshot = Self.emptyTopologySnapshot
-        pendingPresentationTimeoutTask?.cancel()
-        pendingPresentationTimeoutTask = nil
-        pendingPresentationTimeoutSurfaceID = nil
-        displayedPresentationPaneID = nil
-        abandonedPendingPresentationPaneID = nil
-        clearPickerPreviewReleaseCoverage()
     }
 
     // MARK: Topology synthesis
@@ -163,7 +134,6 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
 
     private func rebuildTopologySnapshot() {
         guard let topology = latestTopology else {
-            updatePendingPresentationTimeout(nil)
             cachedTopologySnapshot = Self.emptyTopologySnapshot
             return
         }
@@ -182,70 +152,11 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
             )
         }
 
-        let pending = pendingPresentationSurfaceID(in: topology)
-        updatePendingPresentationTimeout(pending)
         cachedTopologySnapshot = GhosttyRuntimeSurfaceTopologySnapshot(
             topLevels: topLevels,
             selectedTopLevelID: topology.activeWindowID.map { identities.surfaceID(for: $0) },
-            pendingPhonePresentationSurfaceID: pending
+            pendingPhonePresentationSurfaceID: nil
         )
-    }
-
-    /// The active leaf is pending while no surface for it has completed
-    /// a layout-sized display update: the topology flips to the new pane
-    /// several frames before its surface can draw (bind, create, attach,
-    /// layout), and without the hold the tree flashes empty for that gap.
-    private func pendingPresentationSurfaceID(
-        in topology: TmuxSessionController.TopologySnapshot
-    ) -> UUID? {
-        let activePaneID = topology.activeWindowID
-            .flatMap { activeID in topology.windows.first(where: { $0.id == activeID }) }
-            .flatMap(\.activePaneID)
-        if let abandoned = abandonedPendingPresentationPaneID, abandoned != activePaneID {
-            abandonedPendingPresentationPaneID = nil
-        }
-        guard let activePaneID,
-              activePaneID != displayedPresentationPaneID,
-              activePaneID != abandonedPendingPresentationPaneID
-        else { return nil }
-        return identities.surfaceID(for: activePaneID)
-    }
-
-    /// Marks a managed surface as displayed at its laid-out size and, if
-    /// it was the pending presentation, drops the hold. Deferred one
-    /// runloop hop: this fires inside the container's layout pass (no
-    /// observable mutation mid view update), which also gives the
-    /// just-refreshed surface a frame to present before the overlay
-    /// clears.
-    func notePresentationSurfaceDisplayed(_ surfaceID: UUID) {
-        guard activeManagedSurface?.id == surfaceID,
-              let paneID = activeManagedPaneID,
-              displayedPresentationPaneID != paneID
-        else { return }
-        displayedPresentationPaneID = paneID
-        guard cachedTopologySnapshot.pendingPhonePresentationSurfaceID == identities.surfaceID(for: paneID) else { return }
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.rebuildTopologySnapshot()
-            self.objectWillChange.send()
-        }
-    }
-
-    private func updatePendingPresentationTimeout(_ pending: UUID?) {
-        guard pending != pendingPresentationTimeoutSurfaceID else { return }
-        pendingPresentationTimeoutTask?.cancel()
-        pendingPresentationTimeoutTask = nil
-        pendingPresentationTimeoutSurfaceID = pending
-        guard let pending else { return }
-        let timeout = pendingPresentationTimeout
-        pendingPresentationTimeoutTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: timeout)
-            guard !Task.isCancelled, let self else { return }
-            guard self.cachedTopologySnapshot.pendingPhonePresentationSurfaceID == pending else { return }
-            self.abandonedPendingPresentationPaneID = self.identities.paneID(for: pending)
-            self.rebuildTopologySnapshot()
-            self.objectWillChange.send()
-        }
     }
 
     /// Pane geometry is tmux-owned; the phone presents one leaf at a time, so
@@ -291,84 +202,20 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     // MARK: Managed surface lifecycle
 
     private func rebuildActiveManagedSurface(for paneSurface: TmuxPaneSurface?) {
-        if paneSurface == nil {
-            captureActivePanePreviewBeforeRelease()
-        }
         if activeManagedSurface != nil {
             activeManagedSurface = nil
             activeManagedPaneID = nil
-            displayedPresentationPaneID = nil
-            abandonedPendingPresentationPaneID = nil
         }
 
-        guard let paneSurface, let controller else { return }
+        guard let paneSurface else { return }
 
         let paneID = paneSurface.paneID
-        let managedID = paneSurface.instanceID.rawValue
-
         let windowIDForPane = latestTopology?.panes
             .first(where: { $0.id == paneID })?.windowID
-
-        let controlSurface = GhosttyKitControlSurface(
-            surface: paneSurface.rawSurface,
-            ownership: .borrowed,
-            retainedObjects: [paneSurface]
-        )
-        activeManagedSurface = GhosttyManagedSurface(
-            id: managedID,
-            view: paneSurface.view,
-            controlSurface: controlSurface,
-            scrollState: controlSurface.scrollState(),
-            scrollRoute: controlSurface.scrollRoute(),
-            tmuxFocus: { [weak controller] in
-                controller?.requestSelectPane(paneID: paneID)
-                return .queued
-            },
-            tmuxSplit: { [weak controller] direction in
-                // Zoomed split: the new pane immediately owns the full
-                // client size (phone presentation policy).
-                controller?.requestSplit(
-                    paneID: paneID,
-                    direction: TmuxSessionController.SplitDirection(actionDirection: direction),
-                    zoom: true
-                )
-                return .queued
-            },
-            tmuxClosePane: { [weak controller] in
-                controller?.requestClosePane(paneID: paneID)
-                return .queued
-            },
-            tmuxCloseWindow: { [weak controller] in
-                if let windowIDForPane {
-                    controller?.requestCloseWindow(windowID: windowIDForPane)
-                    return .queued
-                }
-                return .noTarget
-            },
-            tmuxCopyMode: { [weak controller] in
-                controller?.requestCopyMode(paneID: paneID)
-                return .queued
-            },
-            // The pane surface's lifecycle (surface free, then unbind) is
-            // owned by TmuxTerminalSession; the managed wrapper must not
-            // release anything itself.
-            releaseBeforePermanentRemoval: {},
-            transferRuntimeSurfaceLifetimeToAppShutdown: {}
-        )
-        activeManagedPaneID = paneID
-        GhosttyRuntimeTrace.flowEventIfActive(
-            GhosttyRuntimeTrace.paneSwitchFlow,
-            event: "presentation.managedSurface.ready",
-            fields: [
-                "pane": "\(paneID)",
-                "surface": String(describing: paneSurface.rawSurface),
-                "surface_uuid": managedID.uuidString,
-            ]
-        )
-        // The first real layout-driven display update reports the active
-        // viewport's actual grid, then ends the presentation hold. Pane
-        // surfaces never own connection-level client size.
-        activeManagedSurface?.onDisplayUpdate = { [weak self, weak paneSurface] managed, size, _ in
+        let wasAlreadyWrapped = paneSurface.managedSurface != nil
+        let managed = paneSurface.screenSurface(
+            windowID: windowIDForPane
+        ) { [weak self, weak paneSurface] managed, size, _ in
             guard size.width > 1, size.height > 1 else { return }
             GhosttyRuntimeTrace.flowEventOnce(
                 GhosttyRuntimeTrace.paneSwitchFlow,
@@ -381,14 +228,26 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
                 ]
             )
             self?.reportClientSizeIfActive(managed)
-            paneSurface?.refreshAfterInitialLayout()
-            self?.notePresentationSurfaceDisplayed(managedID)
+            paneSurface?.completeInitialLayout()
+            if let paneSurface {
+                self?.warmFullViewportPreviewIfNeeded(
+                    paneSurface: paneSurface,
+                    managedSurface: managed
+                )
+            }
         }
-        // The session frees the pane surface on pane changes while the
-        // viewport may still hold this wrapper in its outgoing container;
-        // invalidate the borrowed handle the moment the close starts.
-        paneSurface.onClose = { [weak controlSurface] in
-            controlSurface?.invalidate()
+        activeManagedSurface = managed
+        activeManagedPaneID = paneID
+        if !wasAlreadyWrapped {
+            GhosttyRuntimeTrace.flowEventIfActive(
+                GhosttyRuntimeTrace.paneSwitchFlow,
+                event: "presentation.managedSurface.ready",
+                fields: [
+                    "pane": "\(paneID)",
+                    "surface": String(describing: paneSurface.rawSurface),
+                    "surface_uuid": managed.id.uuidString,
+                ]
+            )
         }
     }
 
@@ -424,12 +283,6 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     // MARK: Command failures
 
     private func presentCommandFailure(for request: TmuxSessionController.Request) {
-        if case .armed(let generation, let surfaceID) = pickerPreviewReleaseCoverage {
-            pickerPreviewReleaseCoverage = .ready(
-                generation: generation,
-                surfaceID: surfaceID
-            )
-        }
         commandFailureToken &+= 1
         let message = "tmux: \(Self.failureLabel(for: request)) failed"
         commandFailureMessage = message
@@ -518,21 +371,15 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         leafIDs: [UUID],
         previewSizing: GhosttyPanePreviewSession.PreviewSizing
     ) -> GhosttyPanePreviewSession {
-        pickerPreviewGeneration &+= 1
-        pickerPreviewReleaseCoverage = .refreshing(
-            generation: pickerPreviewGeneration
-        )
         return newPanePreviewSession(
             leafIDs: leafIDs,
-            previewSizing: previewSizing,
-            purpose: .picker(pickerPreviewGeneration)
+            previewSizing: previewSizing
         )
     }
 
     private func newPanePreviewSession(
         leafIDs: [UUID],
-        previewSizing: GhosttyPanePreviewSession.PreviewSizing,
-        purpose: PanePreviewRequestPurpose
+        previewSizing: GhosttyPanePreviewSession.PreviewSizing
     ) -> GhosttyPanePreviewSession {
         GhosttyPanePreviewSession(
             leafIDs: leafIDs,
@@ -560,13 +407,6 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                             completion(.rejected)
                             return
                         }
-                        if case .beforeRelease = purpose {
-                            GhosttyRuntimeTrace.flowEventIfActive(
-                                GhosttyRuntimeTrace.paneSwitchFlow,
-                                event: "preview.capture.accepted.beforeRelease",
-                                fields: ["pane": "\(paneID)"]
-                            )
-                        }
                         let size = activeSurface.controlSurface.currentSize()
                         let source: GhosttyPanePreviewSession.PreviewSource
                         if size.width_px > 0, size.height_px > 0 {
@@ -592,10 +432,9 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                         completion(.surfaceUnavailable)
                         return
                     }
-                    guard let renderRequest = self.panePreviewRequest(
-                        paneID: paneID,
-                        options: options
-                    ) else {
+                    guard self.latestTopology?.panes.contains(where: { $0.id == paneID }) == true,
+                          let renderOptions = Self.panePreviewOptions(options: options)
+                    else {
                         completion(.surfaceUnavailable)
                         return
                     }
@@ -609,8 +448,8 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                     controller.renderPanePreviewImageAsync(
                         paneID: paneID,
                         styleSurface: styleSurface,
-                        options: renderRequest.options,
-                        previewGrid: renderRequest.grid,
+                        options: renderOptions,
+                        previewGrid: nil,
                         userdata: userdata,
                         callback: callback
                     ) { request in
@@ -673,15 +512,20 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                             "tmuxPane.preview.cache result=evict panes=\(evictedPaneIDs) total=\(self.panePreviewCache.totalByteCost)"
                         )
                     }
-                    if case .picker(let generation) = purpose,
-                       case .fullViewport(let provenance) = preview.source,
-                       case .refreshing(generation) = self.pickerPreviewReleaseCoverage,
-                       self.activeManagedPaneID == paneID,
-                       self.activeManagedSurface?.id == provenance.surfaceID {
-                        self.pickerPreviewReleaseCoverage = .ready(
-                            generation: generation,
-                            surfaceID: provenance.surfaceID
-                        )
+                    if case .fullViewport(let provenance) = preview.source,
+                       provenance == self.warmingPreviewProvenance,
+                       paneID == self.warmingPreviewPaneID {
+                        self.panePreviewCaptureSession?.cancelAll()
+                        self.panePreviewCaptureSession = nil
+                        self.warmingPreviewProvenance = nil
+                        self.warmingPreviewPaneID = nil
+                        if let currentPane = self.session?.paneSurface,
+                           let currentManaged = self.activeManagedSurface {
+                            self.warmFullViewportPreviewIfNeeded(
+                                paneSurface: currentPane,
+                                managedSurface: currentManaged
+                            )
+                        }
                     }
                 }
             )
@@ -699,106 +543,86 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         }
     }
 
-    /// Request acceptance snapshots the live terminal synchronously inside
-    /// libghostty, before `TmuxPaneSurface.close()` frees the native surface.
-    /// Pixel rendering and cache delivery remain asynchronous and therefore
-    /// do not extend the native release critical path.
-    private func captureActivePanePreviewBeforeRelease() {
-        guard session?.state == .ready,
-              let activeSurface = activeManagedSurface,
-              let paneID = activeManagedPaneID
+    /// After the real surface has completed its first full-viewport layout and
+    /// queued its reveal render, warm the picker cache asynchronously. This
+    /// records layout/provenance, not GPU frame completion.
+    private func warmFullViewportPreviewIfNeeded(
+        paneSurface: TmuxPaneSurface,
+        managedSurface: GhosttyManagedSurface
+    ) {
+        guard paneSurface.hasCompletedInitialLayout,
+              session?.state == .ready,
+              activeManagedSurface === managedSurface,
+              activeManagedPaneID == paneSurface.paneID
         else { return }
 
-        if case .armed(_, let coveredSurfaceID) = pickerPreviewReleaseCoverage,
-           coveredSurfaceID == activeSurface.id {
-            pickerPreviewReleaseCoverage = .inactive
-            GhosttyRuntimeTrace.perf(
-                "tmuxPane.preview.capture pane=\(paneID) event=picker-covered-release"
+        let size = managedSurface.controlSurface.currentSize()
+        guard size.width_px > 0, size.height_px > 0 else { return }
+        let provenance = GhosttyPanePreviewSession.FullViewportProvenance(
+            surfaceID: managedSurface.id,
+            pixelWidth: size.width_px,
+            pixelHeight: size.height_px
+        )
+        if case .fullViewport(let cached)? = panePreviewCache
+            .preview(for: paneSurface.paneID)?.source,
+           cached == provenance {
+            return
+        }
+        if let warmingPreviewProvenance {
+            guard warmingPreviewProvenance != provenance else { return }
+            cancelPanePreviewCapture()
+        }
+
+        // Defer submission out of the display-layout callback. The native
+        // preview request snapshots synchronously at acceptance, while pixel
+        // rendering/cache delivery remains off the first-layout path.
+        DispatchQueue.main.async { [weak self, weak paneSurface, weak managedSurface] in
+            guard let self, let paneSurface, let managedSurface,
+                  self.activeManagedSurface === managedSurface,
+                  self.activeManagedPaneID == paneSurface.paneID,
+                  self.warmingPreviewProvenance == nil
+            else { return }
+
+            let currentSize = managedSurface.controlSurface.currentSize()
+            let currentProvenance = GhosttyPanePreviewSession.FullViewportProvenance(
+                surfaceID: managedSurface.id,
+                pixelWidth: currentSize.width_px,
+                pixelHeight: currentSize.height_px
             )
-            return
+            guard currentProvenance.pixelWidth > 0,
+                  currentProvenance.pixelHeight > 0
+            else { return }
+            if case .fullViewport(let cached)? = self.panePreviewCache
+                .preview(for: paneSurface.paneID)?.source,
+               cached == currentProvenance {
+                return
+            }
+
+            let paneUUID = self.identities.surfaceID(for: paneSurface.paneID)
+            let captureSession = self.newPanePreviewSession(
+                leafIDs: [paneUUID],
+                previewSizing: .paneGridForCurrentScreen
+            )
+            self.warmingPreviewProvenance = currentProvenance
+            self.warmingPreviewPaneID = paneSurface.paneID
+            self.panePreviewCaptureSession = captureSession
+            GhosttyRuntimeTrace.perf(
+                "tmuxPane.preview.capture pane=\(paneSurface.paneID) event=post-display-warm"
+            )
+            captureSession.startRefreshing()
         }
-        pickerPreviewReleaseCoverage = .inactive
-
-        let paneUUID = identities.surfaceID(for: paneID)
-        let captureSession = newPanePreviewSession(
-            leafIDs: [paneUUID],
-            previewSizing: .paneGridForCurrentScreen,
-            purpose: .beforeRelease
-        )
-        cancelPanePreviewCapture()
-        panePreviewCaptureSession = captureSession
-        GhosttyRuntimeTrace.perf(
-            "tmuxPane.preview.capture pane=\(paneID) event=before-release"
-        )
-        captureSession.startRefreshing()
-    }
-
-    private func coverNextReleaseWithReadyPickerPreview() {
-        guard let activeSurface = activeManagedSurface,
-              case .ready(let generation, let surfaceID) = pickerPreviewReleaseCoverage,
-              generation == pickerPreviewGeneration,
-              surfaceID == activeSurface.id
-        else {
-            pickerPreviewReleaseCoverage = .inactive
-            return
-        }
-        pickerPreviewReleaseCoverage = .armed(
-            generation: generation,
-            surfaceID: surfaceID
-        )
-    }
-
-    private func clearPickerPreviewReleaseCoverage() {
-        pickerPreviewReleaseCoverage = .inactive
     }
 
     private func cancelPanePreviewCapture() {
         panePreviewCaptureSession?.cancelAll()
         panePreviewCaptureSession = nil
+        warmingPreviewProvenance = nil
+        warmingPreviewPaneID = nil
     }
 
-    private struct PanePreviewRequest {
-        let options: ghostty_surface_preview_image_options_s
-        let grid: TmuxSessionController.ClientSize
-    }
-
-    private func panePreviewRequest(
-        paneID: TmuxPaneID,
-        options: ghostty_surface_preview_image_options_s
-    ) -> PanePreviewRequest? {
-        guard let topology = latestTopology else {
-            return nil
-        }
-        guard let pane = topology.panes.first(where: { $0.id == paneID }) else {
-            return nil
-        }
-        guard let window = topology.windows.first(where: { $0.id == pane.windowID }) else {
-            return nil
-        }
-        guard let surfaceSize = activeManagedSurface?.controlSurface.currentSize() else {
-            return nil
-        }
-        guard let scaledOptions = Self.panePreviewOptions(
-            options: options
-        ) else {
-            return nil
-        }
-        guard let grid = Self.panePreviewGrid(
-            windowWidth: window.width,
-            windowHeight: window.height,
-            cellWidthPx: Double(surfaceSize.cell_width_px),
-            cellHeightPx: Double(surfaceSize.cell_height_px),
-            budgetWidthPx: scaledOptions.max_width_px,
-            budgetHeightPx: scaledOptions.max_height_px
-        ) else {
-            return nil
-        }
-        return PanePreviewRequest(options: scaledOptions, grid: grid)
-    }
-
-    /// Validate the request budget. Split geometry is accepted here only as
-    /// the cold-cache fallback; visited panes use their cached image from a
-    /// real full-viewport live surface.
+    /// Validate the request budget. Cold remote previews leave their grid
+    /// unspecified so libghostty renders the actual captured pane geometry;
+    /// visited panes use their cached genuine full-viewport image.
     static func panePreviewOptions(
         options: ghostty_surface_preview_image_options_s
     ) -> ghostty_surface_preview_image_options_s? {
@@ -806,35 +630,14 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         return options
     }
 
-    /// The offscreen grid for a previewable pane uses the full window
-    /// grid, matching Remux's zoomed phone presentation.
-    static func panePreviewGrid(
-        windowWidth: UInt32,
-        windowHeight: UInt32,
-        cellWidthPx: Double,
-        cellHeightPx: Double,
-        budgetWidthPx: UInt32,
-        budgetHeightPx: UInt32
-    ) -> TmuxSessionController.ClientSize? {
-        guard windowWidth > 0, windowHeight > 0 else { return nil }
-        guard cellWidthPx > 0, cellHeightPx > 0 else { return nil }
-        guard budgetWidthPx > 0, budgetHeightPx > 0 else { return nil }
-
-        let aspectRows = Double(windowWidth) *
-            Double(budgetHeightPx) *
-            cellWidthPx /
-            (Double(budgetWidthPx) * cellHeightPx)
-        let rows = min(max(1, aspectRows.rounded()), Double(windowHeight))
-        return TmuxSessionController.ClientSize(
-            cols: windowWidth,
-            rows: UInt32(rows)
-        )
-    }
-
     private func reconcilePanePreviewCache(
         with topology: TmuxSessionController.TopologySnapshot
     ) {
         let removedPaneIDs = panePreviewCache.retainOnly(Set(topology.panes.map(\.id)))
+        if let warmingPreviewPaneID,
+           !topology.panes.contains(where: { $0.id == warmingPreviewPaneID }) {
+            cancelPanePreviewCapture()
+        }
         guard !removedPaneIDs.isEmpty else { return }
         GhosttyRuntimeTrace.perf(
             "tmuxPane.preview.cache result=topology-remove panes=\(removedPaneIDs) total=\(panePreviewCache.totalByteCost)"
@@ -843,7 +646,6 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
 
     private func clearPanePreviewCache(reason: String) {
         cancelPanePreviewCapture()
-        clearPickerPreviewReleaseCoverage()
         guard !panePreviewCache.entries.isEmpty else { return }
         panePreviewCache.removeAll()
         GhosttyRuntimeTrace.perf(
@@ -898,8 +700,8 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     }
 
     func selectTerminalSurface(_ surfaceID: UUID, reason: String) -> GhosttySurfaceSelectionOutcome {
-        // The active pane is the only materialized surface; native-side
-        // selection is therefore always either redundant or impossible.
+        // Only the active retained surface is published through this adapter;
+        // native-side selection is therefore redundant or impossible.
         guard let managed = managedSurface(for: surfaceID) else {
             return .missingSurface(surfaceID)
         }
@@ -975,11 +777,8 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                 "target_uuid": id.uuidString,
             ]
         )
-        if paneID != activeManagedPaneID {
-            coverNextReleaseWithReadyPickerPreview()
-        }
-        controller.requestSelectPane(paneID: paneID)
         session?.prepareForPaneSelection(paneID: paneID)
+        controller.requestSelectPane(paneID: paneID)
         return .queued
     }
 
@@ -987,8 +786,10 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         guard let windowID = identities.windowID(for: id), let controller else {
             return .missingTarget(.window(id))
         }
-        if latestTopology?.activeWindowID != windowID {
-            coverNextReleaseWithReadyPickerPreview()
+        if latestTopology?.activeWindowID != windowID,
+           let targetPaneID = latestTopology?.windows
+               .first(where: { $0.id == windowID })?.activePaneID {
+            session?.prepareForPaneSelection(paneID: targetPaneID)
         }
         controller.requestSelectWindow(windowID: windowID)
         return .queued
@@ -1014,13 +815,16 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         guard targetIndex != activeIndex else {
             return .missingTarget(.adjacentWindow)
         }
-        controller.requestSelectWindow(windowID: topology.windows[targetIndex].id)
+        let targetWindow = topology.windows[targetIndex]
+        if let targetPaneID = targetWindow.activePaneID {
+            session?.prepareForPaneSelection(paneID: targetPaneID)
+        }
+        controller.requestSelectWindow(windowID: targetWindow.id)
         return .queued
     }
 
     func createTmuxWindow() -> GhosttyTmuxModelActionOutcome {
         guard let controller else { return .missingTarget(.host) }
-        coverNextReleaseWithReadyPickerPreview()
         controller.requestNewWindow()
         return .queued
     }
@@ -1031,7 +835,6 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         guard let controller, let paneSurface = session?.paneSurface else {
             return .missingTarget(.focusedPane)
         }
-        coverNextReleaseWithReadyPickerPreview()
         controller.requestSplit(
             paneID: paneSurface.paneID,
             direction: TmuxSessionController.SplitDirection(actionDirection: direction),
@@ -1044,9 +847,6 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         guard let paneID = identities.paneID(for: id), let controller else {
             return .missingTarget(.pane(id))
         }
-        if paneID == activeManagedPaneID {
-            coverNextReleaseWithReadyPickerPreview()
-        }
         controller.requestClosePane(paneID: paneID)
         return .queued
     }
@@ -1054,9 +854,6 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     func closeTmuxWindow(_ id: UUID) -> GhosttyTmuxModelActionOutcome {
         guard let windowID = identities.windowID(for: id), let controller else {
             return .missingTarget(.window(id))
-        }
-        if windowID == latestTopology?.activeWindowID {
-            coverNextReleaseWithReadyPickerPreview()
         }
         controller.requestCloseWindow(windowID: windowID)
         return .queued

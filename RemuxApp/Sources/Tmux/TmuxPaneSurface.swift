@@ -8,8 +8,8 @@ import UIKit
 /// established BEFORE the surface is created (the surface borrows the
 /// pane terminal and render mutex at creation, for its whole life),
 /// and MUST be released after the surface is freed in `close` order:
-/// surface render stops -> surface freed -> binding unbound. Switching
-/// panes means a new TmuxPaneSurface, never a rebind.
+/// surface render stops -> surface freed -> binding unbound. The session
+/// retains one instance per visited pane and reuses it across presentations.
 @MainActor
 final class TmuxPaneSurface {
     let paneID: TmuxPaneID
@@ -21,18 +21,15 @@ final class TmuxPaneSurface {
     private let controller: TmuxSessionController
     private let inputBox: InputBox
     private let wakeTarget: WakeTarget
+    private let controlSurface: GhosttyKitControlSurface
+    private(set) var managedSurface: GhosttyManagedSurface?
+    private(set) var hasCompletedInitialLayout = false
+    private var presentedWindowID: TmuxWindowID?
     private var closed = false
     private var closeResult: Result<Void, TmuxSessionController.PaneReleaseError>?
     private var closeCompletions: [
         @MainActor @Sendable (Result<Void, TmuxSessionController.PaneReleaseError>) -> Void
     ] = []
-
-    /// Invoked synchronously at the start of `close()`, before the
-    /// surface is freed: host-side wrappers borrowing the surface
-    /// handle (GhosttyKitControlSurface) invalidate themselves here so
-    /// late calls from view teardown become no-ops instead of
-    /// use-after-free.
-    var onClose: (() -> Void)?
 
     /// Routes the manual backend's input writes to the session controller.
     /// Held with a stable address for the C callback.
@@ -154,6 +151,7 @@ final class TmuxPaneSurface {
         private let lock = NSLock()
         private var _surface: ghostty_surface_t?
         private var allowsRefresh = false
+        private var isVisible = false
 
         func install(surface: ghostty_surface_t) {
             lock.withLock {
@@ -162,18 +160,26 @@ final class TmuxPaneSurface {
         }
 
         func requestRefresh() {
-            let surface = lock.withLock {
-                allowsRefresh ? _surface : nil
+            // The lock is a native-lifetime fence, not only a state lock.
+            // `clear()` must not return and let the main actor free the
+            // surface while this writer-queue call is still using it.
+            lock.withLock {
+                guard allowsRefresh, isVisible, let surface = _surface else { return }
+                ghostty_surface_refresh(surface)
             }
-            guard let surface else { return }
-            ghostty_surface_refresh(surface)
         }
 
-        func enableRefreshAfterInitialLayout() -> ghostty_surface_t? {
+        func setVisible(_ visible: Bool) {
             lock.withLock {
-                guard !allowsRefresh else { return nil }
+                isVisible = visible
+            }
+        }
+
+        func enableRefreshAfterInitialLayout() -> Bool {
+            lock.withLock {
+                guard !allowsRefresh, _surface != nil else { return false }
                 allowsRefresh = true
-                return _surface
+                return true
             }
         }
 
@@ -256,35 +262,111 @@ final class TmuxPaneSurface {
         self.controller = controller
         self.inputBox = inputBox
         self.wakeTarget = wakeTarget
+        self.controlSurface = GhosttyKitControlSurface(
+            surface: surface,
+            ownership: .borrowed
+        )
     }
 
     var rawSurface: ghostty_surface_t { surface }
 
-    /// The first render must happen after the real host viewport has
-    /// sized the borrowed surface. Rendering before that uses the
-    /// placeholder UIView frame and can flash a stale narrow grid.
-    func refreshAfterInitialLayout() {
-        guard let surface = wakeTarget.enableRefreshAfterInitialLayout() else { return }
-        ghostty_surface_refresh(surface)
-        GhosttyRuntimeTrace.flowEndIfActive(
-            GhosttyRuntimeTrace.paneSwitchFlow,
-            event: "render.refresh.enqueued",
-            fields: [
-                "pane": "\(paneID)",
-                "surface": String(describing: surface),
-                "wall_ns": "\(GhosttyRuntimeTrace.wallNanos())",
-            ]
+    /// Build the screen-facing wrapper once and retain it beside the native
+    /// surface. The borrowed control wrapper intentionally retains no pane
+    /// owner: this object owns the wrapper, so a back-reference would cycle.
+    func screenSurface(
+        windowID: TmuxWindowID?,
+        onDisplayUpdate: @escaping @MainActor (GhosttyManagedSurface, CGSize, CGFloat) -> Void
+    ) -> GhosttyManagedSurface {
+        presentedWindowID = windowID
+        if let managedSurface {
+            managedSurface.updateScrollState(controlSurface.scrollState())
+            managedSurface.updateScrollRoute(controlSurface.scrollRoute())
+            managedSurface.onDisplayUpdate = onDisplayUpdate
+            return managedSurface
+        }
+
+        let paneID = paneID
+        let controller = controller
+        let managed = GhosttyManagedSurface(
+            id: instanceID.rawValue,
+            view: view,
+            controlSurface: controlSurface,
+            scrollState: controlSurface.scrollState(),
+            scrollRoute: controlSurface.scrollRoute(),
+            visibilityChanged: { [weak wakeTarget = self.wakeTarget] visible in
+                wakeTarget?.setVisible(visible)
+            },
+            tmuxFocus: { [weak controller] in
+                controller?.requestSelectPane(paneID: paneID)
+                return .queued
+            },
+            tmuxSplit: { [weak controller] direction in
+                let splitDirection: TmuxSessionController.SplitDirection = switch direction {
+                case GHOSTTY_SPLIT_DIRECTION_LEFT: .left
+                case GHOSTTY_SPLIT_DIRECTION_UP: .up
+                case GHOSTTY_SPLIT_DIRECTION_DOWN: .down
+                default: .right
+                }
+                controller?.requestSplit(
+                    paneID: paneID,
+                    direction: splitDirection,
+                    zoom: true
+                )
+                return .queued
+            },
+            tmuxClosePane: { [weak controller] in
+                controller?.requestClosePane(paneID: paneID)
+                return .queued
+            },
+            tmuxCloseWindow: { [weak self, weak controller] in
+                guard let windowID = self?.presentedWindowID else { return .noTarget }
+                controller?.requestCloseWindow(windowID: windowID)
+                return .queued
+            },
+            tmuxCopyMode: { [weak controller] in
+                controller?.requestCopyMode(paneID: paneID)
+                return .queued
+            },
+            releaseBeforePermanentRemoval: {},
+            transferRuntimeSurfaceLifetimeToAppShutdown: {}
         )
+        managed.onDisplayUpdate = onDisplayUpdate
+        managedSurface = managed
+        return managed
     }
 
-    func setVisible(_ visible: Bool) {
-        ghostty_surface_set_occlusion(surface, visible)
+    func updateWindowID(_ windowID: TmuxWindowID?) {
+        presentedWindowID = windowID
     }
 
-    /// Teardown in contract order: free the surface (renderer stops and
-    /// releases the borrowed mutex), unbind presentation, then discard the
-    /// local engine. The remote pane remains alive in tmux. Completion on
-    /// main.
+    /// Open writer-queue refresh delivery only after the real host viewport
+    /// has sized the borrowed surface. The subsequent visibility transition
+    /// queues the first render; submitting another refresh here would be
+    /// duplicate renderer work.
+    func completeInitialLayout() {
+        guard wakeTarget.enableRefreshAfterInitialLayout() else { return }
+        hasCompletedInitialLayout = true
+    }
+
+    func setPresented(_ presented: Bool) {
+        if let managedSurface {
+            managedSurface.setFocused(presented)
+            managedSurface.setVisible(presented)
+        } else {
+            ghostty_surface_set_focus(surface, presented)
+            ghostty_surface_set_occlusion(surface, presented)
+        }
+    }
+
+    func applyTerminalTheme(_ theme: TerminalTheme) {
+        view.applyTerminalTheme(theme)
+    }
+
+    var isClosing: Bool { closed }
+
+    /// Final teardown in contract order: invalidate the stable wrapper, free
+    /// the surface (renderer stops and releases the borrowed mutex), then
+    /// unbind. Engine retirement remains libghostty/session-owned.
     func close(
         completion: @escaping @MainActor @Sendable (Result<Void, TmuxSessionController.PaneReleaseError>) -> Void = { _ in }
     ) {
@@ -295,12 +377,12 @@ final class TmuxPaneSurface {
         closeCompletions.append(completion)
         guard !closed else { return }
         closed = true
-        onClose?()
-        onClose = nil
+        managedSurface?.prepareForPermanentRemoval()
+        controlSurface.invalidate()
         wakeTarget.clear()
         ghostty_surface_free(surface)
         let paneID = paneID
-        controller.unbindAndDematerialize(binding) { [self] releaseResult in
+        controller.unbind(binding) { [self] releaseResult in
             if case .failure(let error) = releaseResult {
                 GhosttyRuntimeTrace.diagnostics(
                     "tmuxPane.close releaseFailed pane=\(paneID) error=\(error)"

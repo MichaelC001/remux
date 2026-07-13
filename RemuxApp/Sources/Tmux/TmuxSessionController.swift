@@ -188,9 +188,9 @@ final class TmuxSessionController: @unchecked Sendable {
         config.handshake_timeout_ms = 0 // library default
         config.command_timeout_ms = 0 // library default
         config.history_line_cap = 0 // library default
-        // Mobile presentation projects one pane at a time. Topology remains
-        // complete, but a local terminal engine is created only by bind and
-        // explicitly released after its surface is gone.
+        // Mobile presentation projects one pane at a time. Manual policy lets
+        // Remux retain visited pane engines/surfaces until pane removal or
+        // session shutdown instead of recreating them on every switch.
         config.materialization_policy = GHOSTTY_TMUX_MATERIALIZATION_POLICY_MANUAL
 
         // The session must be created before any callback can fire;
@@ -535,6 +535,32 @@ final class TmuxSessionController: @unchecked Sendable {
         }
     }
 
+    /// REQUIRED for every retained binding, after its surface has been freed.
+    /// Normal retained-pane disposal only unbinds: libghostty owns engine
+    /// retirement for dead panes and session shutdown owns the remaining live
+    /// engines. Explicit dematerialization is reserved for the failed-create
+    /// cleanup below, where no retained surface exists.
+    func unbind(
+        _ binding: PaneBinding,
+        completion: @escaping @MainActor @Sendable (Result<Void, PaneReleaseError>) -> Void = { _ in }
+    ) {
+        queue.async { [self] in
+            guard let session else {
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { completion(.failure(.missingSession)) }
+                }
+                return
+            }
+            ghostty_tmux_session_unbind_pane(session, binding.handle)
+            // Keep the wake box alive until unbind has completed: no wake can
+            // fire past this point.
+            _ = binding.wakeBox
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { completion(.success(())) }
+            }
+        }
+    }
+
     /// REQUIRED for every binding, AFTER the bound surface has been freed.
     /// Unbind presentation first, then discard this consumer's local engine;
     /// the remote tmux pane and topology are untouched. Keeping both C calls
@@ -751,7 +777,7 @@ final class TmuxSessionController: @unchecked Sendable {
         paneID: TmuxPaneID,
         styleSurface: GhosttyKitControlSurface,
         options: ghostty_surface_preview_image_options_s,
-        previewGrid: ClientSize,
+        previewGrid: ClientSize?,
         userdata: UnsafeMutableRawPointer?,
         callback: ghostty_surface_preview_image_callback_f,
         completion: @escaping @MainActor @Sendable (
@@ -775,8 +801,8 @@ final class TmuxSessionController: @unchecked Sendable {
             }
             let tmuxOptions = ghostty_tmux_pane_preview_image_options_s(
                 image: submission.options,
-                preview_cols: submission.previewGrid.cols,
-                preview_rows: submission.previewGrid.rows
+                preview_cols: submission.previewGrid?.cols ?? 0,
+                preview_rows: submission.previewGrid?.rows ?? 0
             )
             // This lock-scoped borrow intentionally covers the synchronous C
             // call. It fences the external owner's invalidate-then-free path
@@ -880,7 +906,7 @@ private struct TmuxPanePreviewSubmission: @unchecked Sendable {
     let paneID: TmuxPaneID
     let styleSurface: GhosttyKitControlSurface
     let options: ghostty_surface_preview_image_options_s
-    let previewGrid: TmuxSessionController.ClientSize
+    let previewGrid: TmuxSessionController.ClientSize?
     let userdata: UnsafeMutableRawPointer?
     let callback: ghostty_surface_preview_image_callback_f
 }

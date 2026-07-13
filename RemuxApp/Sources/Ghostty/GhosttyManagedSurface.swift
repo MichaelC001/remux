@@ -66,6 +66,7 @@ final class GhosttyManagedSurface {
     private let sendMousePressureHandler: (@MainActor (GhosttySurfaceMousePressureEvent) -> Void)?
     private let isMouseCapturedHandler: (@MainActor () -> Bool)?
     private let setFocusedHandler: (@MainActor (Bool) -> Void)?
+    private let visibilityChangedHandler: (@MainActor (Bool) -> Void)?
     private let updateDisplayHandler: (@MainActor (GhosttySurfaceDisplayMetrics) -> Void)?
     private let scrollToPositionHandler: (@MainActor (UInt64, Double) -> GhosttySurfaceScrollState)?
     private let tmuxFocusHandler: (@MainActor () -> TmuxActionSubmissionResult)?
@@ -95,6 +96,7 @@ final class GhosttyManagedSurface {
         sendMousePressure: (@MainActor (GhosttySurfaceMousePressureEvent) -> Void)? = nil,
         isMouseCaptured: (@MainActor () -> Bool)? = nil,
         setFocused: (@MainActor (Bool) -> Void)? = nil,
+        visibilityChanged: (@MainActor (Bool) -> Void)? = nil,
         updateDisplay: (@MainActor (GhosttySurfaceDisplayMetrics) -> Void)? = nil,
         scrollToPosition: (@MainActor (UInt64, Double) -> GhosttySurfaceScrollState)? = nil,
         tmuxFocus: (@MainActor () -> TmuxActionSubmissionResult)? = nil,
@@ -122,6 +124,7 @@ final class GhosttyManagedSurface {
         self.sendMousePressureHandler = sendMousePressure
         self.isMouseCapturedHandler = isMouseCaptured
         self.setFocusedHandler = setFocused
+        self.visibilityChangedHandler = visibilityChanged
         self.updateDisplayHandler = updateDisplay
         self.scrollToPositionHandler = scrollToPosition
         self.tmuxFocusHandler = tmuxFocus
@@ -153,6 +156,7 @@ final class GhosttyManagedSurface {
     func setVisible(_ visible: Bool) {
         guard visible != isVisible else { return }
         isVisible = visible
+        visibilityChangedHandler?(visible)
         controlSurface.setVisible(visible)
     }
 
