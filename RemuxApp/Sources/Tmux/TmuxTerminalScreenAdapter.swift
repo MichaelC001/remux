@@ -24,6 +24,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     /// `willSet`, so reading the property inside a sink returns the previous
     /// snapshot and the projection lags one topology update behind.
     private var latestTopology: TmuxSessionController.TopologySnapshot?
+    private var livePaneIDs: Set<TmuxPaneID> = []
 
     private let leaseStore = GhosttyRuntimeCallbackLeaseStore()
 
@@ -91,6 +92,23 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
                 self.objectWillChange.send()
             }
             .store(in: &subscriptions)
+        session.$livePaneIDs
+            .sink { [weak self] livePaneIDs in
+                guard let self else { return }
+                self.livePaneIDs = livePaneIDs
+                if let warmingPreviewPaneID,
+                   !livePaneIDs.contains(warmingPreviewPaneID) {
+                    self.cancelPanePreviewCapture()
+                }
+                if let paneSurface = self.session?.paneSurface,
+                   let managedSurface = self.activeManagedSurface {
+                    self.warmFullViewportPreviewIfNeeded(
+                        paneSurface: paneSurface,
+                        managedSurface: managedSurface
+                    )
+                }
+            }
+            .store(in: &subscriptions)
         session.$paneSurface
             .sink { [weak self] paneSurface in
                 self?.rebuildActiveManagedSurface(for: paneSurface)
@@ -119,6 +137,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         initialViewportHandler = nil
         clientSizeHandler = nil
         latestTopology = nil
+        livePaneIDs.removeAll()
         cachedTopologySnapshot = Self.emptyTopologySnapshot
     }
 
@@ -238,6 +257,10 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         }
         activeManagedSurface = managed
         activeManagedPaneID = paneID
+        warmFullViewportPreviewIfNeeded(
+            paneSurface: paneSurface,
+            managedSurface: managed
+        )
         if !wasAlreadyWrapped {
             GhosttyRuntimeTrace.flowEventIfActive(
                 GhosttyRuntimeTrace.paneSwitchFlow,
@@ -550,8 +573,12 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         paneSurface: TmuxPaneSurface,
         managedSurface: GhosttyManagedSurface
     ) {
-        guard paneSurface.hasCompletedInitialLayout,
-              session?.state == .ready,
+        guard Self.canWarmFullViewportPreview(
+            paneID: paneSurface.paneID,
+            livePaneIDs: livePaneIDs,
+            hasCompletedInitialLayout: paneSurface.hasCompletedInitialLayout
+        ) else { return }
+        guard session?.state == .ready,
               activeManagedSurface === managedSurface,
               activeManagedPaneID == paneSurface.paneID
         else { return }
@@ -582,6 +609,11 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                   self.activeManagedPaneID == paneSurface.paneID,
                   self.warmingPreviewProvenance == nil
             else { return }
+            guard Self.canWarmFullViewportPreview(
+                paneID: paneSurface.paneID,
+                livePaneIDs: self.livePaneIDs,
+                hasCompletedInitialLayout: paneSurface.hasCompletedInitialLayout
+            ) else { return }
 
             let currentSize = managedSurface.controlSurface.currentSize()
             let currentProvenance = GhosttyPanePreviewSession.FullViewportProvenance(
@@ -611,6 +643,14 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
             )
             captureSession.startRefreshing()
         }
+    }
+
+    static func canWarmFullViewportPreview(
+        paneID: TmuxPaneID,
+        livePaneIDs: Set<TmuxPaneID>,
+        hasCompletedInitialLayout: Bool
+    ) -> Bool {
+        hasCompletedInitialLayout && livePaneIDs.contains(paneID)
     }
 
     private func cancelPanePreviewCapture() {

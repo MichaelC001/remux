@@ -10,6 +10,7 @@ final class TmuxTerminalSession: ObservableObject {
     @Published private(set) var state: TmuxSessionController.SessionState = .detached(nil)
     @Published private(set) var topology: TmuxSessionController.TopologySnapshot?
     @Published private(set) var paneSurface: TmuxPaneSurface?
+    @Published private(set) var livePaneIDs: Set<TmuxPaneID> = []
     @Published private(set) var lastFailedRequest: TmuxSessionController.Request?
     @Published private(set) var transportFailure: TerminalDisconnectReason?
 
@@ -78,8 +79,12 @@ final class TmuxTerminalSession: ObservableObject {
                 onPaneRemoved: { paneID in
                     MainActor.assumeIsolated { relay.target?.handlePaneRemoved(paneID) }
                 },
-                onPaneLive: { _ in },
-                onPaneDegraded: { _ in },
+                onPaneLive: { paneID in
+                    MainActor.assumeIsolated { relay.target?.handlePaneLive(paneID) }
+                },
+                onPaneDegraded: { paneID in
+                    MainActor.assumeIsolated { relay.target?.handlePaneDegraded(paneID) }
+                },
                 onRequestFailed: { request in
                     MainActor.assumeIsolated { relay.target?.handleRequestFailed(request) }
                 }
@@ -141,6 +146,7 @@ final class TmuxTerminalSession: ObservableObject {
         guard !isShutDown else { return }
         isShutDown = true
         pendingPaneID = nil
+        livePaneIDs.removeAll()
         unpublishPane()
 
         if !creatingPaneIDs.isEmpty {
@@ -193,6 +199,7 @@ final class TmuxTerminalSession: ObservableObject {
             paneZoomState = .idle
             pendingPaneID = nil
             failedCreationPaneID = nil
+            livePaneIDs.removeAll()
             if paneSurface == nil,
                let paneID = topology.flatMap(Self.activePaneID(in:)),
                let retained = surfacesByPaneID[paneID],
@@ -203,6 +210,8 @@ final class TmuxTerminalSession: ObservableObject {
                 self.link = nil
                 Task { await link.stop() }
             }
+        } else if case .closed = newState {
+            livePaneIDs.removeAll()
         } else if newState == .ready, let topology {
             presentActivePane(from: topology)
         }
@@ -219,6 +228,18 @@ final class TmuxTerminalSession: ObservableObject {
 
     func handleRequestFailedForTesting(_ request: TmuxSessionController.Request) {
         handleRequestFailed(request)
+    }
+
+    func handlePaneLiveForTesting(_ paneID: TmuxPaneID) {
+        handlePaneLive(paneID)
+    }
+
+    func handlePaneDegradedForTesting(_ paneID: TmuxPaneID) {
+        handlePaneDegraded(paneID)
+    }
+
+    func handlePaneRemovedForTesting(_ paneID: TmuxPaneID) {
+        handlePaneRemoved(paneID)
     }
     #endif
 
@@ -240,6 +261,7 @@ final class TmuxTerminalSession: ObservableObject {
     }
 
     private func handlePaneRemoved(_ paneID: TmuxPaneID) {
+        livePaneIDs.remove(paneID)
         if pendingPaneID == paneID { pendingPaneID = nil }
         // Prevent a stale topology callback from recreating a pane after its
         // authoritative removal event. A different active pane clears this.
@@ -247,6 +269,14 @@ final class TmuxTerminalSession: ObservableObject {
         if paneSurface?.paneID == paneID { unpublishPane() }
         guard let surface = surfacesByPaneID[paneID] else { return }
         closeRetainedSurface(surface)
+    }
+
+    private func handlePaneLive(_ paneID: TmuxPaneID) {
+        livePaneIDs.insert(paneID)
+    }
+
+    private func handlePaneDegraded(_ paneID: TmuxPaneID) {
+        livePaneIDs.remove(paneID)
     }
 
     private func handleRequestFailed(_ request: TmuxSessionController.Request) {

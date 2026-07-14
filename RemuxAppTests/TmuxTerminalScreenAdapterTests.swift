@@ -278,6 +278,22 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         )
     }
 
+    func testPreviewWarmRequiresPaneLiveAndLayout() {
+        let paneID = TmuxPaneID(10)
+        func canWarm(livePaneIDs: Set<TmuxPaneID>, layoutComplete: Bool) -> Bool {
+            TmuxTerminalScreenAdapter.canWarmFullViewportPreview(
+                paneID: paneID,
+                livePaneIDs: livePaneIDs,
+                hasCompletedInitialLayout: layoutComplete
+            )
+        }
+
+        XCTAssertFalse(canWarm(livePaneIDs: [], layoutComplete: false))
+        XCTAssertFalse(canWarm(livePaneIDs: [], layoutComplete: true))
+        XCTAssertFalse(canWarm(livePaneIDs: [paneID], layoutComplete: false))
+        XCTAssertTrue(canWarm(livePaneIDs: [paneID], layoutComplete: true))
+    }
+
     private func makeImage(width: Int, height: Int) throws -> CGImage {
         let context = try XCTUnwrap(CGContext(
             data: nil,

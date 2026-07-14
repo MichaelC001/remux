@@ -562,4 +562,31 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         )
         await session.shutdown()
     }
+
+    func testPaneLiveReadinessClearsForDegradeRemovalAndDetach() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let session = makeSession(runtime: runtime) { _, _, _, _, _, completion in
+            completion(.failure(.surfaceCreationFailed))
+        }
+
+        session.handlePaneLiveForTesting(10)
+        session.handlePaneLiveForTesting(11)
+        XCTAssertEqual(session.livePaneIDs, [10, 11])
+
+        session.handlePaneDegradedForTesting(10)
+        XCTAssertEqual(session.livePaneIDs, [11])
+
+        session.handlePaneRemovedForTesting(11)
+        XCTAssertTrue(session.livePaneIDs.isEmpty)
+
+        session.handlePaneLiveForTesting(12)
+        session.handleStateForTesting(.detached(.transportClosed))
+        XCTAssertTrue(session.livePaneIDs.isEmpty)
+
+        session.handlePaneLiveForTesting(13)
+        session.handleStateForTesting(.closed(.attachFailed("failed")))
+        XCTAssertTrue(session.livePaneIDs.isEmpty)
+
+        await session.shutdown()
+    }
 }
