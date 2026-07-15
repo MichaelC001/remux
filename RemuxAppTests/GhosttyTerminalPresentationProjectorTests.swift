@@ -437,17 +437,15 @@ final class GhosttyTerminalPresentationProjectorTests: XCTestCase {
     func testViewportProjectionKeepsSurfaceInstanceSeparateFromPaneIdentity() {
         let paneID = UUID()
         let surfaceInstanceID = UUID()
-        let pendingPaneID = UUID()
         let snapshot = GhosttyRuntimeSurfaceTopologySnapshot(
             topLevels: [
                 GhosttyTopLevelSurface(
                     id: UUID(),
-                    tree: GhosttySurfaceTree(root: .leaf(paneID)),
+                    leafIDs: [paneID],
                     focusedLeafID: paneID
                 ),
             ],
-            selectedTopLevelID: nil,
-            pendingPhonePresentationSurfaceID: pendingPaneID
+            selectedTopLevelID: nil
         )
 
         let projection = GhosttyTerminalPresentationProjector
@@ -462,7 +460,6 @@ final class GhosttyTerminalPresentationProjectorTests: XCTestCase {
             )
 
         XCTAssertEqual(projection.viewport.surfaceID, surfaceInstanceID)
-        XCTAssertEqual(projection.viewport.pendingPresentationID, pendingPaneID)
         XCTAssertEqual(projection.interaction.selectedActiveLeafID, surfaceInstanceID)
         XCTAssertNotEqual(projection.viewport.surfaceID, paneID)
     }
@@ -491,20 +488,6 @@ final class GhosttyTerminalPresentationProjectorTests: XCTestCase {
                 "transportWritable": "true",
                 "selectedActiveLeafID": "AAAAAAAA",
             ]
-        )
-    }
-
-
-    private static func managedSurface(
-        handle: ghostty_surface_t = UnsafeMutableRawPointer(bitPattern: 0x1)!
-    ) -> GhosttyManagedSurface {
-        GhosttyManagedSurface(
-            id: UUID(),
-            view: GhosttyKitSurfaceView(frame: CGRect(x: 0, y: 0, width: 800, height: 600)),
-            controlSurface: GhosttyKitControlSurface(
-                surface: handle,
-                ownership: .borrowed
-            )
         )
     }
 

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ghostty_root="${GHOSTTY_SOURCE_DIR:-$repo_root/../ghostty-tmux-pane-store-refactor}"
+ghostty_root="${GHOSTTY_SOURCE_DIR:-$repo_root/../ghostty-remux-upstream-rebuild}"
 xcframework="$ghostty_root/macos/GhosttyKit.xcframework"
 
 if [[ ! -f "$ghostty_root/build.zig" ]]; then

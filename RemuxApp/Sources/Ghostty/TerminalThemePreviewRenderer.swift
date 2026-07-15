@@ -13,35 +13,29 @@ enum TerminalThemePreviewSample {
     private static let reset = "\(esc)0m"
 
     private static func sample(for _: TerminalTheme) -> String {
-        paletteSample()
-    }
-
-    private static func paletteSample() -> String {
         [
             "\(esc)2J\(esc)H\(esc)?25h",
-            paletteCodeLine(number: 1, segments: [
-                PaletteRun("#include ", "\(esc)34m"),
-                PaletteRun("<iostream>", "\(esc)32m"),
+            codeLine(number: 1, segments: [
+                Run("#include ", "\(esc)34m"),
+                Run("<iostream>", "\(esc)32m"),
             ]),
-            paletteCodeLine(number: 2, segments: []),
-            paletteCodeLine(number: 3, segments: [
-                PaletteRun("int", "\(esc)33m"),
-                PaletteRun(" main() {", reset),
+            codeLine(number: 2, segments: []),
+            codeLine(number: 3, segments: [
+                Run("int", "\(esc)33m"),
+                Run(" main() {", reset),
             ]),
-            paletteCodeLine(number: 4, segments: [
-                PaletteRun("    std::cout << ", reset),
-                PaletteRun("\"remux\"", "\(esc)32m"),
-                PaletteRun(";", reset),
+            codeLine(number: 4, segments: [
+                Run("    std::cout << ", reset),
+                Run("\"remux\"", "\(esc)32m"),
+                Run(";", reset),
             ]),
-            paletteCodeLine(number: 5, segments: [
-                PaletteRun("}", reset),
-            ], terminator: ""),
+            codeLine(number: 5, segments: [Run("}", reset)], terminator: ""),
             "\(esc)6;1H\(esc)44;30m NORMAL \(esc)48;5;8;37m test.cpp \(esc)K\(reset)",
             "\(esc)4;28H",
         ].joined()
     }
 
-    private struct PaletteRun {
+    private struct Run {
         let text: String
         let sgr: String
 
@@ -51,15 +45,13 @@ enum TerminalThemePreviewSample {
         }
     }
 
-    private static func paletteCodeLine(
+    private static func codeLine(
         number: Int,
-        segments: [PaletteRun],
+        segments: [Run],
         terminator: String = "\r\n"
     ) -> String {
         var line = "\(reset)\(esc)K\(esc)38;5;8m\(number) "
-        for segment in segments {
-            line += "\(segment.sgr)\(segment.text)"
-        }
+        for segment in segments { line += "\(segment.sgr)\(segment.text)" }
         return "\(line)\(reset)\(terminator)"
     }
 }
@@ -76,21 +68,136 @@ struct TerminalThemePreviewRenderRequest: Equatable {
         let safeHeight = pointSize.height.rounded(.down)
         guard safeWidth.isFinite, safeWidth > 0,
               safeHeight.isFinite, safeHeight > 0
-        else {
-            return nil
-        }
+        else { return nil }
 
         let safeScale = max(scale.isFinite && scale > 0 ? scale : 1, 1)
         let metrics = GhosttySurfaceDisplayMetrics(
             size: CGSize(width: safeWidth, height: safeHeight),
             scale: safeScale
         )
-
         self.settings = settings
         self.pointSize = CGSize(width: safeWidth, height: safeHeight)
         self.scale = safeScale
-        self.pixelWidth = metrics.pixelWidth
-        self.pixelHeight = metrics.pixelHeight
+        pixelWidth = metrics.pixelWidth
+        pixelHeight = metrics.pixelHeight
+    }
+}
+
+/// Direct owner of one generic producer, its retained terminal, and one real
+/// renderer surface. There is no PTY, subprocess, preview request, or raster
+/// copy: SwiftUI mounts the Ghostty renderer view itself.
+@MainActor
+final class TerminalThemePreviewContent {
+    enum CreationError: Error {
+        case invalidGrid
+        case producer(ghostty_terminal_producer_result_e)
+        case terminal(ghostty_terminal_producer_result_e)
+        case feed(ghostty_terminal_producer_result_e)
+        case surface(ghostty_terminal_surface_result_e)
+    }
+
+    let view: GhosttyKitSurfaceView
+
+    private let runtime: GhosttyKitRuntime
+    private let producer: ghostty_terminal_producer_t
+    private let terminal: ghostty_terminal_t
+    private let surface: ghostty_terminal_surface_t
+
+    init(request: TerminalThemePreviewRenderRequest) throws {
+        let runtime = try GhosttyKitRuntime(terminalSettings: request.settings)
+        guard let viewport = try runtime.measureTmuxViewport(
+            size: request.pointSize,
+            scale: request.scale
+        ) else { throw CreationError.invalidGrid }
+
+        var producerConfig = ghostty_terminal_producer_config_new()
+        producerConfig.columns = viewport.columns
+        producerConfig.rows = viewport.rows
+        producerConfig.max_scrollback = 0
+
+        var createdProducer: ghostty_terminal_producer_t?
+        let producerResult = ghostty_terminal_producer_new(&producerConfig, &createdProducer)
+        guard producerResult == GHOSTTY_TERMINAL_PRODUCER_RESULT_OK,
+              let createdProducer
+        else { throw CreationError.producer(producerResult) }
+
+        var createdTerminal: ghostty_terminal_t?
+        let terminalResult = ghostty_terminal_producer_retain_terminal(
+            createdProducer,
+            &createdTerminal
+        )
+        guard terminalResult == GHOSTTY_TERMINAL_PRODUCER_RESULT_OK,
+              let createdTerminal
+        else {
+            ghostty_terminal_producer_free(createdProducer)
+            throw CreationError.terminal(terminalResult)
+        }
+
+        let output = TerminalThemePreviewSample.output(for: request.settings.theme)
+        let feedResult = output.withUnsafeBytes { bytes in
+            ghostty_terminal_producer_feed(
+                createdProducer,
+                bytes.bindMemory(to: UInt8.self).baseAddress,
+                bytes.count
+            )
+        }
+        guard feedResult == GHOSTTY_TERMINAL_PRODUCER_RESULT_OK else {
+            ghostty_terminal_release(createdTerminal)
+            ghostty_terminal_producer_free(createdProducer)
+            throw CreationError.feed(feedResult)
+        }
+
+        let view = GhosttyKitSurfaceView(frame: CGRect(origin: .zero, size: request.pointSize))
+        view.contentScaleFactor = request.scale
+        view.applyTerminalTheme(request.settings.theme)
+        var surfaceConfig = runtime.makeTmuxBaseSurfaceConfig()
+        surfaceConfig.platform_tag = GHOSTTY_PLATFORM_IOS
+        surfaceConfig.platform = ghostty_platform_u(ios: ghostty_platform_ios_s(
+            uiview: Unmanaged.passUnretained(view).toOpaque()
+        ))
+        surfaceConfig.scale_factor = request.scale
+        surfaceConfig.width_px = request.pixelWidth
+        surfaceConfig.height_px = request.pixelHeight
+        surfaceConfig.visible = false
+        // The previous renderer preview explicitly included the cursor. A
+        // focused renderer preserves that sample appearance without making
+        // this detached, non-responder view interactive.
+        surfaceConfig.focused = true
+
+        var createdSurface: ghostty_terminal_surface_t?
+        let surfaceResult = ghostty_terminal_surface_new(
+            runtime.appHandle,
+            createdTerminal,
+            &surfaceConfig,
+            &createdSurface
+        )
+        guard surfaceResult == GHOSTTY_TERMINAL_SURFACE_RESULT_OK,
+              let createdSurface
+        else {
+            ghostty_terminal_release(createdTerminal)
+            ghostty_terminal_producer_free(createdProducer)
+            throw CreationError.surface(surfaceResult)
+        }
+
+        self.runtime = runtime
+        producer = createdProducer
+        terminal = createdTerminal
+        surface = createdSurface
+        self.view = view
+        view.alignGhosttyRendererSublayers()
+        let visibleResult = ghostty_terminal_surface_set_visible(createdSurface, true)
+        guard visibleResult == GHOSTTY_TERMINAL_SURFACE_RESULT_OK else {
+            throw CreationError.surface(visibleResult)
+        }
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            ghostty_terminal_surface_free(surface)
+            ghostty_terminal_release(terminal)
+            ghostty_terminal_producer_free(producer)
+            _ = runtime
+        }
     }
 }
 
@@ -98,19 +205,12 @@ struct TerminalThemePreviewRenderRequest: Equatable {
 final class TerminalThemePreviewRenderer: ObservableObject {
     enum State {
         case idle
-        case loading
-        case ready(CGImage)
+        case ready(TerminalThemePreviewContent)
         case failed
     }
 
     @Published private(set) var state: State = .idle
-
     private var currentRequest: TerminalThemePreviewRenderRequest?
-    private var renderTask: Task<Void, Never>?
-
-    deinit {
-        renderTask?.cancel()
-    }
 
     func render(settings: TerminalSettings, pointSize: CGSize, scale: CGFloat) {
         guard let request = TerminalThemePreviewRenderRequest(
@@ -118,167 +218,31 @@ final class TerminalThemePreviewRenderer: ObservableObject {
             pointSize: pointSize,
             scale: scale
         ) else {
-            renderTask?.cancel()
             currentRequest = nil
             state = .idle
             return
         }
-
         guard request != currentRequest else { return }
-
         currentRequest = request
-        renderTask?.cancel()
-        state = .loading
-
-        renderTask = Task { @MainActor [weak self] in
-            do {
-                let image = try await TerminalThemePreviewImageRenderer.renderImage(for: request)
-                guard !Task.isCancelled, self?.currentRequest == request else { return }
-                self?.state = .ready(image)
-            } catch {
-                guard !Task.isCancelled, self?.currentRequest == request else { return }
-                self?.state = .failed
-            }
+        do {
+            state = .ready(try TerminalThemePreviewContent(request: request))
+        } catch {
+            GhosttyRuntimeTrace.diagnostics(
+                "themePreview.create failed error=\(String(describing: error))"
+            )
+            state = .failed
         }
     }
 }
 
-enum TerminalThemePreviewImageRenderer {
-    enum RenderError: Error {
-        case outputRejected
-        case requestRejected
-        case renderFailed
+struct TerminalThemePreviewContentView: UIViewRepresentable {
+    /// Strong ownership is intentional: the native producer/terminal/surface
+    /// must outlive the UIKit renderer view returned from makeUIView.
+    let content: TerminalThemePreviewContent
+
+    func makeUIView(context: Context) -> GhosttyKitSurfaceView {
+        content.view
     }
 
-    @MainActor
-    static func renderImage(for request: TerminalThemePreviewRenderRequest) async throws -> CGImage {
-        let view = GhosttyKitSurfaceView(
-            frame: CGRect(origin: .zero, size: request.pointSize)
-        )
-        view.contentScaleFactor = request.scale
-        view.applyTerminalTheme(request.settings.theme)
-
-        let runtime = try GhosttyKitRuntime(terminalSettings: request.settings)
-        let surface = try runtime.makeManualHostSurface(
-            view: view,
-            initialSize: request.pointSize
-        )
-
-        guard surface.processOutput(TerminalThemePreviewSample.output(for: request.settings.theme)) else {
-            surface.setBackingExited(true)
-            throw RenderError.outputRejected
-        }
-
-        return try await withCheckedThrowingContinuation { continuation in
-            let lease = GhosttyPreviewRequestLease(
-                cancel: { GhosttyKitControlSurface.cancelPreviewRequest($0) },
-                release: { GhosttyKitControlSurface.releasePreviewRequest($0) }
-            )
-            let box = TerminalThemePreviewCallbackBox(
-                continuation: continuation,
-                surface: surface,
-                view: view,
-                runtime: runtime,
-                requestLease: lease
-            )
-            let userdata = Unmanaged.passRetained(box).toOpaque()
-            let options = ghostty_surface_preview_image_options_s(
-                max_width_px: request.pixelWidth,
-                max_height_px: request.pixelHeight,
-                include_cursor: true
-            )
-
-            guard let previewRequest = surface.renderPreviewImageAsync(
-                options: options,
-                userdata: userdata,
-                callback: terminalThemePreviewImageCallback
-            ) else {
-                Unmanaged<TerminalThemePreviewCallbackBox>.fromOpaque(userdata).release()
-                surface.setBackingExited(true)
-                continuation.resume(throwing: RenderError.requestRejected)
-                return
-            }
-
-            lease.install(previewRequest)
-        }
-    }
-}
-
-private final class TerminalThemePreviewCallbackBox: @unchecked Sendable {
-    let continuation: CheckedContinuation<CGImage, Error>
-    let surface: GhosttyKitControlSurface
-    let view: GhosttyKitSurfaceView
-    let runtime: GhosttyKitRuntime
-    let requestLease: GhosttyPreviewRequestLease
-
-    init(
-        continuation: CheckedContinuation<CGImage, Error>,
-        surface: GhosttyKitControlSurface,
-        view: GhosttyKitSurfaceView,
-        runtime: GhosttyKitRuntime,
-        requestLease: GhosttyPreviewRequestLease
-    ) {
-        self.continuation = continuation
-        self.surface = surface
-        self.view = view
-        self.runtime = runtime
-        self.requestLease = requestLease
-    }
-
-    @MainActor
-    func complete(
-        pixelStatus: ghostty_surface_preview_status_e,
-        pixelCopy: GhosttyPreviewPixelBuffer,
-        width: UInt32,
-        height: UInt32,
-        stride: UInt32
-    ) {
-        var localPixelCopy = pixelCopy.pointer
-        requestLease.release()
-        defer {
-            localPixelCopy?.deallocate()
-            surface.setBackingExited(true)
-            withExtendedLifetime(view) {}
-            withExtendedLifetime(runtime) {}
-        }
-
-        guard pixelStatus == GHOSTTY_SURFACE_PREVIEW_STATUS_OK,
-              let image = GhosttyPreviewImageDecoder.makeCGImage(
-                pixelCopy: &localPixelCopy,
-                width: width,
-                height: height,
-                stride: stride
-              )
-        else {
-            continuation.resume(throwing: TerminalThemePreviewImageRenderer.RenderError.renderFailed)
-            return
-        }
-
-        continuation.resume(returning: image)
-    }
-}
-
-private let terminalThemePreviewImageCallback: ghostty_surface_preview_image_callback_f = { userdata, status, image in
-    guard let userdata else { return }
-    let box = Unmanaged<TerminalThemePreviewCallbackBox>.fromOpaque(userdata).takeRetainedValue()
-
-    let width = image.width
-    let height = image.height
-    let stride = image.stride
-    let pixelResult = GhosttyPreviewImageDecoder.copyPixels(status: status, image: image)
-    let pixelStatus = pixelResult.status
-    let pixelCopy = pixelResult.pixelCopy
-
-    var mutableImage = image
-    GhosttyKitControlSurface.freePreviewImage(&mutableImage)
-
-    Task { @MainActor in
-        box.complete(
-            pixelStatus: pixelStatus,
-            pixelCopy: pixelCopy,
-            width: width,
-            height: height,
-            stride: stride
-        )
-    }
+    func updateUIView(_ uiView: GhosttyKitSurfaceView, context: Context) {}
 }

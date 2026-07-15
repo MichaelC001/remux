@@ -156,7 +156,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
                     ZStack(alignment: .topLeading) {
                         GhosttySingleViewportView(
-                            materializationContext: model.terminalSurfaceMaterializationContext,
+                            surfaceLookup: model.terminalManagedSurfaceLookup,
                             projection: screenProjection.viewport,
                             terminalTheme: presentation.terminalTheme,
                             onSurfaceTap: handleSurfaceTap,

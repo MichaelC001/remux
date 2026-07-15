@@ -36,18 +36,17 @@ final class TerminalThemePreviewRendererTests: XCTestCase {
         XCTAssertEqual(request.pixelHeight, 396)
     }
 
-    func testPreviewImageRendererProducesCGImage() async throws {
+    func testPreviewContentCreatesRealTerminalSurfaceView() throws {
         let request = try XCTUnwrap(TerminalThemePreviewRenderRequest(
             settings: TerminalSettings(fontSize: 11, theme: .ghosttyDefault),
             pointSize: CGSize(width: 300, height: 120),
             scale: 1
         ))
 
-        let image = try await TerminalThemePreviewImageRenderer.renderImage(for: request)
+        let content = try TerminalThemePreviewContent(request: request)
 
-        XCTAssertGreaterThan(image.width, 0)
-        XCTAssertGreaterThan(image.height, 0)
-        XCTAssertLessThanOrEqual(image.width, Int(request.pixelWidth))
-        XCTAssertLessThanOrEqual(image.height, Int(request.pixelHeight))
+        XCTAssertEqual(content.view.frame.size, request.pointSize)
+        XCTAssertEqual(content.view.contentScaleFactor, request.scale)
+        XCTAssertEqual(content.view.layer.sublayers?.count, 1)
     }
 }

@@ -315,7 +315,7 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.isActive)
     }
 
-    func testTopologyRefocusCoordinatorRejectedActionCancelsOwnedKeyboardTransition() {
+    func testTopologyRefocusCoordinatorMissingTargetCancelsOwnedKeyboardTransition() {
         var coordinator = GhosttyTopologyActionInputRefocusCoordinator()
         var effects: [GhosttyTopologyActionInputRefocusCoordinator.Effect] = []
 
@@ -327,15 +327,15 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
                 effects.append(effect)
                 return effect == .requestRefocus ? .refocusKeyboardTransitionStarted : .none
             },
-            action: { .rejected(.queueFailed) }
+            action: { .missingTarget(.focusedPane) }
         )
 
-        XCTAssertEqual(outcome, .rejected(.queueFailed))
+        XCTAssertEqual(outcome, .missingTarget(.focusedPane))
         XCTAssertEqual(effects, [.requestRefocus, .cancelRefocus(ownsKeyboardTransition: true)])
         XCTAssertFalse(coordinator.isActive)
     }
 
-    func testTopologyRefocusCoordinatorRejectedActionCancelsUnownedKeyboardTransition() {
+    func testTopologyRefocusCoordinatorMissingTargetCancelsUnownedKeyboardTransition() {
         var coordinator = GhosttyTopologyActionInputRefocusCoordinator()
         var effects: [GhosttyTopologyActionInputRefocusCoordinator.Effect] = []
 
@@ -347,10 +347,10 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
                 effects.append(effect)
                 return .none
             },
-            action: { .rejected(.queueFailed) }
+            action: { .missingTarget(.focusedPane) }
         )
 
-        XCTAssertEqual(outcome, .rejected(.queueFailed))
+        XCTAssertEqual(outcome, .missingTarget(.focusedPane))
         XCTAssertEqual(effects, [.requestRefocus, .cancelRefocus(ownsKeyboardTransition: false)])
         XCTAssertFalse(coordinator.isActive)
     }

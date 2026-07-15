@@ -1,10 +1,9 @@
 import Foundation
 import GhosttyKit
 
-/// Owns one tmux control session and the real surfaces retained for panes the
-/// user has visited. Libghostty remains the topology/engine source of truth;
-/// this object owns only presentation lifetime and publishes one surface for
-/// the phone viewport.
+/// MainActor owner of one control attachment and one retained real renderer
+/// surface for every live pane. Only `paneSurface` is published to the phone
+/// viewport; the retained map is not presentation state.
 @MainActor
 final class TmuxTerminalSession: ObservableObject {
     @Published private(set) var state: TmuxSessionController.SessionState = .detached(nil)
@@ -18,33 +17,39 @@ final class TmuxTerminalSession: ObservableObject {
     private(set) var controller: TmuxSessionController!
     private var link: TmuxSessionLink?
     private let makeTransport: () -> any TmuxControlTransport
-    private let baseSurfaceConfig: () -> ghostty_surface_config_s
+    private let baseSurfaceConfig: () -> ghostty_terminal_surface_config_s
     private let paneViewTheme: () -> TerminalTheme
 
     typealias PaneSurfaceCreator = @MainActor (
         ghostty_app_t,
         TmuxSessionController,
-        TmuxPaneID,
-        ghostty_surface_config_s,
+        TmuxSessionController.RetainedPaneTerminal,
+        ghostty_terminal_surface_config_s,
+        GhosttySurfaceDisplayMetrics,
         TerminalTheme,
+        @escaping @MainActor (TmuxPaneID) -> Void,
         @escaping @MainActor (Result<TmuxPaneSurface, TmuxPaneSurface.CreateError>) -> Void
     ) -> Void
     private let createPaneSurface: PaneSurfaceCreator
 
-    /// Direct ownership: no projection, reducer, or second registry owns pane
-    /// resources. A closing surface stays in this map until unbind completes.
     private var surfacesByPaneID: [TmuxPaneID: TmuxPaneSurface] = [:]
+    private var pendingTerminalsByPaneID: [
+        TmuxPaneID: TmuxSessionController.RetainedPaneTerminal
+    ] = [:]
     private var creatingPaneIDs: Set<TmuxPaneID> = []
+    private var failedCreationPaneIDs: Set<TmuxPaneID> = []
     private var pendingPaneID: TmuxPaneID?
-    private var failedCreationPaneID: TmuxPaneID?
-
-    private enum PaneZoomState: Equatable {
-        case idle
-        case awaiting(TmuxPaneID)
-        case suppressed(TmuxPaneID)
+    private var zoomRequestedPaneID: TmuxPaneID?
+    private var preparingSurface: TmuxPaneSurface?
+    private var viewportMetrics: GhosttySurfaceDisplayMetrics?
+    private struct AppearanceSnapshot {
+        let baseConfig: ghostty_terminal_surface_config_s
+        let metrics: GhosttySurfaceDisplayMetrics
+        let theme: TerminalTheme
     }
-
-    private var paneZoomState = PaneZoomState.idle
+    private var appearancePassInFlight = false
+    private var appearancePassWaitingForBusySurface = false
+    private var pendingAppearanceSnapshot: AppearanceSnapshot?
     private var isAppActive = true
     private var isShutDown = false
     private var shutdownDrainContinuation: CheckedContinuation<Void, Never>?
@@ -56,7 +61,7 @@ final class TmuxTerminalSession: ObservableObject {
     init(
         app: ghostty_app_t,
         makeTransport: @escaping () -> any TmuxControlTransport,
-        baseSurfaceConfig: @escaping () -> ghostty_surface_config_s,
+        baseSurfaceConfig: @escaping () -> ghostty_terminal_surface_config_s,
         paneViewTheme: @escaping () -> TerminalTheme,
         createPaneSurface: @escaping PaneSurfaceCreator = TmuxPaneSurface.create
     ) {
@@ -67,36 +72,36 @@ final class TmuxTerminalSession: ObservableObject {
         self.createPaneSurface = createPaneSurface
 
         let relay = Relay()
-        self.controller = TmuxSessionController(
-            app: app,
-            callbacks: TmuxSessionController.Callbacks(
-                onState: { state in
-                    MainActor.assumeIsolated { relay.target?.handleState(state) }
-                },
-                onTopology: { snapshot in
-                    MainActor.assumeIsolated { relay.target?.handleTopology(snapshot) }
-                },
-                onPaneRemoved: { paneID in
-                    MainActor.assumeIsolated { relay.target?.handlePaneRemoved(paneID) }
-                },
-                onPaneLive: { paneID in
-                    MainActor.assumeIsolated { relay.target?.handlePaneLive(paneID) }
-                },
-                onPaneDegraded: { paneID in
-                    MainActor.assumeIsolated { relay.target?.handlePaneDegraded(paneID) }
-                },
-                onRequestFailed: { request in
-                    MainActor.assumeIsolated { relay.target?.handleRequestFailed(request) }
-                }
-            )
-        )
+        controller = TmuxSessionController(callbacks: TmuxSessionController.Callbacks(
+            onState: { state in
+                MainActor.assumeIsolated { relay.target?.handleState(state) }
+            },
+            onTopology: { topology in
+                MainActor.assumeIsolated { relay.target?.handleTopology(topology) }
+            },
+            onPaneRemoved: { paneID in
+                MainActor.assumeIsolated { relay.target?.handlePaneRemoved(paneID) }
+            },
+            onPaneTerminal: { terminal in
+                MainActor.assumeIsolated { relay.target?.handlePaneTerminal(terminal) }
+            },
+            onActivePaneChanged: { paneID in
+                MainActor.assumeIsolated { relay.target?.handleActivePaneChanged(paneID) }
+            },
+            onPaneSurfaceFailed: { paneID in
+                MainActor.assumeIsolated { relay.target?.handleRendererFailure(paneID) }
+            },
+            onRequestFailed: { request in
+                MainActor.assumeIsolated { relay.target?.handleRequestFailed(request) }
+            }
+        ))
         relay.target = self
     }
 
-    // MARK: Connection lifecycle
+    // MARK: Connection
 
     func connect(viewport: TmuxControlViewport?) {
-        guard !isShutDown, link == nil else { return }
+        guard !isShutDown, link == nil, viewport != nil else { return }
         transportFailure = nil
         let link = TmuxSessionLink(controller: controller, transport: makeTransport())
         self.link = link
@@ -112,9 +117,6 @@ final class TmuxTerminalSession: ObservableObject {
     private func connectFailed(link failed: TmuxSessionLink, error: any Error) async {
         await failed.stop()
         if link === failed { link = nil }
-        GhosttyRuntimeTrace.diagnostics(
-            "tmuxSession.connectFailed error=\(String(describing: error))"
-        )
         transportFailure = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
         state = .detached(nil)
     }
@@ -123,40 +125,39 @@ final class TmuxTerminalSession: ObservableObject {
         guard let link else { return }
         self.link = nil
         await link.stop()
+        controller.attachmentStopped()
     }
 
     func invalidateInactiveTransportOnForeground(
         willInvalidate: (TerminalDisconnectReason) -> Void
     ) async -> TerminalDisconnectReason? {
         guard let link else { return nil }
-        guard let isActive = await link.controlChannelIsActive(), !isActive else {
-            return nil
-        }
+        guard let isActive = await link.controlChannelIsActive(), !isActive else { return nil }
         guard self.link === link else { return nil }
-
         let reason = GhosttyTerminalDisconnectReasonClassifier.foregroundMissingHost()
         willInvalidate(reason)
         await link.invalidateTransport()
         return reason
     }
 
-    /// Fence creation, drain every create, close every retained surface, then
-    /// release transport and controller. Controller destruction is last.
     func shutdown() async {
         guard !isShutDown else { return }
         isShutDown = true
         pendingPaneID = nil
+        zoomRequestedPaneID = nil
+        cancelPendingPresentation()
         livePaneIDs.removeAll()
+        pendingTerminalsByPaneID.removeAll()
         unpublishPane()
 
         if !creatingPaneIDs.isEmpty {
-            await withCheckedContinuation { continuation in
-                shutdownDrainContinuation = continuation
-            }
+            await withCheckedContinuation { shutdownDrainContinuation = $0 }
         }
-
         await closeAllRetainedSurfaces()
-        await disconnect()
+        if let link {
+            self.link = nil
+            await link.stop()
+        }
         await withCheckedContinuation { continuation in
             controller.shutdown { continuation.resume() }
         }
@@ -165,349 +166,322 @@ final class TmuxTerminalSession: ObservableObject {
     private func closeAllRetainedSurfaces() async {
         let surfaces = Array(surfacesByPaneID.values)
         guard !surfaces.isEmpty else { return }
-
         await withCheckedContinuation { continuation in
             var remaining = surfaces.count
             for surface in surfaces {
-                surface.close { [weak self, weak surface] _ in
+                surface.close { [weak self, weak surface] in
                     if let self, let surface,
                        self.surfacesByPaneID[surface.paneID] === surface {
                         self.surfacesByPaneID.removeValue(forKey: surface.paneID)
                     }
                     remaining -= 1
-                    if remaining == 0 {
-                        continuation.resume()
-                    }
+                    if remaining == 0 { continuation.resume() }
                 }
             }
         }
     }
 
     private func resumeShutdownDrainIfQuiescent() {
-        guard creatingPaneIDs.isEmpty,
-              let continuation = shutdownDrainContinuation
-        else { return }
+        guard creatingPaneIDs.isEmpty, let continuation = shutdownDrainContinuation else { return }
         shutdownDrainContinuation = nil
         continuation.resume()
     }
 
-    // MARK: Retained presentation
+    // MARK: Native callbacks
 
     private func handleState(_ newState: TmuxSessionController.SessionState) {
         state = newState
-        if case .detached = newState {
-            paneZoomState = .idle
+        switch newState {
+        case .detached, .closed:
             pendingPaneID = nil
-            failedCreationPaneID = nil
-            livePaneIDs.removeAll()
-            if paneSurface == nil,
-               let paneID = topology.flatMap(Self.activePaneID(in:)),
-               let retained = surfacesByPaneID[paneID],
-               !retained.isClosing {
-                publish(retained)
-            }
+            zoomRequestedPaneID = nil
+            cancelPendingPresentation()
             if let link {
                 self.link = nil
                 Task { await link.stop() }
             }
-        } else if case .closed = newState {
-            livePaneIDs.removeAll()
-        } else if newState == .ready, let topology {
-            presentActivePane(from: topology)
+        case .ready:
+            if let topology { presentActivePane(from: topology) }
+        case .attaching, .syncing:
+            break
         }
     }
-
-    #if DEBUG
-    private(set) var requestedZoomPaneIDsForTesting: [TmuxPaneID] = []
-    var pendingPaneIDForTesting: TmuxPaneID? { pendingPaneID }
-    var creatingPaneIDsForTesting: Set<TmuxPaneID> { creatingPaneIDs }
-
-    func handleStateForTesting(_ newState: TmuxSessionController.SessionState) {
-        handleState(newState)
-    }
-
-    func handleRequestFailedForTesting(_ request: TmuxSessionController.Request) {
-        handleRequestFailed(request)
-    }
-
-    func handlePaneLiveForTesting(_ paneID: TmuxPaneID) {
-        handlePaneLive(paneID)
-    }
-
-    func handlePaneDegradedForTesting(_ paneID: TmuxPaneID) {
-        handlePaneDegraded(paneID)
-    }
-
-    func handlePaneRemovedForTesting(_ paneID: TmuxPaneID) {
-        handlePaneRemoved(paneID)
-    }
-    #endif
 
     func handleTopology(_ snapshot: TmuxSessionController.TopologySnapshot) {
-        let previousActivePaneID = topology.flatMap(Self.activePaneID(in:))
         topology = snapshot
-        let activePaneID = Self.activePaneID(in: snapshot)
-        if pendingPaneID == nil,
-           activePaneID != previousActivePaneID,
-           failedCreationPaneID != activePaneID {
-            failedCreationPaneID = nil
+        let paneIDs = Set(snapshot.panes.map(\.id))
+        livePaneIDs = Set(snapshot.panes.lazy.filter { $0.phase == .live }.map(\.id))
+        pendingTerminalsByPaneID = pendingTerminalsByPaneID.filter { paneIDs.contains($0.key) }
+        failedCreationPaneIDs.formIntersection(paneIDs)
+        if let zoomRequestedPaneID,
+           activePaneID(in: snapshot) != zoomRequestedPaneID
+            || isFullViewport(paneID: zoomRequestedPaneID, in: snapshot) {
+            self.zoomRequestedPaneID = nil
         }
-        GhosttyRuntimeTrace.flowEventIfActive(
-            GhosttyRuntimeTrace.paneSwitchFlow,
-            event: "presentation.topology.received",
-            fields: ["active_pane": activePaneID.map(String.init) ?? "none"]
-        )
         presentActivePane(from: snapshot)
     }
 
     private func handlePaneRemoved(_ paneID: TmuxPaneID) {
         livePaneIDs.remove(paneID)
+        pendingTerminalsByPaneID.removeValue(forKey: paneID)
+        failedCreationPaneIDs.remove(paneID)
         if pendingPaneID == paneID { pendingPaneID = nil }
-        // Prevent a stale topology callback from recreating a pane after its
-        // authoritative removal event. A different active pane clears this.
-        failedCreationPaneID = paneID
+        if zoomRequestedPaneID == paneID { zoomRequestedPaneID = nil }
+        if preparingSurface?.paneID == paneID { cancelPendingPresentation() }
         if paneSurface?.paneID == paneID { unpublishPane() }
         guard let surface = surfacesByPaneID[paneID] else { return }
         closeRetainedSurface(surface)
     }
 
-    private func handlePaneLive(_ paneID: TmuxPaneID) {
+    private func handlePaneTerminal(
+        _ terminal: TmuxSessionController.RetainedPaneTerminal
+    ) {
+        let paneID = terminal.paneID
+        guard !isShutDown,
+              topology?.panes.contains(where: { $0.id == paneID }) == true
+        else { return }
+
+        // The retained terminal handoff is the native client's live boundary.
+        // Hydration completion does not emit a second topology snapshot, so a
+        // pane first reported as hydrating must become capture-eligible here.
+        markPaneLiveAfterTerminalHandoff(paneID)
+
+        guard
+              surfacesByPaneID[paneID] == nil,
+              pendingTerminalsByPaneID[paneID] == nil
+        else { return }
+        pendingTerminalsByPaneID[paneID] = terminal
+        createSurfaceIfPossible(paneID: paneID)
+    }
+
+    private func markPaneLiveAfterTerminalHandoff(_ paneID: TmuxPaneID) {
         livePaneIDs.insert(paneID)
     }
 
-    private func handlePaneDegraded(_ paneID: TmuxPaneID) {
-        livePaneIDs.remove(paneID)
+    private func handleActivePaneChanged(_ paneID: TmuxPaneID) {
+        guard paneSurface?.paneID == paneID else { return }
+        paneSurface?.refreshInteractionState()
+    }
+
+    private func handleRendererFailure(_ paneID: TmuxPaneID) {
+        guard !isShutDown,
+              let surface = surfacesByPaneID[paneID],
+              let viewportMetrics
+        else { return }
+        relinquishPresentationOwnership(of: surface)
+        surface.replaceRenderer(
+            baseConfig: baseSurfaceConfig(),
+            metrics: viewportMetrics,
+            theme: paneViewTheme()
+        ) { [weak self, weak surface] result in
+            guard let self else { return }
+            switch result {
+            case .replaced:
+                if let surface,
+                   surfacesByPaneID[paneID] === surface {
+                    if let currentViewportMetrics = self.viewportMetrics {
+                        surface.updateCanonicalViewportMetrics(currentViewportMetrics)
+                    }
+                    if let topology { presentActivePane(from: topology) }
+                }
+            case .busy:
+                break
+            case .failed:
+                GhosttyRuntimeTrace.diagnostics(
+                    "tmuxPane.rendererReplacement failed pane=\(paneID)"
+                )
+            }
+            resumeAppearancePassAfterBusySurface()
+        }
     }
 
     private func handleRequestFailed(_ request: TmuxSessionController.Request) {
         lastFailedRequest = request
         if request == .selectPane || request == .selectWindow {
             pendingPaneID = nil
-            if let topology {
-                presentActivePane(from: topology)
-            }
+            zoomRequestedPaneID = nil
+            cancelPendingPresentation()
+        }
+        if request == .zoomPane {
+            // Keep the terminal unpresented: split geometry is not the phone's
+            // canonical terminal viewport.
             return
         }
-        guard request == .zoomPane else { return }
-        guard case .awaiting(let paneID) = paneZoomState else { return }
-        paneZoomState = .suppressed(paneID)
         if let topology { presentActivePane(from: topology) }
     }
 
-    /// Record a validated target and immediately unpublish/occlude the outgoing
-    /// terminal without destroying it. Ordered topology authorizes the target.
-    func prepareForPaneSelection(paneID: TmuxPaneID) {
-        guard !isShutDown, isAppActive else { return }
-        guard topology?.panes.contains(where: { $0.id == paneID }) == true else { return }
-        guard paneSurface?.paneID != paneID else { return }
+    // MARK: Viewport and surface creation
 
-        pendingPaneID = paneID
-        failedCreationPaneID = nil
-        GhosttyRuntimeTrace.flowEventIfActive(
-            GhosttyRuntimeTrace.paneSwitchFlow,
-            event: "presentation.selection.prepared",
-            fields: ["pane": "\(paneID)"]
-        )
-        unpublishPane()
-        if let topology, Self.activePaneID(in: topology) == paneID {
+    func updateViewportMetrics(size: CGSize, scale: CGFloat) {
+        let metrics = GhosttySurfaceDisplayMetrics(size: size, scale: scale)
+        let changed = metrics != viewportMetrics
+        viewportMetrics = metrics
+        for surface in surfacesByPaneID.values {
+            surface.updateCanonicalViewportMetrics(metrics)
+        }
+        if changed, preparingSurface != nil {
+            cancelPendingPresentation()
+        }
+        for paneID in pendingTerminalsByPaneID.keys.sorted() {
+            createSurfaceIfPossible(paneID: paneID)
+        }
+        if changed, let topology {
             presentActivePane(from: topology)
         }
     }
 
-    func prepareForGroupedWindowSelection(paneID: TmuxPaneID) {
-        guard pendingPaneID == paneID else { return }
-        paneZoomState = .awaiting(paneID)
-    }
-
-    private func presentActivePane(
-        from snapshot: TmuxSessionController.TopologySnapshot
-    ) {
-        guard !isShutDown, isAppActive else { return }
-        guard let windowID = snapshot.activeWindowID,
-              let window = snapshot.windows.first(where: { $0.id == windowID }),
-              let paneID = window.activePaneID
-        else { return }
-
-        // A newer accepted intent is the only local authorization filter. An
-        // intermediate topology may warm/store its late create, but never
-        // publish it or enable input.
-        if let pendingPaneID, pendingPaneID != paneID { return }
-
-        switch paneZoomState {
-        case .awaiting(let zoomPaneID), .suppressed(let zoomPaneID):
-            if zoomPaneID != paneID { paneZoomState = .idle }
-        case .idle:
-            break
-        }
-
-        let hasSiblingPane = snapshot.panes.contains {
-            $0.windowID == windowID && $0.id != paneID
-        }
-        let zoomSuppressed = paneZoomState == .suppressed(paneID)
-        if !window.zoomed, hasSiblingPane, !zoomSuppressed {
-            if paneZoomState == .awaiting(paneID) {
-                GhosttyRuntimeTrace.flowEventOnce(
-                    GhosttyRuntimeTrace.paneSwitchFlow,
-                    event: "presentation.zoom.waiting",
-                    fields: ["pane": "\(paneID)"]
-                )
-                return
-            }
-            paneZoomState = .awaiting(paneID)
-            #if DEBUG
-            requestedZoomPaneIDsForTesting.append(paneID)
-            #endif
-            GhosttyRuntimeTrace.flowEventIfActive(
-                GhosttyRuntimeTrace.paneSwitchFlow,
-                event: "presentation.zoom.requested",
-                fields: ["pane": "\(paneID)"]
-            )
-            controller.requestZoomPane(paneID: paneID)
-            return
-        }
-        if window.zoomed { paneZoomState = .idle }
-
-        if paneSurface?.paneID == paneID {
-            if pendingPaneID == paneID { pendingPaneID = nil }
-            return
-        }
-        if failedCreationPaneID == paneID { return }
-
-        if paneSurface != nil { unpublishPane() }
-        if let retained = surfacesByPaneID[paneID] {
-            guard !retained.isClosing else { return }
-            publish(retained)
-            return
-        }
-        createSurfaceIfNeeded(paneID: paneID)
-    }
-
-    private func createSurfaceIfNeeded(paneID: TmuxPaneID) {
+    private func createSurfaceIfPossible(paneID: TmuxPaneID) {
         guard !isShutDown,
+              let metrics = viewportMetrics,
+              let terminal = pendingTerminalsByPaneID.removeValue(forKey: paneID),
               surfacesByPaneID[paneID] == nil,
               creatingPaneIDs.insert(paneID).inserted
         else { return }
 
-        let createStartedAt = GhosttyRuntimeTrace.flowTraceEnabled
-            ? GhosttyRuntimeTrace.nowNanos() : 0
-        GhosttyRuntimeTrace.perf("tmuxPane.transition create.begin pane=\(paneID)")
-        GhosttyRuntimeTrace.flowEventIfActive(
-            GhosttyRuntimeTrace.paneSwitchFlow,
-            event: "presentation.create.begin",
-            fields: ["pane": "\(paneID)"],
-            at: createStartedAt == 0 ? nil : createStartedAt
-        )
         createPaneSurface(
             app,
             controller,
-            paneID,
+            terminal,
             baseSurfaceConfig(),
-            paneViewTheme()
+            metrics,
+            paneViewTheme(),
+            { [weak self] paneID in self?.handleRendererFailure(paneID) }
         ) { [weak self] result in
             guard let self else {
                 if case .success(let surface) = result { surface.close() }
                 return
             }
-            self.creatingPaneIDs.remove(paneID)
-
+            creatingPaneIDs.remove(paneID)
             switch result {
             case .failure(let error):
-                GhosttyRuntimeTrace.perf(
-                    "tmuxPane.transition create.failed pane=\(paneID) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: createStartedAt))"
-                )
+                failedCreationPaneIDs.insert(paneID)
                 GhosttyRuntimeTrace.diagnostics(
                     "tmuxPane.createFailed pane=\(paneID) error=\(String(describing: error))"
                 )
-                GhosttyRuntimeTrace.flowEndIfActive(
-                    GhosttyRuntimeTrace.paneSwitchFlow,
-                    event: "presentation.create.failed",
-                    fields: ["pane": "\(paneID)"]
-                )
-                let confirmedPaneID = self.topology.flatMap(Self.activePaneID(in:))
-                let isStillDesired = confirmedPaneID == paneID
-                    && (self.pendingPaneID == nil || self.pendingPaneID == paneID)
-                if !self.isShutDown,
-                   isStillDesired,
-                   self.topology?.panes.contains(where: { $0.id == paneID }) == true {
-                    self.failedCreationPaneID = paneID
-                    if self.pendingPaneID == paneID { self.pendingPaneID = nil }
-                }
-
             case .success(let surface):
-                // Every successful native create becomes session-owned first.
-                // This also lets shutdown observe and close a completion that
-                // arrives while teardown is waiting for creates to drain.
-                if let existing = self.surfacesByPaneID[paneID] {
-                    assertionFailure("duplicate retained pane surface")
+                guard !isShutDown,
+                      topology?.panes.contains(where: { $0.id == paneID }) == true
+                else {
                     surface.close()
-                    if !existing.isClosing { self.presentActivePaneIfPossible() }
-                    break
+                    resumeShutdownDrainIfQuiescent()
+                    return
                 }
-                self.surfacesByPaneID[paneID] = surface
-                surface.setPresented(false)
-
-                let paneStillExists = self.failedCreationPaneID != paneID
-                    && self.topology?.panes.contains { $0.id == paneID } == true
-                guard !self.isShutDown, paneStillExists else {
-                    if !self.isShutDown { self.closeRetainedSurface(surface) }
-                    break
-                }
-
-                let confirmedPaneID = self.topology.flatMap(Self.activePaneID(in:))
-                let isAuthorized = confirmedPaneID == paneID
-                    && (self.pendingPaneID == nil || self.pendingPaneID == paneID)
-                if isAuthorized {
-                    self.publish(surface, createStartedAt: createStartedAt)
-                }
+                surfacesByPaneID[paneID] = surface
+                if let topology { presentActivePane(from: topology) }
             }
-            self.resumeShutdownDrainIfQuiescent()
+            resumeShutdownDrainIfQuiescent()
         }
     }
 
-    private func presentActivePaneIfPossible() {
-        guard let topology else { return }
-        presentActivePane(from: topology)
+    // MARK: Singular presentation
+
+    func prepareForPaneSelection(paneID: TmuxPaneID) {
+        guard !isShutDown,
+              isAppActive,
+              let topology,
+              topology.panes.contains(where: { $0.id == paneID })
+        else { return }
+        if activePaneID(in: topology) == paneID,
+           isFullViewport(paneID: paneID, in: topology) {
+            let hasConflictingIntent = pendingPaneID != nil && pendingPaneID != paneID
+            if !hasConflictingIntent {
+                if paneSurface?.paneID == paneID || preparingSurface?.paneID == paneID {
+                    return
+                }
+                pendingPaneID = nil
+                cancelPendingPresentation()
+                presentActivePane(from: topology)
+                return
+            }
+        }
+        surfacesByPaneID[paneID]?.cancelPickerCaptureForPresentation()
+        cancelPendingPresentation()
+        pendingPaneID = paneID
+        zoomRequestedPaneID = isFullViewport(paneID: paneID, in: topology)
+            ? nil
+            : paneID
+        unpublishPane()
     }
 
-    private func publish(
-        _ surface: TmuxPaneSurface,
-        createStartedAt: UInt64 = 0
-    ) {
-        guard !isShutDown, isAppActive, !surface.isClosing else { return }
-        guard topology.flatMap(Self.activePaneID(in:)) == surface.paneID else { return }
-        guard pendingPaneID == nil || pendingPaneID == surface.paneID else { return }
-        if paneSurface === surface {
+    func capturePickerPreview(
+        paneID: TmuxPaneID,
+        columns: UInt32,
+        rows: UInt32,
+        budget: GhosttyPanePreviewSession.PixelBudget
+    ) async -> GhosttyPanePreviewSession.RenderedPreview? {
+        guard !isShutDown,
+              state == .ready,
+              livePaneIDs.contains(paneID),
+              let surface = surfacesByPaneID[paneID],
+              !surface.isClosing
+        else { return nil }
+        return await surface.capturePickerPreview(
+            columns: columns,
+            rows: rows,
+            budget: budget
+        )
+    }
+
+    func cancelPickerPreview(paneID: TmuxPaneID) {
+        surfacesByPaneID[paneID]?.cancelPickerCaptureForPresentation()
+    }
+
+    private func presentActivePane(from snapshot: TmuxSessionController.TopologySnapshot) {
+        guard !isShutDown, isAppActive, state == .ready,
+              let paneID = activePaneID(in: snapshot)
+        else { return }
+        if let pendingPaneID, pendingPaneID != paneID { return }
+
+        guard isFullViewport(paneID: paneID, in: snapshot) else {
+            unpublishPane()
+            if zoomRequestedPaneID != paneID {
+                zoomRequestedPaneID = paneID
+                controller.requestZoomPane(paneID: paneID)
+            }
+            return
+        }
+        zoomRequestedPaneID = nil
+
+        guard paneSurface?.paneID != paneID else {
             pendingPaneID = nil
             return
         }
+        guard !failedCreationPaneIDs.contains(paneID),
+              let surface = surfacesByPaneID[paneID],
+              !surface.isClosing
+        else { return }
+        if preparingSurface === surface { return }
 
-        paneSurface?.setPresented(false)
-        paneSurface = surface
-        pendingPaneID = nil
-        failedCreationPaneID = nil
-
-        if createStartedAt != 0 {
-            GhosttyRuntimeTrace.perf(
-                "tmuxPane.transition create.ready pane=\(surface.paneID) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: createStartedAt))"
-            )
-            GhosttyRuntimeTrace.flowEventIfActive(
-                GhosttyRuntimeTrace.paneSwitchFlow,
-                event: "presentation.create.ready",
-                fields: [
-                    "pane": "\(surface.paneID)",
-                    "surface": String(describing: surface.rawSurface),
-                ]
-            )
-        } else {
-            GhosttyRuntimeTrace.flowEventIfActive(
-                GhosttyRuntimeTrace.paneSwitchFlow,
-                event: "presentation.retained.ready",
-                fields: [
-                    "pane": "\(surface.paneID)",
-                    "surface": String(describing: surface.rawSurface),
-                ]
-            )
+        cancelPendingPresentation()
+        unpublishPane()
+        preparingSurface = surface
+        surface.prepareForPresentation { [weak self, weak surface] ready in
+            guard let self, let surface,
+                  preparingSurface === surface
+            else { return }
+            preparingSurface = nil
+            guard ready,
+                  !isShutDown,
+                  isAppActive,
+                  state == .ready,
+                  let topology,
+                  activePaneID(in: topology) == surface.paneID,
+                  pendingPaneID == nil || pendingPaneID == surface.paneID,
+                  isFullViewport(paneID: surface.paneID, in: topology)
+            else {
+                surface.cancelPresentationPreparation()
+                return
+            }
+            paneSurface = surface
+            pendingPaneID = nil
+            surface.setPresented(true)
         }
+    }
+
+    private func cancelPendingPresentation() {
+        guard let surface = preparingSurface else { return }
+        preparingSurface = nil
+        surface.cancelPresentationPreparation()
     }
 
     private func unpublishPane() {
@@ -516,16 +490,20 @@ final class TmuxTerminalSession: ObservableObject {
         paneSurface = nil
     }
 
+    private func relinquishPresentationOwnership(of surface: TmuxPaneSurface) {
+        if preparingSurface === surface {
+            cancelPendingPresentation()
+        }
+        if paneSurface === surface {
+            unpublishPane()
+        }
+    }
+
     private func closeRetainedSurface(_ surface: TmuxPaneSurface) {
-        surface.close { [weak self, weak surface] releaseResult in
+        surface.close { [weak self, weak surface] in
             guard let self, let surface else { return }
-            if case .failure(let error) = releaseResult {
-                GhosttyRuntimeTrace.diagnostics(
-                    "tmuxPane.close releaseFailed pane=\(surface.paneID) error=\(error)"
-                )
-            }
-            if self.surfacesByPaneID[surface.paneID] === surface {
-                self.surfacesByPaneID.removeValue(forKey: surface.paneID)
+            if surfacesByPaneID[surface.paneID] === surface {
+                surfacesByPaneID.removeValue(forKey: surface.paneID)
             }
         }
     }
@@ -533,27 +511,142 @@ final class TmuxTerminalSession: ObservableObject {
     func setAppActive(_ active: Bool) {
         isAppActive = active
         if !active {
+            cancelPendingPresentation()
             unpublishPane()
         }
-        for surface in surfacesByPaneID.values {
-            surface.setPresented(active && surface === paneSurface)
-        }
-        if active, let topology {
-            presentActivePane(from: topology)
-        }
+        if active, let topology { presentActivePane(from: topology) }
     }
 
     func applyTerminalTheme(_ theme: TerminalTheme) {
-        for surface in surfacesByPaneID.values {
-            surface.applyTerminalTheme(theme)
+        guard let viewportMetrics, !surfacesByPaneID.isEmpty else { return }
+        let snapshot = AppearanceSnapshot(
+            baseConfig: baseSurfaceConfig(),
+            metrics: viewportMetrics,
+            theme: theme
+        )
+        guard !appearancePassInFlight, !appearancePassWaitingForBusySurface else {
+            pendingAppearanceSnapshot = snapshot
+            return
+        }
+        startAppearancePass(snapshot)
+    }
+
+    private func startAppearancePass(_ snapshot: AppearanceSnapshot) {
+        guard !isShutDown else { return }
+        var surfaces = Array(surfacesByPaneID.values)
+        if let active = paneSurface ?? preparingSurface,
+           let index = surfaces.firstIndex(where: { $0 === active }) {
+            surfaces.swapAt(0, index)
+        }
+        appearancePassInFlight = true
+        replaceRenderersForAppearance(
+            surfaces,
+            index: 0,
+            snapshot: snapshot
+        )
+    }
+
+    private func replaceRenderersForAppearance(
+        _ surfaces: [TmuxPaneSurface],
+        index: Int,
+        snapshot: AppearanceSnapshot
+    ) {
+        guard !isShutDown, index < surfaces.count else {
+            appearancePassInFlight = false
+            startPendingAppearancePassIfPossible()
+            return
+        }
+        let surface = surfaces[index]
+        guard surfacesByPaneID[surface.paneID] === surface, !surface.isClosing else {
+            replaceRenderersForAppearance(surfaces, index: index + 1, snapshot: snapshot)
+            return
+        }
+        relinquishPresentationOwnership(of: surface)
+        surface.replaceRenderer(
+            baseConfig: snapshot.baseConfig,
+            metrics: snapshot.metrics,
+            theme: snapshot.theme
+        ) { [weak self, weak surface] result in
+            guard let self else { return }
+            switch result {
+            case .replaced:
+                if let surface,
+                   surfacesByPaneID[surface.paneID] === surface {
+                    if let currentViewportMetrics = self.viewportMetrics {
+                        surface.updateCanonicalViewportMetrics(currentViewportMetrics)
+                    }
+                    if let topology,
+                       activePaneID(in: topology) == surface.paneID {
+                        presentActivePane(from: topology)
+                    }
+                }
+            case .busy:
+                if pendingAppearanceSnapshot == nil {
+                    pendingAppearanceSnapshot = snapshot
+                }
+                appearancePassWaitingForBusySurface = true
+            case .failed:
+                GhosttyRuntimeTrace.diagnostics(
+                    "tmuxPane.settingsReplacement failed pane=\(surface.map { String(describing: $0.paneID) } ?? "released")"
+                )
+            }
+            replaceRenderersForAppearance(
+                surfaces,
+                index: index + 1,
+                snapshot: snapshot
+            )
         }
     }
 
-    private static func activePaneID(
+    private func resumeAppearancePassAfterBusySurface() {
+        guard appearancePassWaitingForBusySurface else { return }
+        appearancePassWaitingForBusySurface = false
+        startPendingAppearancePassIfPossible()
+    }
+
+    private func startPendingAppearancePassIfPossible() {
+        guard !appearancePassInFlight,
+              !appearancePassWaitingForBusySurface,
+              let snapshot = pendingAppearanceSnapshot
+        else { return }
+        pendingAppearanceSnapshot = nil
+        startAppearancePass(snapshot)
+    }
+
+    private func activePaneID(
         in snapshot: TmuxSessionController.TopologySnapshot
     ) -> TmuxPaneID? {
-        snapshot.activeWindowID.flatMap { windowID in
-            snapshot.windows.first(where: { $0.id == windowID })?.activePaneID
+        guard let windowID = snapshot.activeWindowID else { return nil }
+        return snapshot.windows.first(where: { $0.id == windowID })?.activePaneID
+    }
+
+    private func isFullViewport(
+        paneID: TmuxPaneID,
+        in snapshot: TmuxSessionController.TopologySnapshot
+    ) -> Bool {
+        guard let pane = snapshot.panes.first(where: { $0.id == paneID }),
+              let window = snapshot.windows.first(where: { $0.id == pane.windowID })
+        else { return false }
+        if window.zoomed { return true }
+        return !snapshot.panes.contains {
+            $0.windowID == window.id && $0.id != paneID
         }
     }
+
+    #if DEBUG
+    var pendingPaneIDForTesting: TmuxPaneID? { pendingPaneID }
+    var zoomRequestedPaneIDForTesting: TmuxPaneID? { zoomRequestedPaneID }
+    var creatingPaneIDsForTesting: Set<TmuxPaneID> { creatingPaneIDs }
+    func handleStateForTesting(_ state: TmuxSessionController.SessionState) { handleState(state) }
+    func handleRequestFailedForTesting(_ request: TmuxSessionController.Request) {
+        handleRequestFailed(request)
+    }
+    func handlePaneRemovedForTesting(_ paneID: TmuxPaneID) { handlePaneRemoved(paneID) }
+    func handlePaneTerminalForTesting(_ paneID: TmuxPaneID) {
+        guard !isShutDown,
+              topology?.panes.contains(where: { $0.id == paneID }) == true
+        else { return }
+        markPaneLiveAfterTerminalHandoff(paneID)
+    }
+    #endif
 }

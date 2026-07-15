@@ -88,9 +88,8 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
     private let scrollView = UIScrollView()
     private let contentView = UIView()
 
-    /// The viewport owns the one surface it has attached. This makes surface
-    /// lifetime match UIKit attachment lifetime and avoids a second adapter-
-    /// side registry for surfaces waiting to be detached.
+    /// The viewport borrows the one retained pane surface it currently shows.
+    /// `TmuxTerminalSession` owns that surface independently of UIKit attachment.
     private var surface: GhosttyManagedSurface?
     private var displayScale: CGFloat = max(UIScreen.main.scale, 1)
     private var displayLink: CADisplayLink?
@@ -231,16 +230,6 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
         surface.setFocused(false)
         surface.setVisible(false)
         detachSurfaceIfNeeded(surface)
-    }
-
-    func prepareForRuntimeTeardown() {
-        haltPhysicsScroll()
-        surface?.onScrollStateChange = nil
-        self.surface = nil
-        submitRouteForwardedMouseScroll = nil
-        submitRouteForwardedMousePosition = nil
-        lastAppliedScrollRoute = nil
-        resetViewportScrollInteractionState()
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {

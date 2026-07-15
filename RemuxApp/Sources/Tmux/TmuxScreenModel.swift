@@ -16,8 +16,7 @@ final class TmuxScreenModel: ObservableObject {
 
     /// The screen-facing facet: presents this session through the
     /// GhosttyTerminalScreenModeling boundary for GhosttySurfaceScreen.
-    /// Created before the runtime because it is the runtime's surface
-    /// delegate (scroll state delivery).
+    /// Stable screen-facing adapter for this model's session.
     let terminalScreenAdapter = TmuxTerminalScreenAdapter()
 
     @Published private(set) var session: TmuxTerminalSession?
@@ -32,7 +31,7 @@ final class TmuxScreenModel: ObservableObject {
     /// the keyboard is up does not make the next attach first-paint
     /// at the keyboard-shrunken size.
     var carriedClientSize: TmuxSessionController.ClientSize? {
-        session?.controller.carriedClientSize
+        lastStableClientSize ?? lastSubmittedClientSize
     }
 
     /// True when no connection exists or is in progress, so the root
@@ -57,6 +56,8 @@ final class TmuxScreenModel: ObservableObject {
     private var stopped = false
     private var initialViewport: TmuxControlViewport?
     private var lastSubmittedClientSize: TmuxSessionController.ClientSize?
+    private var lastStableClientSize: TmuxSessionController.ClientSize?
+    private var viewportIsStable = true
 
     private let initialClientSize: TmuxSessionController.ClientSize?
 
@@ -81,10 +82,7 @@ final class TmuxScreenModel: ObservableObject {
         let runtimeInitStart = GhosttyRuntimeTrace.nowNanos()
         let runtime: GhosttyKitRuntime
         do {
-            runtime = try GhosttyKitRuntime(
-                surfaceDelegate: terminalScreenAdapter,
-                terminalSettings: target.terminalSettings
-            )
+            runtime = try GhosttyKitRuntime(terminalSettings: target.terminalSettings)
         } catch {
             startupFailure = String(describing: error)
             report(.disconnected(Self.runtimeStartFailureReason))
@@ -117,6 +115,9 @@ final class TmuxScreenModel: ObservableObject {
             },
             clientSizeHandler: { [weak self] size in
                 self?.submitClientSizeIfChanged(size)
+            },
+            viewportStabilityHandler: { [weak self] stable in
+                self?.setViewportStability(stable)
             }
         )
 
@@ -147,16 +148,19 @@ final class TmuxScreenModel: ObservableObject {
 
     private func connect(viewport: TmuxControlViewport) {
         initialViewport = viewport
-        submitClientSizeIfChanged(TmuxSessionController.ClientSize(
+        let initialSize = TmuxSessionController.ClientSize(
             cols: UInt32(viewport.columns),
             rows: UInt32(viewport.rows)
-        ))
+        )
+        lastSubmittedClientSize = initialSize
+        if viewportIsStable { lastStableClientSize = initialSize }
         report(currentRuntimeState(for: session?.state ?? .attaching, connecting: true))
         session?.connect(viewport: viewport)
     }
 
     private func prepareInitialViewport(size: CGSize, scale: CGFloat) {
         guard !stopped else { return }
+        session?.updateViewportMetrics(size: size, scale: scale)
         guard initialViewport == nil else { return }
         guard let runtime else { return }
 
@@ -181,8 +185,14 @@ final class TmuxScreenModel: ObservableObject {
         guard !stopped, let controller = session?.controller else { return false }
         guard size != lastSubmittedClientSize else { return false }
         lastSubmittedClientSize = size
+        if viewportIsStable { lastStableClientSize = size }
         controller.setClientSize(cols: size.cols, rows: size.rows)
         return true
+    }
+
+    private func setViewportStability(_ stable: Bool) {
+        viewportIsStable = stable
+        if stable { lastStableClientSize = lastSubmittedClientSize }
     }
 
     func handleAppLifecyclePhase(_ phase: GhosttyAppLifecyclePhase) {
@@ -238,16 +248,8 @@ final class TmuxScreenModel: ObservableObject {
         switch session.state {
         case .attaching, .syncing, .ready:
             return nil
-        case .detached(let reason):
-            if let reason {
-                return .disconnected(reason.terminalDisconnectReason)
-            }
-            guard let failure = session.transportFailure else {
-                return nil
-            }
-            return .disconnected(failure)
-        case .closed(let reason):
-            return .disconnected(reason.terminalDisconnectReason)
+        case .detached, .closed:
+            return currentRuntimeState(for: session.state, connecting: false)
         }
     }
 
@@ -256,8 +258,10 @@ final class TmuxScreenModel: ObservableObject {
     /// for surfaces bound to panes in the future, and the bound pane
     /// view's theme.
     func applyTerminalSettings(_ settings: TerminalSettings) throws {
-        currentTerminalSettings = settings
+        guard settings != currentTerminalSettings else { return }
         try runtime?.applyTerminalSettings(settings)
+        currentTerminalSettings = settings
+        terminalScreenAdapter.terminalAppearanceDidChange()
         session?.applyTerminalTheme(settings.theme)
     }
 

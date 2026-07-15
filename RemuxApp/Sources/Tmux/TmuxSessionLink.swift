@@ -1,12 +1,11 @@
 import Foundation
 import GhosttyKit
 
-/// Connects an `SSHTmuxControlTransport` to a `TmuxSessionController`:
-/// inbound SSH bytes pump the session on its writer queue, outbound
+/// Connects one `TmuxControlTransport` to one `TmuxSessionController`:
+/// inbound SSH bytes feed the client on its writer queue, outbound
 /// wire bytes are written to the SSH channel strictly in order (a
 /// single consumer task drains an ordered stream fed from the writer
-/// queue), and transport loss detaches the session promptly via
-/// `disconnect` instead of waiting for command deadlines.
+/// queue), and transport loss closes this attachment promptly.
 ///
 /// Viewport ownership stays in the screen model. The link only passes the
 /// already-known viewport to the SSH attach command's initial `-x -y`.
@@ -20,10 +19,8 @@ actor TmuxSessionLink {
     private let outboundContinuation: AsyncStream<Data>.Continuation
     private var transportClosed = false
     private var transportCloseDisposition = TmuxControlTransportCloseDisposition.reusable
+    private var stopped = false
 
-    /// The controller outlives links: reconnecting builds a new link
-    /// (new transport) around the same controller, whose session state
-    /// is retained across the detach.
     init(
         controller: TmuxSessionController,
         transport: any TmuxControlTransport
@@ -36,15 +33,17 @@ actor TmuxSessionLink {
         self.outboundContinuation = continuation
     }
 
-    /// Establish the SSH control channel and attach the session.
-    /// `viewport` (when already known) shapes the attach command's `-x -y`.
-    /// The screen model has already submitted the same grid to the controller
-    /// before starting this link, so the session sync batch applies it before
-    /// the baseline. When unknown, pass nil; never fabricate one.
+    /// Establish the control channel with the real grid, then create the
+    /// native client with that same grid. This order prevents its initial
+    /// refresh/list batch from racing transport opening.
     func start(viewport: TmuxControlViewport?) async throws {
+        guard !stopped else { throw LinkError.stopped }
+        guard let viewport else { throw LinkError.missingInitialViewport }
+
         // Idempotent transport prewarm (auth/root channel) before the
         // session channel opens.
         await transport.prepare()
+        guard !stopped else { throw LinkError.stopped }
 
         // Re-target the controller's wire bytes at this link. `yield`
         // is synchronous on the writer queue, preserving order into
@@ -66,8 +65,18 @@ actor TmuxSessionLink {
         }
 
         try await transport.start(initialViewport: viewport)
-
-        controller.connect()
+        guard !stopped else { throw LinkError.stopped }
+        try await withCheckedThrowingContinuation { continuation in
+            controller.start(
+                initialSize: TmuxSessionController.ClientSize(
+                    cols: UInt32(viewport.columns),
+                    rows: UInt32(viewport.rows)
+                )
+            ) { result in
+                continuation.resume(with: result)
+            }
+        }
+        guard !stopped else { throw LinkError.stopped }
 
         readTask = Task { [transport, controller] in
             do {
@@ -77,7 +86,8 @@ actor TmuxSessionLink {
             } catch {
                 // Fall through: any stream end is a transport loss.
             }
-            controller.disconnect()
+            guard !Task.isCancelled else { return }
+            controller.transportClosed()
         }
     }
 
@@ -90,25 +100,32 @@ actor TmuxSessionLink {
 
     func invalidateTransport() async {
         await closeTransport(disposition: .invalidated)
-        controller.disconnect()
+        controller.transportClosed()
     }
 
-    /// Tear the link down. The controller survives (its session state
-    /// is retained for a future link); bindings stay valid per the
-    /// session contract.
+    /// Tear this one-shot attachment down. Replacement reconnect creates a
+    /// new model, controller, client, and transport.
     func stop() async {
+        guard !stopped else { return }
+        stopped = true
         controller.setOutboundSink(nil)
-        readTask?.cancel()
-        readTask = nil
         outboundContinuation.finish()
-        writeTask = nil
-        controller.disconnect()
+
+        let pendingReadTask = readTask
+        let pendingWriteTask = writeTask
+        self.readTask = nil
+        self.writeTask = nil
+
+        pendingReadTask?.cancel()
+        pendingWriteTask?.cancel()
         await closeTransport(disposition: .reusable)
+        _ = await pendingReadTask?.result
+        _ = await pendingWriteTask?.result
     }
 
     private func invalidateTransportAfterWriteFailure() async {
         await closeTransport(disposition: .invalidated)
-        controller.disconnect()
+        controller.transportClosed()
     }
 
     private func closeTransport(disposition: TmuxControlTransportCloseDisposition) async {
@@ -120,4 +137,9 @@ actor TmuxSessionLink {
         transportClosed = true
         await transport.close(disposition: transportCloseDisposition)
     }
+}
+
+private enum LinkError: Error {
+    case missingInitialViewport
+    case stopped
 }

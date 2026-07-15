@@ -1,10 +1,10 @@
 import SwiftUI
 import UIKit
 
-/// Hosts Remux's single live terminal surface. Pane/window topology belongs to
+/// Hosts the single terminal surface presented by Remux. Pane/window topology belongs to
 /// the picker model; it never participates in viewport layout.
 struct GhosttySingleViewportView: View {
-    let materializationContext: GhosttyRuntimeSurfaceMaterializationContext
+    let surfaceLookup: GhosttyManagedSurfaceLookup
     let projection: GhosttyTerminalViewportPresentationProjection
     let terminalTheme: TerminalTheme
     let onSurfaceTap: ((UUID) -> Void)?
@@ -20,7 +20,7 @@ struct GhosttySingleViewportView: View {
 
     var body: some View {
         GhosttySingleViewportRepresentable(
-            materializationContext: materializationContext,
+            surfaceLookup: surfaceLookup,
             projection: projection,
             terminalTheme: terminalTheme,
             onSurfaceTap: onSurfaceTap,
@@ -39,7 +39,7 @@ struct GhosttySingleViewportView: View {
 }
 
 private struct GhosttySingleViewportRepresentable: UIViewRepresentable {
-    let materializationContext: GhosttyRuntimeSurfaceMaterializationContext
+    let surfaceLookup: GhosttyManagedSurfaceLookup
     let projection: GhosttyTerminalViewportPresentationProjection
     let terminalTheme: TerminalTheme
     let onSurfaceTap: ((UUID) -> Void)?
@@ -63,7 +63,7 @@ private struct GhosttySingleViewportRepresentable: UIViewRepresentable {
         view.backgroundColor = terminalTheme.terminalBackgroundUIColor
         view.update(
             projection: projection,
-            materializationContext: materializationContext,
+            surfaceLookup: surfaceLookup,
             onSurfaceTap: onSurfaceTap,
             onWindowSwipe: onWindowSwipe,
             onCopySelection: onCopySelection,
@@ -89,7 +89,7 @@ private final class GhosttySingleViewportContainerView: UIView,
     UIGestureRecognizerDelegate,
     @preconcurrency UIEditMenuInteractionDelegate
 {
-    private var materializationContext = GhosttyRuntimeSurfaceMaterializationContext.empty
+    private var surfaceLookup = GhosttyManagedSurfaceLookup.empty
     private var projection = GhosttyTerminalViewportPresentationProjection.empty
     private var activeContainer: GhosttyPaneScrollContainerView?
     private var activeSurfaceID: UUID?
@@ -167,7 +167,7 @@ private final class GhosttySingleViewportContainerView: UIView,
 
     func update(
         projection: GhosttyTerminalViewportPresentationProjection,
-        materializationContext: GhosttyRuntimeSurfaceMaterializationContext,
+        surfaceLookup: GhosttyManagedSurfaceLookup,
         onSurfaceTap: ((UUID) -> Void)?,
         onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?,
         onCopySelection: ((UUID) -> Bool)?,
@@ -180,7 +180,7 @@ private final class GhosttySingleViewportContainerView: UIView,
         submitMousePressure: ((UUID, GhosttySurfaceMousePressureEvent) -> GhosttyMouseInputSubmissionOutcome)?
     ) {
         self.projection = projection
-        self.materializationContext = materializationContext
+        self.surfaceLookup = surfaceLookup
         self.onSurfaceTap = onSurfaceTap
         self.onWindowSwipe = onWindowSwipe
         self.onCopySelection = onCopySelection
@@ -214,7 +214,7 @@ private final class GhosttySingleViewportContainerView: UIView,
         }
         activeContainer = nil
         activeSurfaceID = nil
-        materializationContext = .empty
+        surfaceLookup = .empty
         projection = .empty
 
     }
@@ -251,11 +251,6 @@ private final class GhosttySingleViewportContainerView: UIView,
             }
         }
 
-        guard materializationContext.isAvailable else {
-            retireActiveContainer()
-            return
-        }
-
         guard let desiredID = projection.surfaceID else {
             retireActiveContainer()
             return
@@ -264,7 +259,7 @@ private final class GhosttySingleViewportContainerView: UIView,
         if activeSurfaceID != desiredID {
             retireActiveContainer()
         }
-        guard let surface = materializationContext.managedSurface(for: desiredID) else {
+        guard let surface = surfaceLookup.managedSurface(for: desiredID) else {
             retireActiveContainer()
             return
         }
@@ -306,10 +301,9 @@ private final class GhosttySingleViewportContainerView: UIView,
     }
 
     private func layoutActiveSurface() {
-        guard materializationContext.isAvailable,
-              let surfaceID = activeSurfaceID,
+        guard let surfaceID = activeSurfaceID,
               let container = activeContainer,
-              let surface = materializationContext.managedSurface(for: surfaceID)
+              let surface = surfaceLookup.managedSurface(for: surfaceID)
         else { return }
 
         let startedAt = GhosttyRuntimeTrace.perfEnabled
@@ -356,9 +350,8 @@ private final class GhosttySingleViewportContainerView: UIView,
 
     @objc
     private func handleSelectionLongPress(_ recognizer: UILongPressGestureRecognizer) {
-        guard materializationContext.isAvailable,
-              let surfaceID = projection.surfaceID,
-              let surface = materializationContext.managedSurface(for: surfaceID),
+        guard let surfaceID = projection.surfaceID,
+              let surface = surfaceLookup.managedSurface(for: surfaceID),
               let phase = GhosttySurfaceLongPressSelectionGesture.Phase(recognizer.state)
         else { return }
 
@@ -419,9 +412,8 @@ private final class GhosttySingleViewportContainerView: UIView,
     @objc
     private func handleSurfaceTap(_ recognizer: UITapGestureRecognizer) {
         guard recognizer.state == .ended,
-              materializationContext.isAvailable,
               let surfaceID = projection.surfaceID,
-              let surface = materializationContext.managedSurface(for: surfaceID)
+              let surface = surfaceLookup.managedSurface(for: surfaceID)
         else { return }
 
         let mouseCaptured = isMouseCaptured(surfaceID)
@@ -446,7 +438,8 @@ private final class GhosttySingleViewportContainerView: UIView,
 
     @objc
     private func handleSurfacePan(_ recognizer: UIPanGestureRecognizer) {
-        guard materializationContext.isAvailable,
+        guard let surfaceID = projection.surfaceID,
+              surfaceLookup.managedSurface(for: surfaceID) != nil,
               let phase = GhosttySurfacePanGesture.Phase(recognizer.state)
         else { return }
 

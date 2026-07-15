@@ -1239,8 +1239,7 @@ private struct TerminalThemePreviewPanel: View {
 
                 TerminalThemePreviewSurface(
                     state: renderer.state,
-                    settings: settings,
-                    displayScale: displayScale
+                    settings: settings
                 )
                 .task(id: renderTaskID(pointSize: pointSize)) {
                     renderer.render(
@@ -1269,22 +1268,19 @@ private struct TerminalThemePreviewPanel: View {
 private struct TerminalThemePreviewSurface: View {
     let state: TerminalThemePreviewRenderer.State
     let settings: TerminalSettings
-    let displayScale: CGFloat
 
     var body: some View {
         ZStack {
             Color(uiColor: settings.theme.terminalBackgroundUIColor)
 
             switch state {
-            case .idle, .loading:
+            case .idle:
                 ProgressView()
                     .controlSize(.small)
 
-            case .ready(let image):
-                Image(decorative: image, scale: displayScale, orientation: .up)
-                    .resizable()
-                    .interpolation(.none)
-                    .scaledToFit()
+            case .ready(let content):
+                TerminalThemePreviewContentView(content: content)
+                    .id(ObjectIdentifier(content))
 
             case .failed:
                 Label("Preview unavailable", systemImage: "exclamationmark.triangle")

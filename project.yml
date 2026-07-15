@@ -38,7 +38,7 @@ targets:
         script: |
           "$SRCROOT/scripts/verify_ghosttykit_release_mode.sh"
     dependencies:
-      - framework: ../ghostty-tmux-pane-store-refactor/macos/GhosttyKit.xcframework
+      - framework: ../ghostty-remux-upstream-rebuild/macos/GhosttyKit.xcframework
         embed: false
       - package: Citadel
     info:
@@ -61,7 +61,7 @@ targets:
       - path: RemuxAppTests
     dependencies:
       - target: Remux
-      - framework: ../ghostty-tmux-pane-store-refactor/macos/GhosttyKit.xcframework
+      - framework: ../ghostty-remux-upstream-rebuild/macos/GhosttyKit.xcframework
         embed: false
     settings:
       base:

@@ -6,7 +6,7 @@ if [[ "${CONFIGURATION:-Release}" != "Release" ]]; then
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-xcframework="${GHOSTTYKIT_XCFRAMEWORK:-$repo_root/../ghostty-tmux-pane-store-refactor/macos/GhosttyKit.xcframework}"
+xcframework="${GHOSTTYKIT_XCFRAMEWORK:-$repo_root/../ghostty-remux-upstream-rebuild/macos/GhosttyKit.xcframework}"
 macos_slice="$xcframework/macos-arm64_x86_64"
 headers="$macos_slice/Headers"
 library="$macos_slice/ghostty-internal.a"

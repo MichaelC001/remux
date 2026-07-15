@@ -2,10 +2,10 @@ import CoreGraphics
 import UIKit
 
 /// Single source of truth for pane-preview tile geometry and the physical
-/// pixel budget used when requesting raster previews from Ghostty.
+/// pixel budget used when downscaling local renderer frames.
 ///
 /// Used by:
-/// - `GhosttyPanePreviewSession` for the C ABI request budget
+/// - `GhosttyPanePreviewSession` for the local image budget
 /// - `GhosttyPaneSelectionTile` for fixed tile sizing
 ///
 /// Capture once per session at session-init time. Rotation while the panes
@@ -135,9 +135,8 @@ enum PanePreviewLayout {
         )
     }
 
-    /// Physical pixel budget for the C preview API at the given display scale.
-    /// Returns clamped UInt32s ready to drop into
-    /// `ghostty_surface_preview_image_options_s`.
+    /// Physical pixel budget for local picker images at the given display
+    /// scale. Returned dimensions are clamped to UInt32.
     @MainActor
     static func physicalPixelBudget(
         paneCount: Int,

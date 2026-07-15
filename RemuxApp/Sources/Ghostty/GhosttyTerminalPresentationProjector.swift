@@ -203,12 +203,10 @@ struct GhosttyTerminalScreenPresentationProjection: Equatable {
 struct GhosttyTerminalViewportPresentationProjection: Equatable {
     static let empty = GhosttyTerminalViewportPresentationProjection(
         surfaceID: nil,
-        pendingPresentationID: nil,
         windowCount: 0
     )
 
     let surfaceID: UUID?
-    let pendingPresentationID: UUID?
     let windowCount: Int
 
     var canNavigateWindows: Bool {
@@ -309,7 +307,6 @@ enum GhosttyTerminalPresentationProjector {
             ),
             viewport: GhosttyTerminalViewportPresentationProjection(
                 surfaceID: presentedSurfaceID,
-                pendingPresentationID: snapshot.pendingPhonePresentationSurfaceID,
                 windowCount: snapshot.topLevels.count
             ),
             statusOverlay: terminalStatusOverlayProjection(

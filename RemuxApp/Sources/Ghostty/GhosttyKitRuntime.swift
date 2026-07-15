@@ -1,8 +1,8 @@
+import Darwin
 import Foundation
 import GhosttyKit
 import QuartzCore
 import UIKit
-import Darwin
 
 enum GhosttyKitRuntimeError: Error, Equatable {
     case initializationFailed(Int32)
@@ -11,13 +11,13 @@ enum GhosttyKitRuntimeError: Error, Equatable {
     case runtimeConfigurationFileFailed(String)
     case configCreationFailed
     case appCreationFailed
-    case surfaceCreationFailed
+    case surfaceMeasurementFailed(ghostty_terminal_surface_result_e)
 }
 
 struct GhosttyTerminalAppearance: Equatable {
     let fontSize: Float32?
 
-    func apply(to config: inout ghostty_surface_config_s) {
+    func apply(to config: inout ghostty_terminal_surface_config_s) {
         guard let fontSize, config.font_size == 0 else { return }
         config.font_size = fontSize
     }
@@ -40,11 +40,7 @@ enum GhosttyTerminalAppearancePolicy {
         if let fontSize = settings.fontSize {
             return GhosttyTerminalAppearance(fontSize: fontSize)
         }
-
-        return appearance(
-            for: deviceClass,
-            contentSizeCategory: contentSizeCategory
-        )
+        return appearance(for: deviceClass, contentSizeCategory: contentSizeCategory)
     }
 
     static func appearance(
@@ -53,44 +49,40 @@ enum GhosttyTerminalAppearancePolicy {
     ) -> GhosttyTerminalAppearance {
         switch deviceClass {
         case .phone:
-            GhosttyTerminalAppearance(
+            return GhosttyTerminalAppearance(
                 fontSize: phoneFontSize(contentSizeCategory: contentSizeCategory)
             )
         case .pad:
-            GhosttyTerminalAppearance(fontSize: nil)
+            return GhosttyTerminalAppearance(fontSize: nil)
         }
     }
 
     @MainActor
-    static func currentDeviceAppearance(settings: TerminalSettings = .default) -> GhosttyTerminalAppearance {
-        let contentSizeCategory = UIApplication.shared.preferredContentSizeCategory
-
-        return switch UIDevice.current.userInterfaceIdiom {
+    static func currentDeviceAppearance(
+        settings: TerminalSettings = .default
+    ) -> GhosttyTerminalAppearance {
+        let category = UIApplication.shared.preferredContentSizeCategory
+        switch UIDevice.current.userInterfaceIdiom {
         case .phone:
-            appearance(
+            return appearance(
                 for: settings,
                 deviceClass: .phone,
-                contentSizeCategory: contentSizeCategory
+                contentSizeCategory: category
             )
         case .pad:
-            appearance(
-                for: settings,
-                deviceClass: .pad,
-                contentSizeCategory: contentSizeCategory
-            )
+            return appearance(for: settings, deviceClass: .pad, contentSizeCategory: category)
         default:
-            GhosttyTerminalAppearance(fontSize: settings.fontSize)
+            return GhosttyTerminalAppearance(fontSize: settings.fontSize)
         }
     }
 
     private static func phoneFontSize(contentSizeCategory: UIContentSizeCategory) -> Float32 {
         let traits = UITraitCollection(preferredContentSizeCategory: contentSizeCategory)
-        let scaledSize = UIFontMetrics(forTextStyle: .body).scaledValue(
+        let scaled = UIFontMetrics(forTextStyle: .body).scaledValue(
             for: CGFloat(phoneDefaultFontSize),
             compatibleWith: traits
         )
-
-        return Float32(max(scaledSize, CGFloat(phoneMinimumFontSize)))
+        return Float32(max(scaled, CGFloat(phoneMinimumFontSize)))
     }
 }
 
@@ -105,8 +97,8 @@ private struct GhosttyTerminalRendererWarmupKey: Hashable {
         screenScale: CGFloat,
         contentSizeCategory: UIContentSizeCategory
     ) {
-        self.theme = terminalSettings.theme.rawValue
-        self.fontSize = terminalSettings.fontSize
+        theme = terminalSettings.theme.rawValue
+        fontSize = terminalSettings.fontSize
         self.screenScale = Int((screenScale * 1000).rounded())
         self.contentSizeCategory = contentSizeCategory.rawValue
     }
@@ -114,10 +106,7 @@ private struct GhosttyTerminalRendererWarmupKey: Hashable {
 
 final class GhosttyKitSurfaceView: UIView {
     override init(frame: CGRect) {
-        let initialFrame = frame.isEmpty
-            ? CGRect(x: 0, y: 0, width: 1, height: 1)
-            : frame
-        super.init(frame: initialFrame)
+        super.init(frame: frame.isEmpty ? CGRect(x: 0, y: 0, width: 1, height: 1) : frame)
         configure()
     }
 
@@ -126,9 +115,7 @@ final class GhosttyKitSurfaceView: UIView {
         configure()
     }
 
-    override class var layerClass: AnyClass {
-        CAMetalLayer.self
-    }
+    override class var layerClass: AnyClass { CAMetalLayer.self }
 
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -138,12 +125,9 @@ final class GhosttyKitSurfaceView: UIView {
     func alignGhosttyRendererSublayers() {
         let scale = max(window?.screen.scale ?? contentScaleFactor, 1)
         layer.contentsScale = scale
-
-        guard let sublayers = layer.sublayers else { return }
-        for sublayer in sublayers {
+        for sublayer in layer.sublayers ?? [] {
             sublayer.frame = bounds
             sublayer.contentsScale = scale
-            sublayer.setNeedsDisplay()
         }
     }
 
@@ -163,154 +147,78 @@ extension TerminalTheme {
     var terminalBackgroundUIColor: UIColor {
         let hex = terminalBackgroundHex
         return UIColor(
-            red: CGFloat((hex >> 16) & 0xFF) / 255.0,
-            green: CGFloat((hex >> 8) & 0xFF) / 255.0,
-            blue: CGFloat(hex & 0xFF) / 255.0,
-            alpha: 1.0
+            red: CGFloat((hex >> 16) & 0xFF) / 255,
+            green: CGFloat((hex >> 8) & 0xFF) / 255,
+            blue: CGFloat(hex & 0xFF) / 255,
+            alpha: 1
         )
     }
 }
 
 @MainActor
 final class GhosttyKitRuntime {
-    typealias ManualWriteHandler = @Sendable (_ data: Data, _ linefeed: Bool) -> Bool
-    typealias ManualResizeHandler = @Sendable (
-        _ columns: UInt16,
-        _ rows: UInt16,
-        _ width: UInt32,
-        _ height: UInt32
-    ) -> Bool
-    typealias ManualFocusHandler = @Sendable (_ focused: Bool) -> Bool
-
     private static var initialized = false
-    @MainActor private static var terminalRendererWarmupKeys = Set<GhosttyTerminalRendererWarmupKey>()
+    private static var terminalRendererWarmupKeys = Set<GhosttyTerminalRendererWarmupKey>()
 
     private let state: GhosttyKitRuntimeState
 
-    init(
-        surfaceDelegate: GhosttyKitRuntimeSurfaceDelegate? = nil,
-        terminalSettings: TerminalSettings = .default
-    ) throws {
+    init(terminalSettings: TerminalSettings = .default) throws {
         try Self.initializeBackend()
-        state = try GhosttyKitRuntimeState(
-            surfaceDelegate: surfaceDelegate,
-            terminalSettings: terminalSettings
-        )
+        state = try GhosttyKitRuntimeState(terminalSettings: terminalSettings)
     }
 
-    /// The ghostty app handle for session-level APIs
-    /// (ghostty_tmux_session_new); main-actor like the runtime.
-    var appHandle: ghostty_app_t {
-        state.app
-    }
+    var appHandle: ghostty_app_t { state.app }
 
-    /// Base surface config for new-architecture tmux pane surfaces:
-    /// appearance applied from this runtime's settings; platform,
-    /// scale, and the pane binding are set by the pane surface itself.
-    func makeTmuxBaseSurfaceConfig() -> ghostty_surface_config_s {
-        var config = ghostty_surface_config_new()
+    func makeTmuxBaseSurfaceConfig() -> ghostty_terminal_surface_config_s {
+        var config = ghostty_terminal_surface_config_new()
         GhosttyTerminalAppearancePolicy
             .currentDeviceAppearance(settings: state.terminalSettings)
             .apply(to: &config)
         return config
     }
 
-    @MainActor
     static func prewarmTerminalRenderer(terminalSettings: TerminalSettings) {
         let key = GhosttyTerminalRendererWarmupKey(
             terminalSettings: terminalSettings,
             screenScale: UIScreen.main.scale,
             contentSizeCategory: UIApplication.shared.preferredContentSizeCategory
         )
-        guard !terminalRendererWarmupKeys.contains(key) else { return }
+        guard terminalRendererWarmupKeys.insert(key).inserted else { return }
 
-        let start = GhosttyRuntimeTrace.nowNanos()
         do {
             let runtime = try GhosttyKitRuntime(terminalSettings: terminalSettings)
             _ = try runtime.measureTmuxViewport(
                 size: CGSize(width: 96, height: 96),
                 scale: UIScreen.main.scale
             )
-            terminalRendererWarmupKeys.insert(key)
-            GhosttyRuntimeTrace.perf(
-                "runtime.prewarmTerminalRenderer result=success elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
-            )
         } catch {
+            terminalRendererWarmupKeys.remove(key)
             GhosttyRuntimeTrace.diagnostics(
                 "runtime.prewarmTerminalRenderer failed error=\(String(describing: error))"
             )
         }
     }
 
-    @MainActor
     func measureTmuxViewport(size: CGSize, scale: CGFloat) throws -> TmuxControlViewport? {
-        let normalizedSize = GhosttyTerminalViewportCoordinator.normalized(size)
-        guard normalizedSize.width > 1, normalizedSize.height > 1 else { return nil }
+        let size = GhosttyTerminalViewportCoordinator.normalized(size)
+        guard size.width > 1, size.height > 1 else { return nil }
 
-        let view = GhosttyKitSurfaceView(frame: CGRect(origin: .zero, size: normalizedSize))
-        view.contentScaleFactor = max(scale, 1)
-
-        return try withExtendedLifetime(view) {
-            let surface = try makeManualHostSurface(
-                view: view,
-                initialSize: normalizedSize
-            )
-            return TmuxControlViewport(ghosttySurfaceSize: surface.currentSize())
+        let metrics = GhosttySurfaceDisplayMetrics(size: size, scale: scale)
+        var config = makeTmuxBaseSurfaceConfig()
+        config.scale_factor = metrics.contentScale
+        config.width_px = metrics.pixelWidth
+        config.height_px = metrics.pixelHeight
+        var measured = ghostty_surface_size_s()
+        let result = ghostty_terminal_surface_measure(state.app, &config, &measured)
+        guard result == GHOSTTY_TERMINAL_SURFACE_RESULT_OK else {
+            throw GhosttyKitRuntimeError.surfaceMeasurementFailed(result)
         }
+        return TmuxControlViewport(ghosttySurfaceSize: measured)
     }
 
-#if DEBUG
-    var appHandleForTesting: ghostty_app_t {
-        state.app
-    }
-#endif
-
-    func makeManualHostSurface(
-        view: UIView,
-        initialSize: CGSize? = nil,
-        onWrite: ManualWriteHandler? = nil,
-        onResize: ManualResizeHandler? = nil,
-        onFocus: ManualFocusHandler? = nil
-    ) throws -> GhosttyKitControlSurface {
-        let callbacks = GhosttyKitManualSurfaceCallbacks(
-            onWrite: onWrite,
-            onResize: onResize,
-            onFocus: onFocus
-        )
-
-        var surfaceConfig = ghostty_surface_config_new()
-        GhosttyTerminalAppearancePolicy
-            .currentDeviceAppearance(settings: state.terminalSettings)
-            .apply(to: &surfaceConfig)
-        surfaceConfig.platform_tag = GHOSTTY_PLATFORM_IOS
-        surfaceConfig.platform = ghostty_platform_u(ios: ghostty_platform_ios_s(
-            uiview: Unmanaged.passUnretained(view).toOpaque()
-        ))
-        surfaceConfig.scale_factor = max(Double(view.contentScaleFactor), 1)
-        let metrics = GhosttySurfaceDisplayMetrics(
-            size: initialSize ?? view.bounds.size,
-            scale: view.contentScaleFactor
-        )
-        surfaceConfig.initial_width_px = metrics.pixelWidth
-        surfaceConfig.initial_height_px = metrics.pixelHeight
-        surfaceConfig.initial_focused = false
-        surfaceConfig.context = GHOSTTY_SURFACE_CONTEXT_WINDOW
-        surfaceConfig.backing = GHOSTTY_SURFACE_BACKING_MANUAL
-        surfaceConfig.manual_userdata = callbacks.userdata
-        surfaceConfig.manual_write = callbacks.writeCallback
-        surfaceConfig.manual_resize = callbacks.resizeCallback
-        surfaceConfig.manual_focus = callbacks.focusCallback
-
-        guard let surface = ghostty_surface_new(state.app, &surfaceConfig) else {
-            throw GhosttyKitRuntimeError.surfaceCreationFailed
-        }
-
-        return GhosttyKitControlSurface(
-            surface: surface,
-            ownership: .storageOwned,
-            retainedObjects: [state, callbacks]
-        )
-    }
+    #if DEBUG
+    var appHandleForTesting: ghostty_app_t { state.app }
+    #endif
 
     func applyTerminalSettings(_ settings: TerminalSettings) throws {
         try state.applyTerminalSettings(settings)
@@ -318,14 +226,11 @@ final class GhosttyKitRuntime {
 
     private static func initializeBackend() throws {
         guard !initialized else { return }
-
         try configureProcessDirectories()
-
         let result = ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv)
         guard result == GHOSTTY_SUCCESS else {
             throw GhosttyKitRuntimeError.initializationFailed(result)
         }
-
         initialized = true
     }
 
@@ -333,10 +238,8 @@ final class GhosttyKitRuntime {
         let home = NSHomeDirectory()
         let applicationSupport = "\(home)/Library/Application Support"
         let caches = "\(home)/Library/Caches"
-
         try createDirectoryIfNeeded(at: applicationSupport)
         try createDirectoryIfNeeded(at: caches)
-
         try setEnvironment("HOME", to: home)
         try setEnvironment("XDG_CONFIG_HOME", to: applicationSupport)
         try setEnvironment("XDG_CACHE_HOME", to: caches)
@@ -356,13 +259,11 @@ final class GhosttyKitRuntime {
 
     private static func setEnvironment(_ name: String, to value: String) throws {
         guard getenv(name) == nil else { return }
-
         let result = name.withCString { namePointer in
             value.withCString { valuePointer in
                 setenv(namePointer, valuePointer, 1)
             }
         }
-
         guard result == 0 else {
             throw GhosttyKitRuntimeError.environmentConfigurationFailed(name)
         }
@@ -377,14 +278,12 @@ private final class GhosttyKitRuntimeState {
     private let callbacks: GhosttyKitRuntimeCallbacks
 
     @MainActor
-    init(
-        surfaceDelegate: GhosttyKitRuntimeSurfaceDelegate?,
-        terminalSettings: TerminalSettings
-    ) throws {
+    init(terminalSettings: TerminalSettings) throws {
         guard let config = ghostty_config_new() else {
             throw GhosttyKitRuntimeError.configCreationFailed
         }
-        let appearance = GhosttyTerminalAppearancePolicy.currentDeviceAppearance(settings: terminalSettings)
+        let appearance = GhosttyTerminalAppearancePolicy
+            .currentDeviceAppearance(settings: terminalSettings)
         try Self.loadSettings(
             terminalSettings,
             into: config,
@@ -392,9 +291,7 @@ private final class GhosttyKitRuntimeState {
         )
         ghostty_config_finalize(config)
 
-        let callbackLease = surfaceDelegate?.makeRuntimeCallbackLease()
-        let callbacks = GhosttyKitRuntimeCallbacks(callbackLease: callbackLease)
-        callbacks.surfaceDelegate = surfaceDelegate
+        let callbacks = GhosttyKitRuntimeCallbacks()
         var runtimeConfig = ghostty_runtime_config_s(
             userdata: callbacks.userdata,
             supports_selection_clipboard: false,
@@ -403,14 +300,9 @@ private final class GhosttyKitRuntimeState {
             read_clipboard_cb: nil,
             confirm_read_clipboard_cb: nil,
             write_clipboard_cb: nil,
-            close_surface_cb: nil,
-            select_surface_cb: nil,
-            create_surface_cb: nil,
-            create_surface_tree_cb: nil
+            close_surface_cb: nil
         )
-
         guard let app = ghostty_app_new(&runtimeConfig, config) else {
-            callbacks.invalidateCallbackLease()
             ghostty_config_free(config)
             throw GhosttyKitRuntimeError.appCreationFailed
         }
@@ -423,10 +315,7 @@ private final class GhosttyKitRuntimeState {
     }
 
     deinit {
-        // A wakeup callback may have queued a MainActor tick. Clear the pointer
-        // before freeing so the queued task cannot tick a destroyed app.
         callbacks.app = nil
-        callbacks.invalidateCallbackLease()
         ghostty_app_free(app)
         ghostty_config_free(config)
         _ = callbacks
@@ -435,24 +324,20 @@ private final class GhosttyKitRuntimeState {
     @MainActor
     func applyTerminalSettings(_ settings: TerminalSettings) throws {
         guard settings != terminalSettings else { return }
-
-        guard let config = ghostty_config_new() else {
+        guard let replacement = ghostty_config_new() else {
             throw GhosttyKitRuntimeError.configCreationFailed
         }
-        defer { ghostty_config_free(config) }
+        defer { ghostty_config_free(replacement) }
 
-        let appearance = GhosttyTerminalAppearancePolicy.currentDeviceAppearance(settings: settings)
+        let appearance = GhosttyTerminalAppearancePolicy
+            .currentDeviceAppearance(settings: settings)
         try Self.loadSettings(
             settings,
-            into: config,
+            into: replacement,
             effectiveFontSize: appearance.fontSize
         )
-        ghostty_config_finalize(config)
-
-        GhosttyRuntimeTrace.diagnostics(
-            "runtime.applyTerminalSettings theme=\(settings.theme.rawValue) fontSize=\(appearance.fontSize.map(String.init(describing:)) ?? "nil")"
-        )
-        ghostty_app_update_config(app, config)
+        ghostty_config_finalize(replacement)
+        ghostty_app_update_config(app, replacement)
         terminalSettings = settings
     }
 
@@ -461,294 +346,38 @@ private final class GhosttyKitRuntimeState {
         into config: ghostty_config_t,
         effectiveFontSize: Float32?
     ) throws {
-        guard let contents = settings.ghosttyConfigContents(effectiveFontSize: effectiveFontSize) else {
-            return
-        }
+        guard let contents = settings.ghosttyConfigContents(
+            effectiveFontSize: effectiveFontSize
+        ) else { return }
 
         let fileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("remux-ghostty-\(UUID().uuidString).conf")
-
         do {
             try contents.write(to: fileURL, atomically: true, encoding: .utf8)
         } catch {
             throw GhosttyKitRuntimeError.runtimeConfigurationFileFailed(fileURL.path)
         }
-        defer {
-            try? FileManager.default.removeItem(at: fileURL)
-        }
-
-        fileURL.path.withCString { path in
-            ghostty_config_load_file(config, path)
-        }
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        fileURL.path.withCString { ghostty_config_load_file(config, $0) }
     }
 }
 
 private final class GhosttyKitRuntimeCallbacks: @unchecked Sendable {
     var app: ghostty_app_t?
-    weak var surfaceDelegate: GhosttyKitRuntimeSurfaceDelegate?
-    let callbackLease: GhosttyRuntimeCallbackLease?
-
-    init(callbackLease: GhosttyRuntimeCallbackLease?) {
-        self.callbackLease = callbackLease
-    }
 
     var userdata: UnsafeMutableRawPointer {
         Unmanaged.passUnretained(self).toOpaque()
     }
 
-    func acceptsRuntimeCallback() -> Bool {
-        guard let callbackLease else { return false }
-        return surfaceDelegate?.acceptsRuntimeCallback(callbackLease) ?? false
-    }
-
-    func acceptsWakeupCallback() -> Bool {
-        guard callbackLease != nil else { return true }
-        return acceptsRuntimeCallback()
-    }
-
-    func invalidateCallbackLease() {
-        guard let callbackLease else { return }
-        surfaceDelegate?.runtimeCallbackLeaseDidEnd(callbackLease)
-    }
-
-    private static func traceTopologyCallback(
-        _ event: String,
-        fields: @autoclosure () -> [String: String] = [:]
-    ) {
-        GhosttyTmuxActionTrace.traceActiveTopologyFlows(event: event, fields: fields())
-    }
-
-    private static func callbackThreadField() -> String {
-        Thread.isMainThread ? "main" : "background"
-    }
-
-    private static func wakeupTraceFields(
-        route: String,
-        entryThread: String
-    ) -> [String: String] {
-        [
-            "entryThread": entryThread,
-            "route": route,
-        ]
-    }
-
-    static var wakeupCallback: ghostty_runtime_wakeup_cb {
-        { userdata in
-            GhosttyKitRuntimeCallbacks.wakeup(userdata)
-        }
-    }
-
-    static var actionCallback: ghostty_runtime_action_cb {
-        { app, target, action in
-            GhosttyKitRuntimeCallbacks.action(app, target: target, action: action)
-        }
-    }
-
-    static func wakeup(_ userdata: UnsafeMutableRawPointer?) {
-        guard let callbacks = from(userdata: userdata) else { return }
-        guard callbacks.acceptsWakeupCallback() else { return }
-        let entryThread = GhosttyRuntimeTrace.flowTraceEnabled ? callbackThreadField() : ""
-        traceTopologyCallback(
-            "runtime.wakeup.entry",
-            fields: wakeupTraceFields(route: "async", entryThread: entryThread)
-        )
-        traceTopologyCallback(
-            "runtime.wakeup.mainActor.schedule",
-            fields: wakeupTraceFields(route: "async", entryThread: entryThread)
-        )
+    static let wakeupCallback: ghostty_runtime_wakeup_cb = { userdata in
+        guard let userdata else { return }
+        let callbacks = Unmanaged<GhosttyKitRuntimeCallbacks>
+            .fromOpaque(userdata).takeUnretainedValue()
         Task { @MainActor in
-            guard callbacks.acceptsWakeupCallback() else { return }
             guard let app = callbacks.app else { return }
-            traceTopologyCallback(
-                "runtime.wakeup.mainActor.begin",
-                fields: wakeupTraceFields(route: "async", entryThread: entryThread)
-            )
-            traceTopologyCallback(
-                "runtime.wakeup.appTick.begin",
-                fields: wakeupTraceFields(route: "async", entryThread: entryThread)
-            )
-            if let lease = callbacks.callbackLease {
-                callbacks.surfaceDelegate?.withRuntimeCallbackBatch(lease: lease) {
-                    ghostty_app_tick(app)
-                }
-            } else {
-                ghostty_app_tick(app)
-            }
-            traceTopologyCallback(
-                "runtime.wakeup.appTick.end",
-                fields: wakeupTraceFields(route: "async", entryThread: entryThread)
-            )
+            ghostty_app_tick(app)
         }
     }
 
-    static func action(
-        _ app: ghostty_app_t?,
-        target: ghostty_target_s,
-        action: ghostty_action_s
-    ) -> Bool {
-        guard let callbacks = from(app: app) else { return true }
-        guard let lease = callbacks.callbackLease,
-              callbacks.acceptsRuntimeCallback()
-        else {
-            return true
-        }
-        let appBox = UnsafeSendable(app)
-        let targetBox = UnsafeSendable(GhosttyRuntimeSurfaceActionTarget(native: target))
-        let actionBox = UnsafeSendable(GhosttyRuntimeSurfaceAction(native: action))
-        let leaseBox = UnsafeSendable(lease)
-        if Thread.isMainThread {
-            GhosttyRuntimeTrace.perf("runtime.action route=main")
-            return MainActor.assumeIsolated {
-                callbacks.surfaceDelegate?.runtimeAction(
-                    app: appBox.value,
-                    target: targetBox.value,
-                    action: actionBox.value,
-                    lease: leaseBox.value
-                ) ?? true
-            }
-        } else {
-            return GhosttyRuntimeTrace.perfMeasure("runtime.action route=sync") {
-                DispatchQueue.main.sync {
-                    MainActor.assumeIsolated {
-                        callbacks.surfaceDelegate?.runtimeAction(
-                            app: appBox.value,
-                            target: targetBox.value,
-                            action: actionBox.value,
-                            lease: leaseBox.value
-                        ) ?? true
-                    }
-                }
-            }
-        }
-    }
-
-    private static func from(app: ghostty_app_t?) -> GhosttyKitRuntimeCallbacks? {
-        guard let app else { return nil }
-        guard let userdata = ghostty_app_userdata(app) else { return nil }
-        return Unmanaged<GhosttyKitRuntimeCallbacks>.fromOpaque(userdata).takeUnretainedValue()
-    }
-
-    private static func from(userdata: UnsafeMutableRawPointer?) -> GhosttyKitRuntimeCallbacks? {
-        guard let userdata else { return nil }
-        return Unmanaged<GhosttyKitRuntimeCallbacks>.fromOpaque(userdata).takeUnretainedValue()
-    }
-}
-
-private struct UnsafeSendable<Value>: @unchecked Sendable {
-    let value: Value
-
-    init(_ value: Value) {
-        self.value = value
-    }
-}
-
-private final class GhosttyKitManualSurfaceCallbacks: @unchecked Sendable {
-    private let onWrite: GhosttyKitRuntime.ManualWriteHandler?
-    private let onResize: GhosttyKitRuntime.ManualResizeHandler?
-    private let onFocus: GhosttyKitRuntime.ManualFocusHandler?
-
-    init(
-        onWrite: GhosttyKitRuntime.ManualWriteHandler?,
-        onResize: GhosttyKitRuntime.ManualResizeHandler?,
-        onFocus: GhosttyKitRuntime.ManualFocusHandler?
-    ) {
-        self.onWrite = onWrite
-        self.onResize = onResize
-        self.onFocus = onFocus
-    }
-
-    var userdata: UnsafeMutableRawPointer {
-        Unmanaged.passUnretained(self).toOpaque()
-    }
-
-    var writeCallback: ghostty_surface_manual_write_cb? {
-        guard onWrite != nil else { return nil }
-        return { userdata, data, count, linefeed in
-            GhosttyKitManualSurfaceCallbacks.writeThunk(userdata, data, count, linefeed)
-        }
-    }
-
-    var resizeCallback: ghostty_surface_manual_resize_cb? {
-        guard onResize != nil else { return nil }
-        return { userdata, columns, rows, width, height in
-            GhosttyKitManualSurfaceCallbacks.resizeThunk(userdata, columns, rows, width, height)
-        }
-    }
-
-    var focusCallback: ghostty_surface_manual_focus_cb? {
-        guard onFocus != nil else { return nil }
-        return { userdata, focused in
-            GhosttyKitManualSurfaceCallbacks.focusThunk(userdata, focused)
-        }
-    }
-
-    private static func writeThunk(
-        _ userdata: UnsafeMutableRawPointer?,
-        _ data: UnsafePointer<CChar>?,
-        _ count: Int,
-        _ linefeed: Bool
-    ) -> Bool {
-        write(userdata, data: data, count: count, linefeed: linefeed)
-    }
-
-    private static func resizeThunk(
-        _ userdata: UnsafeMutableRawPointer?,
-        _ columns: UInt16,
-        _ rows: UInt16,
-        _ width: UInt32,
-        _ height: UInt32
-    ) -> Bool {
-        resize(userdata, columns: columns, rows: rows, width: width, height: height)
-    }
-
-    private static func focusThunk(
-        _ userdata: UnsafeMutableRawPointer?,
-        _ focused: Bool
-    ) -> Bool {
-        focus(userdata, focused: focused)
-    }
-
-    private static func write(
-        _ userdata: UnsafeMutableRawPointer?,
-        data: UnsafePointer<CChar>?,
-        count: Int,
-        linefeed: Bool
-    ) -> Bool {
-        guard let callbacks = from(userdata: userdata) else { return false }
-        guard let onWrite = callbacks.onWrite else { return true }
-        guard count >= 0 else { return false }
-
-        if count == 0 {
-            return onWrite(Data(), linefeed)
-        }
-
-        guard let data else { return false }
-        return onWrite(Data(bytes: data, count: count), linefeed)
-    }
-
-    private static func resize(
-        _ userdata: UnsafeMutableRawPointer?,
-        columns: UInt16,
-        rows: UInt16,
-        width: UInt32,
-        height: UInt32
-    ) -> Bool {
-        guard let callbacks = from(userdata: userdata) else { return false }
-        guard let onResize = callbacks.onResize else { return true }
-        return onResize(columns, rows, width, height)
-    }
-
-    private static func focus(
-        _ userdata: UnsafeMutableRawPointer?,
-        focused: Bool
-    ) -> Bool {
-        guard let callbacks = from(userdata: userdata) else { return false }
-        guard let onFocus = callbacks.onFocus else { return true }
-        return onFocus(focused)
-    }
-
-    private static func from(userdata: UnsafeMutableRawPointer?) -> GhosttyKitManualSurfaceCallbacks? {
-        guard let userdata else { return nil }
-        return Unmanaged<GhosttyKitManualSurfaceCallbacks>.fromOpaque(userdata).takeUnretainedValue()
-    }
+    static let actionCallback: ghostty_runtime_action_cb = { _, _, _ in true }
 }

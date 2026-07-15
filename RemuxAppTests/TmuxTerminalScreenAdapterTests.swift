@@ -5,13 +5,6 @@ import XCTest
 
 @MainActor
 final class TmuxTerminalScreenAdapterTests: XCTestCase {
-    func testCellSizeRuntimeActionIsPreservedAsViewportSignal() {
-        var native = ghostty_action_s()
-        native.tag = GHOSTTY_ACTION_CELL_SIZE
-
-        XCTAssertEqual(GhosttyRuntimeSurfaceAction(native: native), .cellSize)
-    }
-
     func testIdentityRegistryKeepsPaneRoundTripStable() {
         var registry = TmuxTerminalIdentityRegistry()
         let paneID = TmuxPaneID(41)
@@ -40,8 +33,10 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
             makeTransport: { DeterministicTmuxControlTransport(chunks: []) },
             baseSurfaceConfig: { runtime.makeTmuxBaseSurfaceConfig() },
             paneViewTheme: { .remuxDark },
-            createPaneSurface: { _, _, _, _, _, completion in
-                completion(.failure(.surfaceCreationFailed))
+            createPaneSurface: { _, _, _, _, _, _, _, completion in
+                completion(.failure(.surfaceCreationFailed(
+                    GHOSTTY_TERMINAL_SURFACE_RESULT_INVALID_INPUT
+                )))
             }
         )
     }
@@ -54,7 +49,6 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
     ) -> TmuxSessionController.WindowInfo {
         TmuxSessionController.WindowInfo(
             id: id,
-            name: "w\(id)",
             active: active,
             zoomed: zoomed,
             width: 80,
@@ -74,41 +68,8 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
             y: 0,
             width: 80,
             height: 24,
-            state: .live
+            phase: .live
         )
-    }
-
-    func testGroupedWindowSelectionRequiresCanonicalUnzoomedSplitTarget() {
-        let targetWindow = window(id: 2, active: false, paneID: 20, zoomed: false)
-        let targetPanes = [pane(id: 20, windowID: 2), pane(id: 21, windowID: 2)]
-        func groupedPane(
-            for target: TmuxSessionController.WindowInfo,
-            panes: [TmuxSessionController.PaneInfo] = targetPanes,
-            activeWindowID: TmuxWindowID? = 1
-        ) -> TmuxPaneID? {
-            let topology = TmuxSessionController.TopologySnapshot(
-                sessionName: "grouped-selection",
-                windows: [window(id: 1, active: true, paneID: 10), target],
-                panes: [pane(id: 10, windowID: 1)] + panes,
-                activeWindowID: activeWindowID
-            )
-            return TmuxTerminalScreenAdapter.groupedWindowSelectionPane(
-                for: target,
-                in: topology
-            )
-        }
-
-        XCTAssertEqual(groupedPane(for: targetWindow), 20)
-        XCTAssertNil(groupedPane(for: targetWindow, activeWindowID: 2))
-        XCTAssertNil(groupedPane(for: targetWindow, activeWindowID: nil))
-        XCTAssertNil(groupedPane(
-            for: window(id: 2, active: false, paneID: 20, zoomed: true)
-        ))
-        XCTAssertNil(groupedPane(
-            for: window(id: 2, active: false, paneID: nil, zoomed: false)
-        ))
-        XCTAssertNil(groupedPane(for: targetWindow, panes: [targetPanes[0]]))
-        XCTAssertNil(groupedPane(for: targetWindow, panes: [targetPanes[1]]))
     }
 
     func testWindowProjectionReflectsEmittedTopologyImmediately() async throws {
@@ -118,7 +79,8 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         adapter.activate(
             session: session,
             initialViewportHandler: { _, _ in },
-            clientSizeHandler: { _ in }
+            clientSizeHandler: { _ in },
+            viewportStabilityHandler: { _ in }
         )
 
         let twoWindows = TmuxSessionController.TopologySnapshot(
@@ -155,54 +117,6 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         XCTAssertEqual(second.cellCount, 1)
 
         await session.shutdown()
-    }
-
-    func testTopologyNeverPublishesOutgoingFrameHold() async throws {
-        let runtime = try GhosttyKitRuntime()
-        let session = makeSession(runtime: runtime)
-        let adapter = TmuxTerminalScreenAdapter()
-        adapter.activate(
-            session: session,
-            initialViewportHandler: { _, _ in },
-            clientSizeHandler: { _ in }
-        )
-
-        session.handleTopology(TmuxSessionController.TopologySnapshot(
-            sessionName: "background-test",
-            windows: [window(id: 1, active: true, paneID: 10)],
-            panes: [pane(id: 10, windowID: 1), pane(id: 20, windowID: 1)],
-            activeWindowID: 1
-        ))
-        XCTAssertNil(
-            adapter.terminalScreenPresentationProjection.viewport.pendingPresentationID
-        )
-
-        session.handleTopology(TmuxSessionController.TopologySnapshot(
-            sessionName: "background-test",
-            windows: [window(id: 1, active: true, paneID: 20)],
-            panes: [pane(id: 10, windowID: 1), pane(id: 20, windowID: 1)],
-            activeWindowID: 1
-        ))
-        XCTAssertNil(
-            adapter.terminalScreenPresentationProjection.viewport.pendingPresentationID
-        )
-
-        await session.shutdown()
-    }
-
-    func testPanePreviewOptionsPreserveRequestedBudget() {
-        let options = ghostty_surface_preview_image_options_s(
-            max_width_px: 400,
-            max_height_px: 300,
-            include_cursor: true
-        )
-        let scaled = TmuxTerminalScreenAdapter.panePreviewOptions(
-            options: options
-        )
-
-        XCTAssertEqual(scaled?.max_width_px, 400)
-        XCTAssertEqual(scaled?.max_height_px, 300)
-        XCTAssertEqual(scaled?.include_cursor, true)
     }
 
     func testPanePreviewCacheEvictsLeastRecentlyUsedImageWithinByteLimit() throws {
@@ -257,41 +171,17 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         XCTAssertEqual(cache.entries[1]?.preview.source, .fullViewport(expected))
     }
 
-    func testPanePreviewCacheRetainsRemoteGeometrySource() throws {
+    func testPanePreviewCacheRetainsPaneGeometrySource() throws {
         let image = try makeImage(width: 4, height: 4)
         var cache = TmuxPanePreviewImageCache(byteLimit: 1024)
 
         cache.store(preview(image), for: 1)
 
-        XCTAssertEqual(cache.preview(for: 1)?.source, .remotePaneGeometry)
-    }
-
-    func testPanePreviewOptionsRequireNonzeroPixelBudget() {
-        XCTAssertNil(
-            TmuxTerminalScreenAdapter.panePreviewOptions(
-                options: ghostty_surface_preview_image_options_s(
-                    max_width_px: 0,
-                    max_height_px: 300,
-                    include_cursor: true
-                )
-            )
-        )
-    }
-
-    func testPreviewWarmRequiresPaneLiveAndLayout() {
-        let paneID = TmuxPaneID(10)
-        func canWarm(livePaneIDs: Set<TmuxPaneID>, layoutComplete: Bool) -> Bool {
-            TmuxTerminalScreenAdapter.canWarmFullViewportPreview(
-                paneID: paneID,
-                livePaneIDs: livePaneIDs,
-                hasCompletedInitialLayout: layoutComplete
-            )
+        guard case .paneGeometry(let provenance)? = cache.preview(for: 1)?.source else {
+            return XCTFail("expected pane geometry provenance")
         }
-
-        XCTAssertFalse(canWarm(livePaneIDs: [], layoutComplete: false))
-        XCTAssertFalse(canWarm(livePaneIDs: [], layoutComplete: true))
-        XCTAssertFalse(canWarm(livePaneIDs: [paneID], layoutComplete: false))
-        XCTAssertTrue(canWarm(livePaneIDs: [paneID], layoutComplete: true))
+        XCTAssertEqual(provenance.columns, 80)
+        XCTAssertEqual(provenance.rows, 24)
     }
 
     private func makeImage(width: Int, height: Int) throws -> CGImage {
@@ -318,6 +208,13 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
     private func preview(
         _ image: CGImage
     ) -> GhosttyPanePreviewSession.RenderedPreview {
-        .init(image: image, source: .remotePaneGeometry)
+        .init(
+            image: image,
+            source: .paneGeometry(.init(
+                surfaceID: UUID(),
+                columns: 80,
+                rows: 24
+            ))
+        )
     }
 }

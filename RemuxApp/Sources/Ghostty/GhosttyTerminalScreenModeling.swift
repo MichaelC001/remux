@@ -11,15 +11,13 @@ import GhosttyKit
 /// through this boundary.
 enum GhosttyTmuxModelActionOutcome: Equatable, Sendable {
     case queued
-    case localSelectionOnly(TmuxActionSubmissionResult)
     case missingTarget(GhosttyTmuxActionMissingTarget)
-    case rejected(TmuxActionSubmissionResult)
 
     var isHandled: Bool {
         switch self {
-        case .queued, .localSelectionOnly:
+        case .queued:
             true
-        case .missingTarget, .rejected:
+        case .missingTarget:
             false
         }
     }
@@ -60,7 +58,7 @@ enum GhosttyAppLifecyclePhase: Equatable {
 protocol GhosttyTerminalRenderingModeling: ObservableObject {
     var terminalScreenPresentationProjection: GhosttyTerminalScreenPresentationProjection { get }
     var terminalInteractionProjection: GhosttyTerminalInteractionProjection { get }
-    var terminalSurfaceMaterializationContext: GhosttyRuntimeSurfaceMaterializationContext { get }
+    var terminalManagedSurfaceLookup: GhosttyManagedSurfaceLookup { get }
     var commandFailureEvent: GhosttyTmuxCommandFailureEvent? { get }
     var stateTraceLabel: String { get }
 

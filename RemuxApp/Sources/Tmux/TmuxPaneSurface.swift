@@ -1,360 +1,376 @@
 import Foundation
 import GhosttyKit
+import QuartzCore
 import UIKit
 
-/// A surface projecting one tmux pane through the new session API.
-///
-/// Lifecycle contract (mirrors libghostty's): the binding is
-/// established BEFORE the surface is created (the surface borrows the
-/// pane terminal and render mutex at creation, for its whole life),
-/// and MUST be released after the surface is freed in `close` order:
-/// surface render stops -> surface freed -> binding unbound. The session
-/// retains one instance per visited pane and reuses it across presentations.
+/// MainActor owner of one retained canonical pane terminal and its current
+/// renderer surface. Normal pane switches retain this entire object unchanged;
+/// settings or renderer failure replace only the renderer over the same
+/// terminal and UIView.
 @MainActor
 final class TmuxPaneSurface {
     let paneID: TmuxPaneID
     let instanceID = TerminalSurfaceInstanceID()
     let view: GhosttyKitSurfaceView
 
-    private let surface: ghostty_surface_t
-    private let binding: TmuxSessionController.PaneBinding
+    private let app: ghostty_app_t
     private let controller: TmuxSessionController
-    private let inputBox: InputBox
-    private let wakeTarget: WakeTarget
-    private let controlSurface: GhosttyKitControlSurface
+    private let terminal: TmuxSessionController.RetainedPaneTerminal
+    private let callbackBox: CallbackBox
+    private let failureRelay: FailureRelay
+    private let onRendererFailure: (TmuxPaneID) -> Void
+
+    private struct Renderer {
+        let handle: ghostty_terminal_surface_t
+        let control: GhosttyKitControlSurface
+    }
+
+    private enum Lifecycle {
+        case active
+        case replacing
+        case closing
+        case closed
+    }
+
+    private var renderer: Renderer?
     private(set) var managedSurface: GhosttyManagedSurface?
-    private(set) var hasCompletedInitialLayout = false
-    private var presentedWindowID: TmuxWindowID?
-    private var closed = false
-    private var closeResult: Result<Void, TmuxSessionController.PaneReleaseError>?
-    private var closeCompletions: [
-        @MainActor @Sendable (Result<Void, TmuxSessionController.PaneReleaseError>) -> Void
-    ] = []
+    private(set) var lastFullViewportProvenance:
+        GhosttyPanePreviewSession.FullViewportProvenance?
+    private var presented = false
+    private var lifecycle = Lifecycle.active
+    private var rendererFailureReported = false
+    private var closeCompletions: [@MainActor @Sendable () -> Void] = []
+    private var framePublicationWait: FramePublicationWait?
+    private var presentationTask: Task<Void, Never>?
+    private var presentationGeneration: UInt64 = 0
+    private let previewRelay = PreviewRelay()
+    private var canonicalViewportMetrics: GhosttySurfaceDisplayMetrics
+    private var appliedDisplayMetrics: GhosttySurfaceDisplayMetrics
 
-    /// Routes the manual backend's input writes to the session controller.
-    /// Held with a stable address for the C callback.
-    final class InputBox {
-        let controller: TmuxSessionController
-        let paneID: TmuxPaneID
+    enum CreateError: Error {
+        case surfaceCreationFailed(ghostty_terminal_surface_result_e)
+        case registrationFailed(TmuxSessionController.SurfaceRegistrationError)
+    }
 
-        init(controller: TmuxSessionController, paneID: TmuxPaneID) {
-            self.controller = controller
-            self.paneID = paneID
+    enum RendererReplacementResult: Equatable {
+        case replaced
+        case busy
+        case failed
+    }
+
+    private final class FailureRelay {
+        weak var pane: TmuxPaneSurface?
+    }
+
+    private enum FramePublication {
+        case ready
+        case captured(GhosttyIOSurfaceFrame)
+    }
+
+    private final class FramePublicationWait: @unchecked Sendable {
+        let transientVisibility: Bool
+        let keepVisibleAfterSuccess: Bool
+        let captureOwnedPixels: Bool
+        let expectedWidth: UInt32
+        let expectedHeight: UInt32
+        var observation: NSKeyValueObservation?
+        var continuation: CheckedContinuation<FramePublication?, Never>?
+
+        init(
+            transientVisibility: Bool,
+            keepVisibleAfterSuccess: Bool,
+            captureOwnedPixels: Bool,
+            expectedWidth: UInt32,
+            expectedHeight: UInt32
+        ) {
+            self.transientVisibility = transientVisibility
+            self.keepVisibleAfterSuccess = keepVisibleAfterSuccess
+            self.captureOwnedPixels = captureOwnedPixels
+            self.expectedWidth = expectedWidth
+            self.expectedHeight = expectedHeight
         }
     }
 
-    enum CreateError: Error {
-        case bindFailed(TmuxSessionController.BindError)
-        case surfaceCreationFailed
+    private final class PreviewRelay: @unchecked Sendable {
+        weak var pane: TmuxPaneSurface?
     }
 
-    /// C handles/configs crossing into the @Sendable bind completion;
-    /// they are only used back on the main actor.
-    private struct UncheckedSendable<T>: @unchecked Sendable {
-        let value: T
+    private final class LayerReference: @unchecked Sendable {
+        weak var layer: CALayer?
+
+        init(_ layer: CALayer) {
+            self.layer = layer
+        }
     }
 
-    /// Create a pane surface: bind first (writer queue), then build the
-    /// surface with the binding in its config. Completion on main.
+    private final class CallbackBox: @unchecked Sendable {
+        let controller: TmuxSessionController
+        let paneID: TmuxPaneID
+        let failureRelay: FailureRelay
+
+        init(
+            controller: TmuxSessionController,
+            paneID: TmuxPaneID,
+            failureRelay: FailureRelay
+        ) {
+            self.controller = controller
+            self.paneID = paneID
+            self.failureRelay = failureRelay
+        }
+
+        static let writeCallback: ghostty_terminal_surface_write_cb = { userdata, pointer, count in
+            guard let userdata else { return false }
+            let box = Unmanaged<CallbackBox>.fromOpaque(userdata).takeUnretainedValue()
+            guard count > 0 else { return true }
+            guard let pointer else { return false }
+            return box.controller.sendInput(
+                paneID: box.paneID,
+                Data(bytes: pointer, count: count)
+            )
+        }
+
+        static let healthCallback: ghostty_terminal_surface_renderer_health_cb = { userdata, health in
+            guard health == GHOSTTY_RENDERER_HEALTH_UNHEALTHY, let userdata else { return }
+            let box = Unmanaged<CallbackBox>.fromOpaque(userdata).takeUnretainedValue()
+            DispatchQueue.main.async { [weak relay = box.failureRelay] in
+                MainActor.assumeIsolated { relay?.pane?.rendererDidFail() }
+            }
+        }
+    }
+
     static func create(
         app: ghostty_app_t,
         controller: TmuxSessionController,
-        paneID: TmuxPaneID,
-        baseConfig: ghostty_surface_config_s,
+        terminal: TmuxSessionController.RetainedPaneTerminal,
+        baseConfig: ghostty_terminal_surface_config_s,
+        metrics: GhosttySurfaceDisplayMetrics,
         theme: TerminalTheme,
+        onRendererFailure: @escaping @MainActor (TmuxPaneID) -> Void,
         completion: @escaping @MainActor (Result<TmuxPaneSurface, CreateError>) -> Void
     ) {
-        // The wake target doesn't exist until the surface does; bridge
-        // through a box the wake closure reads after creation.
-        let wakeTarget = WakeTarget()
-        let appBox = UncheckedSendable(value: app)
-        let configBox = UncheckedSendable(value: baseConfig)
-        GhosttyRuntimeTrace.flowEventIfActive(
-            GhosttyRuntimeTrace.paneSwitchFlow,
-            event: "materialization.bind.begin",
-            fields: ["pane": "\(paneID)"]
+        let relay = FailureRelay()
+        let callbackBox = CallbackBox(
+            controller: controller,
+            paneID: terminal.paneID,
+            failureRelay: relay
         )
-        controller.bind(
-            paneID: paneID,
-            wake: { [weak wakeTarget] in
-                // Writer queue; ghostty_surface_refresh is a renderer
-                // mailbox push and is thread-safe.
-                wakeTarget?.requestRefresh()
-            }
+        let view = GhosttyKitSurfaceView(frame: CGRect(
+            x: 0,
+            y: 0,
+            width: Double(metrics.pixelWidth) / metrics.contentScale,
+            height: Double(metrics.pixelHeight) / metrics.contentScale
+        ))
+        view.contentScaleFactor = metrics.contentScale
+        view.applyTerminalTheme(theme)
+
+        var config = configured(
+            baseConfig,
+            view: view,
+            metrics: metrics,
+            callbackBox: callbackBox,
+            visible: false,
+            focused: false
+        )
+        var nativeSurface: ghostty_terminal_surface_t?
+        let result = ghostty_terminal_surface_new(
+            app,
+            terminal.handle,
+            &config,
+            &nativeSurface
+        )
+        guard result == GHOSTTY_TERMINAL_SURFACE_RESULT_OK, let nativeSurface else {
+            completion(.failure(.surfaceCreationFailed(result)))
+            return
+        }
+        view.alignGhosttyRendererSublayers()
+
+        let pane = TmuxPaneSurface(
+            app: app,
+            controller: controller,
+            terminal: terminal,
+            view: view,
+            surface: nativeSurface,
+            metrics: metrics,
+            callbackBox: callbackBox,
+            failureRelay: relay,
+            onRendererFailure: onRendererFailure
+        )
+        relay.pane = pane
+        controller.registerTerminalSurface(
+            paneID: terminal.paneID,
+            surface: nativeSurface
         ) { result in
-            // The controller invokes completions on the main queue.
-            MainActor.assumeIsolated {
             switch result {
+            case .success:
+                completion(.success(pane))
             case .failure(let error):
-                GhosttyRuntimeTrace.flowEndIfActive(
-                    GhosttyRuntimeTrace.paneSwitchFlow,
-                    event: "materialization.bind.failed",
-                    fields: [
-                        "error": String(describing: error),
-                        "pane": "\(paneID)",
-                    ]
-                )
-                completion(.failure(.bindFailed(error)))
-            case .success(let binding):
-                GhosttyRuntimeTrace.flowEventIfActive(
-                    GhosttyRuntimeTrace.paneSwitchFlow,
-                    event: "materialization.bind.ready",
-                    fields: ["pane": "\(paneID)"]
-                )
-                GhosttyRuntimeTrace.flowEventIfActive(
-                    GhosttyRuntimeTrace.paneSwitchFlow,
-                    event: "materialization.hostSurface.begin",
-                    fields: ["pane": "\(paneID)"]
-                )
-                if let pane = TmuxPaneSurface(
-                    app: appBox.value,
-                    controller: controller,
-                    paneID: paneID,
-                    binding: binding,
-                    wakeTarget: wakeTarget,
-                    baseConfig: configBox.value,
-                    theme: theme
-                ) {
-                    wakeTarget.install(surface: pane.surface)
-                    GhosttyRuntimeTrace.flowEventIfActive(
-                        GhosttyRuntimeTrace.paneSwitchFlow,
-                        event: "materialization.hostSurface.ready",
-                        fields: [
-                            "pane": "\(paneID)",
-                            "surface": String(describing: pane.surface),
-                        ]
-                    )
-                    completion(.success(pane))
-                } else {
-                    controller.unbindAndDematerialize(binding) { releaseResult in
-                        if case .failure(let error) = releaseResult {
-                            GhosttyRuntimeTrace.diagnostics(
-                                "tmuxPane.create releaseFailed pane=\(paneID) error=\(error)"
-                            )
-                        }
-                        GhosttyRuntimeTrace.flowEndIfActive(
-                            GhosttyRuntimeTrace.paneSwitchFlow,
-                            event: "materialization.hostSurface.failed",
-                            fields: ["pane": "\(paneID)"]
-                        )
-                        completion(.failure(.surfaceCreationFailed))
-                    }
-                }
-            }
+                pane.destroyUnregisteredRenderer()
+                completion(.failure(.registrationFailed(error)))
             }
         }
     }
 
-    /// The wake fires on the writer queue while the surface is set on
-    /// the main queue: a real cross-thread handoff, guarded by a lock.
-    private final class WakeTarget: @unchecked Sendable {
-        private let lock = NSLock()
-        private var _surface: ghostty_surface_t?
-        private var allowsRefresh = false
-        private var isVisible = false
-
-        func install(surface: ghostty_surface_t) {
-            lock.withLock {
-                _surface = surface
-            }
-        }
-
-        func requestRefresh() {
-            // The lock is a native-lifetime fence, not only a state lock.
-            // `clear()` must not return and let the main actor free the
-            // surface while this writer-queue call is still using it.
-            lock.withLock {
-                guard allowsRefresh, isVisible, let surface = _surface else { return }
-                ghostty_surface_refresh(surface)
-            }
-        }
-
-        func setVisible(_ visible: Bool) {
-            lock.withLock {
-                isVisible = visible
-            }
-        }
-
-        func enableRefreshAfterInitialLayout() -> Bool {
-            lock.withLock {
-                guard !allowsRefresh, _surface != nil else { return false }
-                allowsRefresh = true
-                return true
-            }
-        }
-
-        func clear() {
-            lock.withLock {
-                _surface = nil
-            }
-        }
-    }
-
-    private init?(
+    private init(
         app: ghostty_app_t,
         controller: TmuxSessionController,
-        paneID: TmuxPaneID,
-        binding: TmuxSessionController.PaneBinding,
-        wakeTarget: WakeTarget,
-        baseConfig: ghostty_surface_config_s,
-        theme: TerminalTheme
+        terminal: TmuxSessionController.RetainedPaneTerminal,
+        view: GhosttyKitSurfaceView,
+        surface: ghostty_terminal_surface_t,
+        metrics: GhosttySurfaceDisplayMetrics,
+        callbackBox: CallbackBox,
+        failureRelay: FailureRelay,
+        onRendererFailure: @escaping (TmuxPaneID) -> Void
     ) {
-        let inputBox = InputBox(controller: controller, paneID: paneID)
-
-        var config = baseConfig
-        let scale = max(Double(UIScreen.main.scale), 1)
-        config.scale_factor = scale
-        config.initial_focused = true
-
-        let view = GhosttyKitSurfaceView(
-            frame: CGRect(x: 0, y: 0, width: 400, height: 600)
-        )
-        view.applyTerminalTheme(theme)
-        config.platform_tag = GHOSTTY_PLATFORM_IOS
-        config.platform = ghostty_platform_u(ios: ghostty_platform_ios_s(
-            uiview: Unmanaged.passUnretained(view).toOpaque()
-        ))
-
-        // The projected-terminal capability: manual backing (no PTY),
-        // host input callbacks, the pane binding borrowed at creation.
-        config.backing = GHOSTTY_SURFACE_BACKING_MANUAL
-        config.tmux_binding = binding.rawHandle
-        config.manual_userdata = Unmanaged.passUnretained(inputBox).toOpaque()
-        config.manual_write = { userdata, ptr, len, linefeed in
-            guard let userdata else { return false }
-            let box = Unmanaged<InputBox>.fromOpaque(userdata).takeUnretainedValue()
-            var bytes = if let ptr, len > 0 {
-                Data(bytes: ptr, count: Int(len))
-            } else {
-                Data()
-            }
-            if linefeed { bytes.append(0x0D) }
-            guard !bytes.isEmpty else { return true }
-            return box.controller.sendInput(paneID: box.paneID, bytes)
-        }
-        config.manual_focus = { _, _ in true }
-
-        let nativeSurfaceStartedAt = GhosttyRuntimeTrace.flowTraceEnabled
-            ? GhosttyRuntimeTrace.nowNanos() : 0
-        GhosttyRuntimeTrace.flowEventIfActive(
-            GhosttyRuntimeTrace.paneSwitchFlow,
-            event: "materialization.nativeSurface.begin",
-            fields: ["pane": "\(paneID)"],
-            at: nativeSurfaceStartedAt == 0 ? nil : nativeSurfaceStartedAt
-        )
-        guard let surface = ghostty_surface_new(app, &config) else {
-            return nil
-        }
-        GhosttyRuntimeTrace.flowEventIfActive(
-            GhosttyRuntimeTrace.paneSwitchFlow,
-            event: "materialization.nativeSurface.ready",
-            fields: [
-                "elapsed_ms": GhosttyRuntimeTrace.elapsedMilliseconds(from: nativeSurfaceStartedAt),
-                "pane": "\(paneID)",
-                "surface": String(describing: surface),
-            ]
-        )
-
-        self.paneID = paneID
-        self.view = view
-        self.surface = surface
-        self.binding = binding
+        self.app = app
         self.controller = controller
-        self.inputBox = inputBox
-        self.wakeTarget = wakeTarget
-        self.controlSurface = GhosttyKitControlSurface(
+        self.terminal = terminal
+        paneID = terminal.paneID
+        self.view = view
+        self.callbackBox = callbackBox
+        self.failureRelay = failureRelay
+        self.onRendererFailure = onRendererFailure
+        canonicalViewportMetrics = metrics
+        appliedDisplayMetrics = metrics
+        let control = GhosttyKitControlSurface(
             surface: surface,
-            ownership: .borrowed
+            scaleFactor: metrics.contentScale,
+            onFailure: { [weak failureRelay] _ in
+                failureRelay?.pane?.rendererDidFail()
+            }
         )
+        renderer = Renderer(handle: surface, control: control)
+        previewRelay.pane = self
     }
 
-    var rawSurface: ghostty_surface_t { surface }
+    var rawSurface: ghostty_terminal_surface_t? { renderer?.handle }
 
-    /// Build the screen-facing wrapper once and retain it beside the native
-    /// surface. The borrowed control wrapper intentionally retains no pane
-    /// owner: this object owns the wrapper, so a back-reference would cycle.
     func screenSurface(
-        windowID: TmuxWindowID?,
-        onDisplayUpdate: @escaping @MainActor (GhosttyManagedSurface, CGSize, CGFloat) -> Void
+        onDisplayUpdate: @escaping (GhosttyManagedSurface, CGSize, CGFloat) -> Void
     ) -> GhosttyManagedSurface {
-        presentedWindowID = windowID
         if let managedSurface {
-            managedSurface.updateScrollState(controlSurface.scrollState())
-            managedSurface.updateScrollRoute(controlSurface.scrollRoute())
+            if renderer != nil { managedSurface.refreshInteractionState() }
             managedSurface.onDisplayUpdate = onDisplayUpdate
             return managedSurface
         }
+        guard let renderer else {
+            preconditionFailure("first screen surface requires a registered renderer")
+        }
 
-        let paneID = paneID
-        let controller = controller
         let managed = GhosttyManagedSurface(
             id: instanceID.rawValue,
             view: view,
-            controlSurface: controlSurface,
-            scrollState: controlSurface.scrollState(),
-            scrollRoute: controlSurface.scrollRoute(),
-            visibilityChanged: { [weak wakeTarget = self.wakeTarget] visible in
-                wakeTarget?.setVisible(visible)
-            },
-            tmuxFocus: { [weak controller] in
-                controller?.requestSelectPane(paneID: paneID)
-                return .queued
-            },
-            tmuxSplit: { [weak controller] direction in
-                let splitDirection: TmuxSessionController.SplitDirection = switch direction {
-                case GHOSTTY_SPLIT_DIRECTION_LEFT: .left
-                case GHOSTTY_SPLIT_DIRECTION_UP: .up
-                case GHOSTTY_SPLIT_DIRECTION_DOWN: .down
-                default: .right
-                }
-                controller?.requestSplit(
-                    paneID: paneID,
-                    direction: splitDirection,
-                    zoom: true
-                )
-                return .queued
-            },
-            tmuxClosePane: { [weak controller] in
-                controller?.requestClosePane(paneID: paneID)
-                return .queued
-            },
-            tmuxCloseWindow: { [weak self, weak controller] in
-                guard let windowID = self?.presentedWindowID else { return .noTarget }
-                controller?.requestCloseWindow(windowID: windowID)
-                return .queued
-            },
-            tmuxCopyMode: { [weak controller] in
-                controller?.requestCopyMode(paneID: paneID)
-                return .queued
-            },
-            releaseBeforePermanentRemoval: {},
-            transferRuntimeSurfaceLifetimeToAppShutdown: {}
+            controlSurface: renderer.control,
+            paneOwner: self,
+            interactionState: renderer.control.interactionState()
         )
         managed.onDisplayUpdate = onDisplayUpdate
         managedSurface = managed
         return managed
     }
 
-    func updateWindowID(_ windowID: TmuxWindowID?) {
-        presentedWindowID = windowID
-    }
-
-    /// Open writer-queue refresh delivery only after the real host viewport
-    /// has sized the borrowed surface. The subsequent visibility transition
-    /// queues the first render; submitting another refresh here would be
-    /// duplicate renderer work.
-    func completeInitialLayout() {
-        guard wakeTarget.enableRefreshAfterInitialLayout() else { return }
-        hasCompletedInitialLayout = true
-    }
-
     func setPresented(_ presented: Bool) {
-        if let managedSurface {
-            managedSurface.setFocused(presented)
-            managedSurface.setVisible(presented)
+        guard lifecycle != .closed, lifecycle != .closing else { return }
+        self.presented = presented
+        if presented {
+            // A warm revisit may attach its retained genuine frame before a
+            // newer viewport-sized frame arrives. Resize first, then make the
+            // already-published pane surface visible and interactive.
+            _ = applyDisplayMetrics(canonicalViewportMetrics)
+            if let managedSurface {
+                managedSurface.setFocused(true)
+                managedSurface.setVisible(true)
+            } else {
+                _ = renderer?.control.setFocused(true)
+                _ = renderer?.control.setVisible(true)
+            }
+        } else if let managedSurface {
+            managedSurface.setFocused(false)
+            managedSurface.setVisible(false)
         } else {
-            ghostty_surface_set_focus(surface, presented)
-            ghostty_surface_set_occlusion(surface, presented)
+            _ = renderer?.control.setFocused(false)
+            _ = renderer?.control.setVisible(false)
+        }
+    }
+
+    func refreshInteractionState() {
+        managedSurface?.refreshInteractionState()
+    }
+
+    func updateCanonicalViewportMetrics(_ metrics: GhosttySurfaceDisplayMetrics) {
+        canonicalViewportMetrics = metrics
+    }
+
+    @discardableResult
+    func updateDisplay(metrics: GhosttySurfaceDisplayMetrics) -> Bool {
+        canonicalViewportMetrics = metrics
+        return applyDisplayMetrics(metrics)
+    }
+
+    func prepareForPresentation(
+        completion: @escaping @MainActor (Bool) -> Void
+    ) {
+        guard lifecycle == .active, !presented else {
+            completion(false)
+            return
+        }
+        cancelPresentationPreparation()
+        presentationGeneration &+= 1
+        let generation = presentationGeneration
+
+        if hasCurrentFullViewportFrame() {
+            completion(true)
+            return
+        }
+
+        guard applyDisplayMetrics(canonicalViewportMetrics),
+              let rendererLayer = GhosttyIOSurfaceFrame.rendererLayer(in: view.layer)
+        else {
+            completion(false)
+            return
+        }
+
+        let expected = canonicalViewportMetrics
+        presentationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let publication = await matchingPublication(
+                on: rendererLayer,
+                transientVisibility: true,
+                keepVisibleAfterSuccess: true,
+                captureOwnedPixels: false,
+                expectedWidth: expected.pixelWidth,
+                expectedHeight: expected.pixelHeight
+            )
+            guard presentationGeneration == generation else { return }
+            presentationTask = nil
+            guard !Task.isCancelled,
+                  expected == canonicalViewportMetrics,
+                  publication != nil
+            else {
+                completion(false)
+                return
+            }
+            lastFullViewportProvenance = .init(
+                surfaceID: instanceID.rawValue,
+                pixelWidth: expected.pixelWidth,
+                pixelHeight: expected.pixelHeight
+            )
+            completion(true)
+        }
+    }
+
+    func cancelPresentationPreparation() {
+        presentationGeneration &+= 1
+        let hadTask = presentationTask != nil
+        let hadWait = framePublicationWait != nil
+        presentationTask?.cancel()
+        presentationTask = nil
+        if hadWait {
+            // The wait owns its transient visibility and hides exactly once.
+            cancelFramePublicationWait()
+        } else if hadTask, !presented {
+            // Publication may have completed with keep-visible immediately
+            // before the MainActor task is cancelled.
+            _ = renderer?.control.setVisible(false)
         }
     }
 
@@ -362,42 +378,544 @@ final class TmuxPaneSurface {
         view.applyTerminalTheme(theme)
     }
 
-    var isClosing: Bool { closed }
-
-    /// Final teardown in contract order: invalidate the stable wrapper, free
-    /// the surface (renderer stops and releases the borrowed mutex), then
-    /// unbind. Engine retirement remains libghostty/session-owned.
-    func close(
-        completion: @escaping @MainActor @Sendable (Result<Void, TmuxSessionController.PaneReleaseError>) -> Void = { _ in }
+    func replaceRenderer(
+        baseConfig: ghostty_terminal_surface_config_s,
+        metrics: GhosttySurfaceDisplayMetrics,
+        theme: TerminalTheme,
+        completion: @escaping @MainActor (RendererReplacementResult) -> Void
     ) {
-        if let closeResult {
-            completion(closeResult)
+        guard lifecycle == .active else {
+            completion(lifecycle == .replacing ? .busy : .failed)
+            return
+        }
+        guard !presented else {
+            assertionFailure("session must unpublish before renderer replacement")
+            completion(.failed)
+            return
+        }
+        lifecycle = .replacing
+        // This call is the single replacement attempt for the triggering
+        // failure/settings change. Failures inside it return through
+        // completion; they must not recursively schedule another attempt.
+        rendererFailureReported = true
+        cancelPresentationPreparation()
+        lastFullViewportProvenance = nil
+
+        let installReplacement = { [self] in
+            guard lifecycle == .replacing else {
+                finishCloseIfRendererless()
+                completion(.failed)
+                return
+            }
+            view.applyTerminalTheme(theme)
+            view.frame.size = CGSize(
+                width: Double(metrics.pixelWidth) / metrics.contentScale,
+                height: Double(metrics.pixelHeight) / metrics.contentScale
+            )
+            view.contentScaleFactor = metrics.contentScale
+            canonicalViewportMetrics = metrics
+            appliedDisplayMetrics = metrics
+
+            var config = Self.configured(
+                baseConfig,
+                view: view,
+                metrics: metrics,
+                callbackBox: callbackBox,
+                visible: false,
+                focused: false
+            )
+            var replacement: ghostty_terminal_surface_t?
+            let result = ghostty_terminal_surface_new(
+                app,
+                terminal.handle,
+                &config,
+                &replacement
+            )
+            guard result == GHOSTTY_TERMINAL_SURFACE_RESULT_OK, let replacement else {
+                lifecycle = .active
+                completion(.failed)
+                return
+            }
+            view.alignGhosttyRendererSublayers()
+
+            let wrapper = GhosttyKitControlSurface(
+                surface: replacement,
+                scaleFactor: metrics.contentScale,
+                onFailure: { [weak failureRelay] _ in
+                    failureRelay?.pane?.rendererDidFail()
+                }
+            )
+            renderer = Renderer(handle: replacement, control: wrapper)
+            controller.registerTerminalSurface(paneID: paneID, surface: replacement) { [self] result in
+                guard case .success = result else {
+                    wrapper.invalidate()
+                    ghostty_terminal_surface_free(replacement)
+                    renderer = nil
+                    if lifecycle == .closing {
+                        finishCloseIfRendererless()
+                    } else {
+                        lifecycle = .active
+                    }
+                    completion(.failed)
+                    return
+                }
+
+                guard lifecycle != .closing else {
+                    controller.unregisterTerminalSurface(
+                        paneID: paneID,
+                        surface: replacement
+                    ) { [self] in
+                        wrapper.invalidate()
+                        ghostty_terminal_surface_free(replacement)
+                        renderer = nil
+                        finishCloseIfRendererless()
+                        completion(.failed)
+                    }
+                    return
+                }
+                lifecycle = .active
+                rendererFailureReported = false
+                managedSurface?.replaceControlSurface(wrapper)
+                completion(.replaced)
+            }
+        }
+
+        guard let oldRenderer = renderer else {
+            installReplacement()
+            return
+        }
+        controller.unregisterTerminalSurface(
+            paneID: paneID,
+            surface: oldRenderer.handle
+        ) { [self] in
+            oldRenderer.control.invalidate()
+            ghostty_terminal_surface_free(oldRenderer.handle)
+            if renderer?.handle == oldRenderer.handle { renderer = nil }
+            guard lifecycle != .closing else {
+                finishCloseIfRendererless()
+                completion(.failed)
+                return
+            }
+            installReplacement()
+        }
+    }
+
+    var isClosing: Bool { lifecycle == .closing || lifecycle == .closed }
+
+    func close(completion: @escaping @MainActor @Sendable () -> Void = {}) {
+        if lifecycle == .closed {
+            completion()
             return
         }
         closeCompletions.append(completion)
-        guard !closed else { return }
-        closed = true
+        guard lifecycle != .closing else { return }
+        let wasReplacing = lifecycle == .replacing
+        lifecycle = .closing
+        cancelPresentationPreparation()
+        previewRelay.pane = nil
+        failureRelay.pane = nil
         managedSurface?.prepareForPermanentRemoval()
-        controlSurface.invalidate()
-        wakeTarget.clear()
-        ghostty_surface_free(surface)
-        let paneID = paneID
-        controller.unbind(binding) { [self] releaseResult in
-            if case .failure(let error) = releaseResult {
-                GhosttyRuntimeTrace.diagnostics(
-                    "tmuxPane.close releaseFailed pane=\(paneID) error=\(error)"
-                )
+        guard !wasReplacing else { return }
+        guard let renderer else {
+            finishCloseIfRendererless()
+            return
+        }
+        controller.unregisterTerminalSurface(
+            paneID: paneID,
+            surface: renderer.handle
+        ) { [self] in
+            renderer.control.invalidate()
+            ghostty_terminal_surface_free(renderer.handle)
+            if self.renderer?.handle == renderer.handle { self.renderer = nil }
+            finishCloseIfRendererless()
+        }
+    }
+
+    /// Cancel any transient detached render before pane selection owns the
+    /// surface. Cancellation hides immediately and invalidates KVO, so no
+    /// delayed completion can hide the newly selected pane.
+    func cancelPickerCaptureForPresentation() {
+        guard framePublicationWait?.keepVisibleAfterSuccess == false else { return }
+        cancelFramePublicationWait()
+    }
+
+    func capturePickerPreview(
+        columns: UInt32,
+        rows: UInt32,
+        budget: GhosttyPanePreviewSession.PixelBudget
+    ) async -> GhosttyPanePreviewSession.RenderedPreview? {
+        guard lifecycle == .active,
+              framePublicationWait == nil,
+              presentationTask == nil,
+              columns > 0, rows > 0,
+              let rendererLayer = GhosttyIOSurfaceFrame.rendererLayer(in: view.layer)
+        else { return nil }
+
+        if let provenance = lastFullViewportProvenance {
+            if let frame = retainedFullViewportFrame(
+                in: rendererLayer,
+                provenance: provenance
+            ),
+               let image = await makePreviewImage(from: frame, budget: budget) {
+                return .init(image: image, source: .fullViewport(provenance))
             }
-            closeResult = releaseResult
-            let completions = closeCompletions
-            closeCompletions.removeAll()
-            for completion in completions {
-                completion(releaseResult)
+
+            guard presented,
+                  let current = renderer?.control.currentSize(),
+                  isViewportSized(current),
+                  let dimensions = GhosttyIOSurfaceFrame.dimensions(in: rendererLayer),
+                  dimensions.width == Int(canonicalViewportMetrics.pixelWidth),
+                  dimensions.height == Int(canonicalViewportMetrics.pixelHeight),
+                  let frame = try? GhosttyIOSurfaceFrame.read(from: rendererLayer)
+            else { return nil }
+            let currentProvenance = GhosttyPanePreviewSession.FullViewportProvenance(
+                surfaceID: instanceID.rawValue,
+                pixelWidth: current.width_px,
+                pixelHeight: current.height_px
+            )
+            lastFullViewportProvenance = currentProvenance
+            guard let image = await makePreviewImage(from: frame, budget: budget) else {
+                return nil
+            }
+            return .init(image: image, source: .fullViewport(currentProvenance))
+        }
+
+        guard !presented,
+              resizeForPickerGrid(columns: columns, rows: rows),
+              let current = renderer?.control.currentSize(),
+              current.columns == columns,
+              current.rows == rows,
+              let publication = await matchingPublication(
+                on: rendererLayer,
+                transientVisibility: true,
+                keepVisibleAfterSuccess: false,
+                captureOwnedPixels: true,
+                expectedWidth: current.width_px,
+                expectedHeight: current.height_px
+              ),
+              case .captured(let frame) = publication,
+              let image = await makePreviewImage(from: frame, budget: budget)
+        else { return nil }
+
+        let source: GhosttyPanePreviewSession.PreviewSource
+        if isViewportSized(current) {
+            let provenance = GhosttyPanePreviewSession.FullViewportProvenance(
+                surfaceID: instanceID.rawValue,
+                pixelWidth: current.width_px,
+                pixelHeight: current.height_px
+            )
+            lastFullViewportProvenance = provenance
+            source = .fullViewport(provenance)
+        } else {
+            source = .paneGeometry(.init(
+                surfaceID: instanceID.rawValue,
+                columns: columns,
+                rows: rows
+            ))
+        }
+        return .init(image: image, source: source)
+    }
+
+    private func rendererDidFail() {
+        guard lifecycle == .active, !rendererFailureReported else { return }
+        rendererFailureReported = true
+        onRendererFailure(paneID)
+    }
+
+    private func destroyUnregisteredRenderer() {
+        lifecycle = .closed
+        cancelPresentationPreparation()
+        previewRelay.pane = nil
+        failureRelay.pane = nil
+        renderer?.control.invalidate()
+        if let renderer { ghostty_terminal_surface_free(renderer.handle) }
+        renderer = nil
+    }
+
+    private func finishCloseIfRendererless() {
+        guard lifecycle == .closing, renderer == nil else { return }
+        lifecycle = .closed
+        let completions = closeCompletions
+        closeCompletions.removeAll()
+        for completion in completions { completion() }
+    }
+
+    private static func configured(
+        _ base: ghostty_terminal_surface_config_s,
+        view: GhosttyKitSurfaceView,
+        metrics: GhosttySurfaceDisplayMetrics,
+        callbackBox: CallbackBox,
+        visible: Bool,
+        focused: Bool
+    ) -> ghostty_terminal_surface_config_s {
+        var config = base
+        config.platform_tag = GHOSTTY_PLATFORM_IOS
+        config.platform = ghostty_platform_u(ios: ghostty_platform_ios_s(
+            uiview: Unmanaged.passUnretained(view).toOpaque()
+        ))
+        config.userdata = Unmanaged.passUnretained(callbackBox).toOpaque()
+        config.renderer_health_cb = CallbackBox.healthCallback
+        config.write_cb = CallbackBox.writeCallback
+        config.scale_factor = metrics.contentScale
+        config.width_px = metrics.pixelWidth
+        config.height_px = metrics.pixelHeight
+        config.visible = visible
+        config.focused = focused
+        return config
+    }
+
+    private func matchingPublication(
+        on layer: CALayer,
+        transientVisibility: Bool,
+        keepVisibleAfterSuccess: Bool,
+        captureOwnedPixels: Bool,
+        expectedWidth: UInt32,
+        expectedHeight: UInt32
+    ) async -> FramePublication? {
+        // Drain any stale display invalidation before observing. The visibility
+        // mailbox below is ordered after resize and is what requests the real
+        // updateFrame/draw whose IOSurface publication we accept.
+        layer.displayIfNeeded()
+        return await withCheckedContinuation { continuation in
+            guard !Task.isCancelled, framePublicationWait == nil else {
+                continuation.resume(returning: nil)
+                return
+            }
+            let wait = FramePublicationWait(
+                transientVisibility: transientVisibility,
+                keepVisibleAfterSuccess: keepVisibleAfterSuccess,
+                captureOwnedPixels: captureOwnedPixels,
+                expectedWidth: expectedWidth,
+                expectedHeight: expectedHeight
+            )
+            let layerReference = LayerReference(layer)
+            let relay = previewRelay
+            wait.continuation = continuation
+            framePublicationWait = wait
+            wait.observation = layer.observe(\.contents, options: [.new]) { [weak wait] _, _ in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        guard let pane = relay.pane,
+                              let wait,
+                              let layer = layerReference.layer
+                        else { return }
+                        pane.finishFramePublicationIfMatching(wait, layer: layer)
+                    }
+                }
+            }
+            if transientVisibility {
+                _ = renderer?.control.setFocused(keepVisibleAfterSuccess)
+                guard renderer?.control.setVisible(true) == true else {
+                    finishFramePublicationWait(wait, publication: nil)
+                    return
+                }
             }
         }
     }
 
-    isolated deinit {
-        assert(closed, "TmuxPaneSurface deinit without close()")
+    private func finishFramePublicationIfMatching(
+        _ wait: FramePublicationWait,
+        layer: CALayer
+    ) {
+        guard framePublicationWait === wait,
+              let dimensions = GhosttyIOSurfaceFrame.dimensions(in: layer)
+        else { return }
+        guard dimensions.width == Int(wait.expectedWidth),
+              dimensions.height == Int(wait.expectedHeight)
+        else { return }
+        guard wait.captureOwnedPixels else {
+            finishFramePublicationWait(wait, publication: .ready)
+            return
+        }
+        let frame: GhosttyIOSurfaceFrame
+        do {
+            frame = try GhosttyIOSurfaceFrame.read(from: layer)
+        } catch {
+            GhosttyRuntimeTrace.diagnostics(
+                "tmuxPane.frameRead failed pane=\(paneID) error=\(String(describing: error))"
+            )
+            finishFramePublicationWait(wait, publication: nil)
+            return
+        }
+        finishFramePublicationWait(wait, publication: .captured(frame))
+    }
+
+    private func finishFramePublicationWait(
+        _ wait: FramePublicationWait,
+        publication: FramePublication?
+    ) {
+        guard framePublicationWait === wait else { return }
+        wait.observation?.invalidate()
+        wait.observation = nil
+        framePublicationWait = nil
+        if wait.transientVisibility,
+           (publication == nil || !wait.keepVisibleAfterSuccess),
+           !presented {
+            _ = renderer?.control.setVisible(false)
+        }
+        let continuation = wait.continuation
+        wait.continuation = nil
+        continuation?.resume(returning: publication)
+    }
+
+    private func cancelFramePublicationWait() {
+        guard let wait = framePublicationWait else { return }
+        finishFramePublicationWait(wait, publication: nil)
+    }
+
+    private func resizeForPickerGrid(columns: UInt32, rows: UInt32) -> Bool {
+        guard let renderer else { return false }
+        let current = renderer.control.currentSize()
+        guard current.columns > 0, current.rows > 0,
+              current.cell_width_px > 0, current.cell_height_px > 0,
+              let width = Self.pixelDimension(
+                targetCells: columns,
+                currentCells: UInt32(current.columns),
+                cellPixels: current.cell_width_px,
+                currentPixels: current.width_px
+              ),
+              let height = Self.pixelDimension(
+                targetCells: rows,
+                currentCells: UInt32(current.rows),
+                cellPixels: current.cell_height_px,
+                currentPixels: current.height_px
+              ),
+              applyPickerSize(width: width, height: height)
+        else { return false }
+
+        let measured = renderer.control.currentSize()
+        if measured.columns == columns, measured.rows == rows { return true }
+
+        let correctedWidth = Self.correctedPixelDimension(
+            currentPixels: measured.width_px,
+            actualCells: UInt32(measured.columns),
+            targetCells: columns,
+            cellPixels: measured.cell_width_px
+        )
+        let correctedHeight = Self.correctedPixelDimension(
+            currentPixels: measured.height_px,
+            actualCells: UInt32(measured.rows),
+            targetCells: rows,
+            cellPixels: measured.cell_height_px
+        )
+        guard let correctedWidth, let correctedHeight,
+              applyPickerSize(width: correctedWidth, height: correctedHeight)
+        else { return false }
+        let verified = renderer.control.currentSize()
+        return verified.columns == columns && verified.rows == rows
+    }
+
+    private func applyPickerSize(width: UInt32, height: UInt32) -> Bool {
+        applyDisplayMetrics(.init(
+            contentScale: canonicalViewportMetrics.contentScale,
+            pixelWidth: width,
+            pixelHeight: height
+        ))
+    }
+
+    private func makePreviewImage(
+        from frame: GhosttyIOSurfaceFrame,
+        budget: GhosttyPanePreviewSession.PixelBudget
+    ) async -> CGImage? {
+        let paneID = paneID
+        return await Task.detached(priority: .userInitiated) {
+            do {
+                return try frame.image(
+                    maxWidth: budget.width,
+                    maxHeight: budget.height
+                )
+            } catch {
+                GhosttyRuntimeTrace.diagnostics(
+                    "tmuxPane.previewRead failed pane=\(paneID) error=\(String(describing: error))"
+                )
+                return nil
+            }
+        }.value
+    }
+
+    private func isViewportSized(_ size: ghostty_surface_size_s) -> Bool {
+        size.width_px == canonicalViewportMetrics.pixelWidth
+            && size.height_px == canonicalViewportMetrics.pixelHeight
+    }
+
+    private func hasCurrentFullViewportFrame() -> Bool {
+        guard let provenance = lastFullViewportProvenance,
+              provenance.pixelWidth == canonicalViewportMetrics.pixelWidth,
+              provenance.pixelHeight == canonicalViewportMetrics.pixelHeight,
+              let layer = GhosttyIOSurfaceFrame.rendererLayer(in: view.layer)
+        else { return false }
+        return publishedFrameMatches(in: layer, provenance: provenance)
+    }
+
+    private func retainedFullViewportFrame(
+        in layer: CALayer,
+        provenance: GhosttyPanePreviewSession.FullViewportProvenance
+    ) -> GhosttyIOSurfaceFrame? {
+        guard publishedFrameMatches(in: layer, provenance: provenance) else {
+            return nil
+        }
+        return try? GhosttyIOSurfaceFrame.read(from: layer)
+    }
+
+    private func publishedFrameMatches(
+        in layer: CALayer,
+        provenance: GhosttyPanePreviewSession.FullViewportProvenance
+    ) -> Bool {
+        guard provenance.surfaceID == instanceID.rawValue,
+              let dimensions = GhosttyIOSurfaceFrame.dimensions(in: layer)
+        else { return false }
+        return dimensions.width == Int(provenance.pixelWidth)
+            && dimensions.height == Int(provenance.pixelHeight)
+    }
+
+    private func applyDisplayMetrics(
+        _ metrics: GhosttySurfaceDisplayMetrics
+    ) -> Bool {
+        guard let renderer,
+              metrics.contentScale == canonicalViewportMetrics.contentScale
+        else { return false }
+        if metrics == appliedDisplayMetrics { return true }
+        view.frame.size = CGSize(
+            width: Double(metrics.pixelWidth) / metrics.contentScale,
+            height: Double(metrics.pixelHeight) / metrics.contentScale
+        )
+        view.contentScaleFactor = metrics.contentScale
+        view.alignGhosttyRendererSublayers()
+        guard renderer.control.updateDisplay(metrics: metrics) else {
+            return false
+        }
+        appliedDisplayMetrics = metrics
+        return true
+    }
+
+    private static func pixelDimension(
+        targetCells: UInt32,
+        currentCells: UInt32,
+        cellPixels: UInt32,
+        currentPixels: UInt32
+    ) -> UInt32? {
+        let currentGridPixels = UInt64(currentCells) * UInt64(cellPixels)
+        guard UInt64(currentPixels) >= currentGridPixels else { return nil }
+        let padding = UInt64(currentPixels) - currentGridPixels
+        let target = UInt64(targetCells) * UInt64(cellPixels) + padding
+        return UInt32(exactly: target)
+    }
+
+    private static func correctedPixelDimension(
+        currentPixels: UInt32,
+        actualCells: UInt32,
+        targetCells: UInt32,
+        cellPixels: UInt32
+    ) -> UInt32? {
+        guard cellPixels > 0 else { return nil }
+        let correction = (Int64(targetCells) - Int64(actualCells)) * Int64(cellPixels)
+        let corrected = Int64(currentPixels) + correction
+        guard corrected > 0 else { return nil }
+        return UInt32(exactly: corrected)
+    }
+
+    deinit {
+        let finalLifecycle = lifecycle
+        assert(finalLifecycle == .closed, "TmuxPaneSurface deinit without close()")
     }
 }

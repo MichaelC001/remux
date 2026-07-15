@@ -43,7 +43,7 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
             cols: UInt32(measuredViewport.columns),
             rows: UInt32(measuredViewport.rows)
         )
-        XCTAssertEqual(model.session?.controller.lastClientSize, measuredSize)
+        XCTAssertEqual(model.carriedClientSize, measuredSize)
         XCTAssertFalse(
             model.submitClientSizeIfChanged(measuredSize),
             "the measured pre-connect grid must seed the screen-model authority"
@@ -69,12 +69,12 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
         try await waitUntil("transport did not start") {
             await transport.didStart()
         }
-        XCTAssertEqual(model.session?.controller.lastClientSize, Self.initialClientSize)
+        XCTAssertEqual(model.carriedClientSize, Self.initialClientSize)
         XCTAssertFalse(model.submitClientSizeIfChanged(Self.initialClientSize))
 
         let changed = TmuxSessionController.ClientSize(cols: 52, rows: 31)
         XCTAssertTrue(model.submitClientSizeIfChanged(changed))
-        XCTAssertEqual(model.session?.controller.lastClientSize, changed)
+        XCTAssertEqual(model.carriedClientSize, changed)
 
         await model.stop()
     }
@@ -165,8 +165,10 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
             },
             baseSurfaceConfig: { runtime.makeTmuxBaseSurfaceConfig() },
             paneViewTheme: { .remuxDark },
-            createPaneSurface: { _, _, _, _, _, completion in
-                completion(.failure(.surfaceCreationFailed))
+            createPaneSurface: { _, _, _, _, _, _, _, completion in
+                completion(.failure(.surfaceCreationFailed(
+                    GHOSTTY_TERMINAL_SURFACE_RESULT_INVALID_INPUT
+                )))
             }
         )
         defer {
@@ -175,7 +177,7 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
             }
         }
 
-        session.connect(viewport: nil)
+        session.connect(viewport: .default)
         try await waitUntil("first transport did not start") {
             await firstTransport.didStart()
         }
@@ -192,7 +194,7 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
         }
 
         await session.disconnect()
-        session.connect(viewport: nil)
+        session.connect(viewport: .default)
         try await waitUntil("second transport did not start") {
             await secondTransport.didStart()
         }

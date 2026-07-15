@@ -650,7 +650,7 @@ private struct GhosttyRenderedPreviewSurface: View {
     private var contentMode: ContentMode {
         switch preview.source {
         case .fullViewport: .fill
-        case .remotePaneGeometry: .fit
+        case .paneGeometry: .fit
         }
     }
 }

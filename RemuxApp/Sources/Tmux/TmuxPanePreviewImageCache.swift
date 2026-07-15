@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 
 /// Byte-bounded last-known pane thumbnails. Cold panes retain their first
-/// remote-geometry capture; visiting one replaces it with the pane's latest
+/// local pane-geometry render; visiting one replaces it with the pane's latest
 /// full-viewport image. The cache is deliberately a Remux concern: libghostty
 /// renders surfaces but does not know that this client presents one tmux pane
 /// per phone viewport.
@@ -72,6 +72,11 @@ struct TmuxPanePreviewImageCache {
             }
         }
         return removedPaneIDs
+    }
+
+    mutating func remove(_ paneID: TmuxPaneID) {
+        guard let removed = entries.removeValue(forKey: paneID) else { return }
+        totalByteCost -= removed.byteCost
     }
 
     mutating func removeAll() {

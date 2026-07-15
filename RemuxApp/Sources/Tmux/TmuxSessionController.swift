@@ -1,23 +1,13 @@
 import Foundation
 import GhosttyKit
 
-/// New-architecture tmux session: a thin, thread-disciplined wrapper of
-/// the `ghostty_tmux_session_*` C API.
+/// Queue-confined host for Ghostty's sans-I/O tmux control client.
 ///
-/// THREADING CONTRACT (mirrors libghostty's): every call into the C
-/// session happens on `queue` — the writer thread. The SSH transport
-/// delivers inbound bytes via `pump(_:)` (dispatched onto the queue),
-/// outbound wire bytes leave via the `onOutbound` callback (invoked on
-/// the queue; the transport forwards them to the SSH channel), and all
-/// UI-initiated calls (input, requests, bind/unbind) are queue-hopped
-/// here. Events arrive synchronously on the queue and are re-published
-/// to the main actor as immutable snapshots — the UI never touches the
-/// session handle.
-/// @unchecked Sendable: all mutable state is confined to `queue` (the
-/// writer thread) per the documented threading contract.
+/// The SSH transport owns the wire. This type owns protocol parsing, copied
+/// topology, command correlation, canonical pane-terminal handoff, and the
+/// borrowed renderer handles used to notify retained pane surfaces directly.
+/// Every libghostty call for one client runs on `queue`.
 final class TmuxSessionController: @unchecked Sendable {
-    // MARK: Public model
-
     enum SessionState: Equatable, Sendable {
         case detached(DetachReason?)
         case attaching
@@ -30,19 +20,15 @@ final class TmuxSessionController: @unchecked Sendable {
         case serverExited(String?)
         case channelAborted
         case outOfMemory
-        case baselineFailed
-        case reconcileFailed
         case transportClosed
     }
 
     enum CloseReason: Equatable, Sendable {
-        case attachFailed(String)
         case unsupportedVersion(String)
     }
 
     struct WindowInfo: Equatable, Identifiable, Sendable {
         let id: TmuxWindowID
-        let name: String
         let active: Bool
         let zoomed: Bool
         let width: UInt32
@@ -50,21 +36,19 @@ final class TmuxSessionController: @unchecked Sendable {
         let activePaneID: TmuxPaneID?
     }
 
-    enum PaneState: Equatable, Sendable {
-        case discovered
-        case bootstrapping
-        case live
-        case degraded
-    }
-
     struct PaneInfo: Equatable, Identifiable, Sendable {
+        enum Phase: Equatable, Sendable {
+            case hydrating
+            case live
+        }
+
         let id: TmuxPaneID
         let windowID: TmuxWindowID
         let x: UInt32
         let y: UInt32
         let width: UInt32
         let height: UInt32
-        let state: PaneState
+        let phase: Phase
     }
 
     struct TopologySnapshot: Equatable, Sendable {
@@ -88,870 +72,961 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     enum SplitDirection: Sendable {
-        case left, right, up, down
+        case left
+        case right
+        case up
+        case down
     }
 
-    /// Host-visible signals, delivered on the main queue. Snapshots are
-    /// immutable copies taken on the writer queue at the event's safe
-    /// point, so they are always internally consistent.
+    struct ClientSize: Sendable, Equatable {
+        let cols: UInt32
+        let rows: UInt32
+
+        var controlViewport: TmuxControlViewport? {
+            guard let columns = UInt16(exactly: cols),
+                  let rows = UInt16(exactly: rows),
+                  columns > 0,
+                  rows > 0
+            else { return nil }
+            return TmuxControlViewport(
+                columns: columns,
+                rows: rows,
+                pixelWidth: 0,
+                pixelHeight: 0
+            )
+        }
+    }
+
+    enum StartError: Error {
+        case invalidInitialGrid
+        case alreadyStarted
+        case creationFailed(ghostty_tmux_result_e)
+    }
+
+    enum SurfaceRegistrationError: Error {
+        case clientUnavailable
+        case paneUnknown
+        case alreadyRegistered
+    }
+
+    /// One retained reference to ControlClient's canonical pane terminal.
+    /// Ownership transfers from the writer queue to MainActor exactly once.
+    final class RetainedPaneTerminal: @unchecked Sendable {
+        let paneID: TmuxPaneID
+        let handle: ghostty_terminal_t
+
+        fileprivate init(paneID: TmuxPaneID, handle: ghostty_terminal_t) {
+            self.paneID = paneID
+            self.handle = handle
+        }
+
+        deinit {
+            ghostty_terminal_release(handle)
+        }
+    }
+
     struct Callbacks: Sendable {
         var onState: @Sendable (SessionState) -> Void = { _ in }
         var onTopology: @Sendable (TopologySnapshot) -> Void = { _ in }
         var onPaneRemoved: @Sendable (TmuxPaneID) -> Void = { _ in }
-        var onPaneLive: @Sendable (TmuxPaneID) -> Void = { _ in }
-        var onPaneDegraded: @Sendable (TmuxPaneID) -> Void = { _ in }
+        var onPaneTerminal: @Sendable (RetainedPaneTerminal) -> Void = { _ in }
+        var onActivePaneChanged: @Sendable (TmuxPaneID) -> Void = { _ in }
+        var onPaneSurfaceFailed: @Sendable (TmuxPaneID) -> Void = { _ in }
         var onRequestFailed: @Sendable (Request) -> Void = { _ in }
     }
 
-    /// A live pane binding: the surface borrows the pane terminal and
-    /// render mutex for its whole lifetime. Release order is strict:
-    /// free the surface FIRST (its renderer stops touching the
-    /// borrowed mutex), THEN `unbind` — unbind may destroy a
-    /// dead-pane's engine and its mutex.
-    /// @unchecked Sendable: immutable lets; crosses from the writer
-    /// queue (creation) to the main queue (surface ownership).
-    final class PaneBinding: @unchecked Sendable {
-        let paneID: TmuxPaneID
-        fileprivate let handle: ghostty_tmux_binding_t
-        fileprivate let wakeBox: WakeBox
+    /// Pointer values cross actor boundaries only as opaque native identities.
+    private struct TerminalSurfaceHandle: @unchecked Sendable, Equatable {
+        let value: ghostty_terminal_surface_t
 
-        fileprivate init(paneID: TmuxPaneID, handle: ghostty_tmux_binding_t, wakeBox: WakeBox) {
-            self.paneID = paneID
-            self.handle = handle
-            self.wakeBox = wakeBox
-        }
-
-        /// Passed into ghostty_surface_config_s.tmux_binding.
-        var rawHandle: ghostty_tmux_binding_t {
-            handle
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.value == rhs.value
         }
     }
 
-    /// Holds the wake closure with a stable address for the C callback.
-    final class WakeBox: @unchecked Sendable {
-        let wake: @Sendable () -> Void
-        init(_ wake: @escaping @Sendable () -> Void) { self.wake = wake }
+    private enum NavigationIntent: Equatable {
+        case pane(TmuxPaneID)
+        case window(TmuxWindowID, preferredPaneID: TmuxPaneID?)
+        case zoom(TmuxPaneID)
     }
 
-    enum BindError: Error {
-        case detachedSession
-        case paneUnknown
-        case alreadyBound
-        case outOfMemory
+    private struct OutstandingRequest {
+        let request: Request
+        let topologyRevisionAtSubmission: UInt64
     }
 
-    enum PaneReleaseError: Error {
-        case missingSession
-        case paneStillBound
-        case unexpectedResult
-    }
-
-    // MARK: State
-
-    /// The writer thread. Everything that touches `session` runs here.
     let queue: DispatchQueue
 
-    private var session: ghostty_tmux_session_t?
-    private var tick: DispatchSourceTimer?
     private let callbacks: Callbacks
-
-    /// Outbound wire bytes sink, invoked on the writer queue after
-    /// every entry point that may have produced output. Settable: the
-    /// controller outlives connections, and each transport link
-    /// re-targets it. Bytes drained while no sink is set belong to a
-    /// dead connection and are dropped.
+    private var client: ghostty_tmux_client_t?
+    private var state: SessionState = .detached(nil)
+    private var topology: TopologySnapshot?
+    private var retainedPaneIDs: Set<TmuxPaneID> = []
+    private var surfacesByPaneID: [TmuxPaneID: TerminalSurfaceHandle] = [:]
+    private var requestsByToken: [UInt64: OutstandingRequest] = [:]
+    private var deferredNavigationIntent: NavigationIntent?
+    private var successfulMutationRequiredAfterRevision: UInt64?
+    private var topologyRevision: UInt64 = 0
     private var outboundSink: (@Sendable (Data) -> Void)?
+    private var shuttingDown = false
 
-    /// Re-target outbound wire bytes (writer queue).
+    init(
+        callbacks: Callbacks,
+        queue: DispatchQueue = DispatchQueue(label: "remux.tmux.session.writer")
+    ) {
+        self.callbacks = callbacks
+        self.queue = queue
+    }
+
+    deinit {
+        assert(client == nil, "TmuxSessionController deinit without shutdown()")
+    }
+
     func setOutboundSink(_ sink: (@Sendable (Data) -> Void)?) {
         queue.async { [self] in
             outboundSink = sink
         }
     }
 
-    init(
-        app: ghostty_app_t,
-        callbacks: Callbacks,
-        queue: DispatchQueue = DispatchQueue(label: "remux.tmux.session.writer")
+    /// Construct the native client only after transport.start has opened the
+    /// control channel with the same real viewport. The native initial grid is
+    /// immutable and emits the sole startup refresh-client command.
+    func start(
+        initialSize: ClientSize,
+        completion: @escaping @Sendable (Result<Void, StartError>) -> Void
     ) {
-        self.queue = queue
-        self.callbacks = callbacks
+        queue.async { [self] in
+            guard client == nil, !shuttingDown else {
+                completion(.failure(.alreadyStarted))
+                return
+            }
+            guard let columns = UInt16(exactly: initialSize.cols),
+                  let rows = UInt16(exactly: initialSize.rows),
+                  columns > 0,
+                  rows > 0
+            else {
+                completion(.failure(.invalidInitialGrid))
+                return
+            }
 
-        var config = ghostty_tmux_session_config_s()
-        config.event_cb = { userdata, event in
-            guard let userdata else { return }
-            let controller = Unmanaged<TmuxSessionController>
-                .fromOpaque(userdata).takeUnretainedValue()
-            controller.handleEvent(event)
-        }
-        config.userdata = Unmanaged.passUnretained(self).toOpaque()
-        config.handshake_timeout_ms = 0 // library default
-        config.command_timeout_ms = 0 // library default
-        config.history_line_cap = 0 // library default
-        // Mobile presentation projects one pane at a time. Manual policy lets
-        // Remux retain visited pane engines/surfaces until pane removal or
-        // session shutdown instead of recreating them on every switch.
-        config.materialization_policy = GHOSTTY_TMUX_MATERIALIZATION_POLICY_MANUAL
+            var config = ghostty_tmux_client_config_new()
+            config.userdata = Unmanaged.passUnretained(self).toOpaque()
+            config.action_cb = { userdata, action in
+                guard let userdata, let action else { return }
+                let controller = Unmanaged<TmuxSessionController>
+                    .fromOpaque(userdata).takeUnretainedValue()
+                controller.handleAction(action.pointee)
+            }
+            config.history_line_limit_is_set = true
+            config.history_line_limit = 2_000
+            config.max_scrollback = 10_000
+            config.initial_columns = columns
+            config.initial_rows = rows
 
-        // The session must be created before any callback can fire;
-        // the event callback only runs inside pump/tick on our queue.
-        self.session = withUnsafePointer(to: &config) { configPtr in
-            ghostty_tmux_session_new(app, configPtr)
+            var created: ghostty_tmux_client_t?
+            let result = ghostty_tmux_client_new(&config, &created)
+            guard result == GHOSTTY_TMUX_RESULT_OK, let created else {
+                completion(.failure(.creationFailed(result)))
+                return
+            }
+            client = created
+            publishState(.attaching)
+            completion(.success(()))
         }
     }
 
-    /// Tear down the session: cancel the tick and free the C session on
-    /// the writer queue (the only thread allowed to touch it). All
-    /// bindings must have been released first — the C side asserts this
-    /// in debug builds. Call before releasing the last reference.
+    func transportClosed() {
+        queue.async { [self] in
+            guard !shuttingDown else { return }
+            deferredNavigationIntent = nil
+            successfulMutationRequiredAfterRevision = nil
+            guard case .closed = state else {
+                publishState(.detached(.transportClosed))
+                return
+            }
+        }
+    }
+
+    /// Publish an intentional attachment stop without classifying it as a
+    /// transport failure. Link teardown itself stays silent because it is
+    /// also used by startup-failure cleanup and session shutdown.
+    func attachmentStopped() {
+        queue.async { [self] in
+            guard !shuttingDown else { return }
+            deferredNavigationIntent = nil
+            successfulMutationRequiredAfterRevision = nil
+            guard case .closed = state else {
+                publishState(.detached(nil))
+                return
+            }
+        }
+    }
+
     func shutdown(completion: @escaping @Sendable () -> Void = {}) {
         queue.async { [self] in
-            tick?.cancel()
-            tick = nil
-            if let session {
-                ghostty_tmux_session_free(session)
+            shuttingDown = true
+            outboundSink = nil
+            requestsByToken.removeAll()
+            deferredNavigationIntent = nil
+            successfulMutationRequiredAfterRevision = nil
+            topology = nil
+            retainedPaneIDs.removeAll()
+            assert(surfacesByPaneID.isEmpty, "terminal surfaces must unregister before client free")
+            surfacesByPaneID.removeAll()
+            if let client {
+                let result = ghostty_tmux_client_free(client)
+                assert(result == GHOSTTY_TMUX_RESULT_OK, "ghostty_tmux_client_free failed: \(result)")
             }
-            session = nil
+            client = nil
             DispatchQueue.main.async(execute: completion)
         }
     }
 
-    deinit {
-        // shutdown() must have run: freeing here would touch the
-        // session from an arbitrary thread.
-        assert(session == nil, "TmuxSessionController deinit without shutdown()")
+    func pump(_ data: Data) {
+        let enqueuedAt = GhosttyRuntimeTrace.perfEnabled ? GhosttyRuntimeTrace.nowNanos() : 0
+        queue.async { [self, data] in
+            guard let client, !shuttingDown else { return }
+            let applyStart = GhosttyRuntimeTrace.perfEnabled ? GhosttyRuntimeTrace.nowNanos() : 0
+            let result = data.withUnsafeBytes { bytes in
+                ghostty_tmux_client_feed(
+                    client,
+                    bytes.bindMemory(to: UInt8.self).baseAddress,
+                    bytes.count
+                )
+            }
+            if state == .attaching {
+                publishState(.syncing)
+            }
+            let outboundBytes = drainOutbound()
+            GhosttyRuntimeTrace.perf(
+                "tmuxFeed bytes=\(data.count) wait_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: enqueuedAt, to: applyStart)) apply_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: applyStart)) outbound_bytes=\(outboundBytes) result=\(result)"
+            )
+            guard result == GHOSTTY_TMUX_RESULT_OK else {
+                handleClientFailure(result)
+                return
+            }
+        }
     }
 
-    // MARK: Clock
+    @discardableResult
+    private func drainOutbound() -> Int {
+        preconditionOnWriterQueue()
+        guard let client else { return 0 }
+        var bytes = ghostty_tmux_bytes_s()
+        let result = ghostty_tmux_client_outbound(client, &bytes)
+        guard result == GHOSTTY_TMUX_RESULT_OK else {
+            handleClientFailure(result)
+            return 0
+        }
+        guard bytes.len > 0 else { return 0 }
+        guard let pointer = bytes.ptr else {
+            handleClientFailure(GHOSTTY_TMUX_RESULT_CLIENT_FAILED)
+            return 0
+        }
 
-    /// Monotonic milliseconds for the session's deadline clock.
-    private static func nowMS() -> UInt64 {
-        DispatchTime.now().uptimeNanoseconds / 1_000_000
+        let owned = Data(bytes: pointer, count: bytes.len)
+        let consumeResult = ghostty_tmux_client_consume(client, bytes.len)
+        guard consumeResult == GHOSTTY_TMUX_RESULT_OK else {
+            handleClientFailure(consumeResult)
+            return 0
+        }
+        outboundSink?(owned)
+        return owned.count
+    }
+
+    // MARK: Native actions
+
+    private func handleAction(_ action: ghostty_tmux_action_s) {
+        preconditionOnWriterQueue()
+        switch action.tag {
+        case GHOSTTY_TMUX_ACTION_EXIT:
+            deferredNavigationIntent = nil
+            successfulMutationRequiredAfterRevision = nil
+            let exit = action.value.exit
+            let detail = Self.copyString(exit.detail)
+            switch exit.reason {
+            case GHOSTTY_TMUX_EXIT_UNSUPPORTED_VERSION:
+                publishState(.closed(.unsupportedVersion(detail)))
+            case GHOSTTY_TMUX_EXIT_SERVER:
+                publishState(.detached(.serverExited(detail.isEmpty ? nil : detail)))
+            default:
+                publishState(.detached(.channelAborted))
+            }
+
+        case GHOSTTY_TMUX_ACTION_TOPOLOGY:
+            handleTopology(action.value.topology)
+
+        case GHOSTTY_TMUX_ACTION_PANE_CHANGED:
+            handlePaneChanged(TmuxPaneID(action.value.pane_id))
+
+        case GHOSTTY_TMUX_ACTION_COMMAND_COMPLETE:
+            handleCommandCompletion(action.value.command)
+
+        case GHOSTTY_TMUX_ACTION_INPUT_FAILED:
+            _ = Self.copyString(action.value.input_failure)
+            DispatchQueue.main.async { self.callbacks.onRequestFailed(.sendInput) }
+
+        default:
+            handleClientFailure(GHOSTTY_TMUX_RESULT_CLIENT_FAILED)
+        }
+    }
+
+    private func handleTopology(_ action: ghostty_tmux_topology_action_s) {
+        preconditionOnWriterQueue()
+        var accumulator = TopologyAccumulator()
+        let visitResult = withUnsafeMutablePointer(to: &accumulator) { accumulator in
+            ghostty_tmux_topology_visit(
+                action.view,
+                UnsafeMutableRawPointer(accumulator),
+                { userdata, record in
+                    guard let userdata, let record else { return }
+                    userdata.assumingMemoryBound(to: TopologyAccumulator.self)
+                        .pointee.append(record.pointee)
+                }
+            )
+        }
+        guard visitResult == GHOSTTY_TMUX_RESULT_OK else {
+            handleClientFailure(visitResult)
+            return
+        }
+
+        let snapshot = TopologySnapshot(
+            sessionName: Self.copyString(action.session_name),
+            windows: accumulator.windows,
+            panes: accumulator.panes,
+            activeWindowID: accumulator.windows.first(where: \.active)?.id
+        )
+        let previousPaneIDs = Set(topology?.panes.map(\.id) ?? [])
+        let nextPaneIDs = Set(snapshot.panes.map(\.id))
+        let removed = previousPaneIDs.subtracting(nextPaneIDs).sorted()
+        topology = snapshot
+        topologyRevision &+= 1
+        clearSatisfiedMutationBarrier()
+
+        for paneID in removed {
+            retainedPaneIDs.remove(paneID)
+            surfacesByPaneID.removeValue(forKey: paneID)
+        }
+        let didBecomeReady = state != .ready
+        state = .ready
+        DispatchQueue.main.async {
+            if didBecomeReady { self.callbacks.onState(.ready) }
+            for paneID in removed { self.callbacks.onPaneRemoved(paneID) }
+            self.callbacks.onTopology(snapshot)
+        }
+        admitDeferredNavigationIfPossible()
+    }
+
+    private func handlePaneChanged(_ paneID: TmuxPaneID) {
+        preconditionOnWriterQueue()
+        guard let client else { return }
+
+        if retainedPaneIDs.insert(paneID).inserted {
+            var terminal: ghostty_terminal_t?
+            let result = ghostty_tmux_client_retain_pane_terminal(
+                client,
+                paneID.rawValue,
+                &terminal
+            )
+            guard result == GHOSTTY_TMUX_RESULT_OK, let terminal else {
+                retainedPaneIDs.remove(paneID)
+                DispatchQueue.main.async { self.callbacks.onPaneSurfaceFailed(paneID) }
+                return
+            }
+            let handoff = RetainedPaneTerminal(paneID: paneID, handle: terminal)
+            DispatchQueue.main.async { self.callbacks.onPaneTerminal(handoff) }
+            return
+        }
+
+        if let surface = surfacesByPaneID[paneID] {
+            let result = ghostty_terminal_surface_terminal_changed(surface.value)
+            if result != GHOSTTY_TERMINAL_SURFACE_RESULT_OK {
+                surfacesByPaneID.removeValue(forKey: paneID)
+                DispatchQueue.main.async { self.callbacks.onPaneSurfaceFailed(paneID) }
+                return
+            }
+        }
+
+        if activePaneID(in: topology) == paneID {
+            DispatchQueue.main.async { self.callbacks.onActivePaneChanged(paneID) }
+        }
+    }
+
+    private func handleCommandCompletion(_ completion: ghostty_tmux_command_completion_s) {
+        preconditionOnWriterQueue()
+        guard let outstanding = requestsByToken.removeValue(forKey: completion.token) else { return }
+        let request = outstanding.request
+        switch completion.status {
+        case GHOSTTY_TMUX_COMMAND_SUCCESS:
+            if requestMutatesTopology(request) {
+                successfulMutationRequiredAfterRevision = max(
+                    successfulMutationRequiredAfterRevision ?? 0,
+                    outstanding.topologyRevisionAtSubmission
+                )
+            }
+        case GHOSTTY_TMUX_COMMAND_SKIPPED:
+            break
+        case GHOSTTY_TMUX_COMMAND_ERROR_BLOCK:
+            _ = Self.copyString(completion.body)
+            DispatchQueue.main.async { self.callbacks.onRequestFailed(request) }
+        default:
+            DispatchQueue.main.async { self.callbacks.onRequestFailed(request) }
+        }
+        clearSatisfiedMutationBarrier()
+        admitDeferredNavigationIfPossible()
+    }
+
+    // MARK: Renderer registration and lifetime fence
+
+    func registerTerminalSurface(
+        paneID: TmuxPaneID,
+        surface: ghostty_terminal_surface_t,
+        completion: @escaping @MainActor @Sendable (Result<Void, SurfaceRegistrationError>) -> Void
+    ) {
+        let handle = TerminalSurfaceHandle(value: surface)
+        queue.async { [self, handle] in
+            let result: Result<Void, SurfaceRegistrationError>
+            if client == nil || shuttingDown {
+                result = .failure(.clientUnavailable)
+            } else if !retainedPaneIDs.contains(paneID) {
+                result = .failure(.paneUnknown)
+            } else if surfacesByPaneID[paneID] != nil {
+                result = .failure(.alreadyRegistered)
+            } else {
+                surfacesByPaneID[paneID] = handle
+                result = .success(())
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { completion(result) }
+            }
+        }
+    }
+
+    /// Completion is the happens-before fence: every earlier terminal-change
+    /// notification has returned and no later one can dereference the handle.
+    func unregisterTerminalSurface(
+        paneID: TmuxPaneID,
+        surface: ghostty_terminal_surface_t,
+        completion: @escaping @MainActor @Sendable () -> Void
+    ) {
+        let handle = TerminalSurfaceHandle(value: surface)
+        queue.async { [self, handle] in
+            if surfacesByPaneID[paneID] == handle {
+                surfacesByPaneID.removeValue(forKey: paneID)
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { completion() }
+            }
+        }
+    }
+
+    // MARK: Input and commands
+
+    func sendInput(paneID: TmuxPaneID, _ bytes: Data) -> Bool {
+        guard !bytes.isEmpty else { return true }
+        queue.async { [self, bytes] in
+            guard let client, !shuttingDown else {
+                DispatchQueue.main.async { self.callbacks.onRequestFailed(.sendInput) }
+                return
+            }
+            let result = bytes.withUnsafeBytes { buffer in
+                ghostty_tmux_client_send_pane_input(
+                    client,
+                    paneID.rawValue,
+                    buffer.bindMemory(to: UInt8.self).baseAddress,
+                    buffer.count
+                )
+            }
+            if result == GHOSTTY_TMUX_RESULT_OK {
+                _ = drainOutbound()
+            } else {
+                reportImmediateFailure(result, request: .sendInput)
+            }
+        }
+        return true
+    }
+
+    func setClientSize(cols: UInt32, rows: UInt32) {
+        guard cols > 0, rows > 0, cols <= UInt16.max, rows <= UInt16.max else {
+            DispatchQueue.main.async { self.callbacks.onRequestFailed(.setClientSize) }
+            return
+        }
+        enqueue(
+            command: "refresh-client -C \(cols)x\(rows)",
+            request: .setClientSize
+        )
+    }
+
+    func requestNewWindow() {
+        enqueue(command: "new-window", request: .newWindow)
+    }
+
+    func requestSplit(paneID: TmuxPaneID, direction: SplitDirection, zoom: Bool) {
+        let flags = switch direction {
+        case .left: "-h -b"
+        case .right: "-h"
+        case .up: "-v -b"
+        case .down: "-v"
+        }
+        let zoomFlag = zoom ? " -Z" : ""
+        enqueue(
+            command: "split-window \(flags)\(zoomFlag) -t %\(paneID.rawValue)",
+            request: .splitPane
+        )
+    }
+
+    func requestClosePane(paneID: TmuxPaneID) {
+        enqueue(command: "kill-pane -t %\(paneID.rawValue)", request: .closePane)
+    }
+
+    func requestCloseWindow(windowID: TmuxWindowID) {
+        enqueue(command: "kill-window -t @\(windowID.rawValue)", request: .closeWindow)
+    }
+
+    func requestSelectWindow(
+        windowID: TmuxWindowID,
+        preferredPaneID: TmuxPaneID? = nil
+    ) {
+        queue.async { [self] in
+            submitNavigation(.window(windowID, preferredPaneID: preferredPaneID))
+        }
+    }
+
+    func requestSelectPane(paneID: TmuxPaneID) {
+        queue.async { [self] in
+            submitNavigation(.pane(paneID))
+        }
+    }
+
+    func requestZoomPane(paneID: TmuxPaneID) {
+        queue.async { [self] in
+            submitNavigation(.zoom(paneID))
+        }
+    }
+
+    func requestCopyMode(paneID: TmuxPaneID) {
+        enqueue(command: "copy-mode -t %\(paneID.rawValue)", request: .copyMode)
+    }
+
+    private func submitNavigation(_ intent: NavigationIntent) {
+        preconditionOnWriterQueue()
+        guard !navigationAdmissionBlocked else {
+            deferredNavigationIntent = intent
+            return
+        }
+        deferredNavigationIntent = nil
+        evaluateNavigation(intent, drainOutbound: true)
+    }
+
+    private func clearSatisfiedMutationBarrier() {
+        preconditionOnWriterQueue()
+        guard let requiredRevision = successfulMutationRequiredAfterRevision,
+              topologyRevision > requiredRevision
+        else { return }
+        successfulMutationRequiredAfterRevision = nil
+    }
+
+    private func admitDeferredNavigationIfPossible() {
+        preconditionOnWriterQueue()
+        guard !navigationAdmissionBlocked,
+              let deferredNavigationIntent
+        else { return }
+        self.deferredNavigationIntent = nil
+        // Native command admission is callback-safe. Outbound consume is not;
+        // the enclosing pump drains once after feed returns.
+        evaluateNavigation(deferredNavigationIntent, drainOutbound: false)
+    }
+
+    private func evaluateNavigation(
+        _ intent: NavigationIntent,
+        drainOutbound: Bool
+    ) {
+        switch intent {
+        case .pane(let paneID):
+            enqueuePaneSelection(
+                paneID,
+                drainOutbound: drainOutbound
+            )
+        case .window(let windowID, let preferredPaneID):
+            enqueueWindowSelection(
+                windowID: windowID,
+                preferredPaneID: preferredPaneID,
+                drainOutbound: drainOutbound
+            )
+        case .zoom(let paneID):
+            enqueueZoomPane(paneID, drainOutbound: drainOutbound)
+        }
+    }
+
+    private func enqueueZoomPane(
+        _ paneID: TmuxPaneID,
+        drainOutbound: Bool
+    ) {
+        guard let topology,
+              let pane = topology.panes.first(where: { $0.id == paneID }),
+              let window = topology.windows.first(where: { $0.id == pane.windowID })
+        else {
+            reportRequestFailure(.zoomPane)
+            return
+        }
+        let hasSibling = topology.panes.contains {
+            $0.windowID == window.id && $0.id != paneID
+        }
+        guard hasSibling, !window.zoomed else { return }
+        submitCommandOnWriter(
+            command: "resize-pane -Z -t %\(paneID.rawValue)",
+            request: .zoomPane,
+            drainOutbound: drainOutbound
+        )
+    }
+
+    private func enqueuePaneSelection(
+        _ paneID: TmuxPaneID,
+        drainOutbound: Bool
+    ) {
+        preconditionOnWriterQueue()
+        guard let topology,
+              let pane = topology.panes.first(where: { $0.id == paneID }),
+              let window = topology.windows.first(where: { $0.id == pane.windowID })
+        else {
+            reportRequestFailure(.selectPane)
+            return
+        }
+        if topology.activeWindowID != window.id {
+            enqueueWindowSelection(
+                windowID: window.id,
+                preferredPaneID: paneID,
+                drainOutbound: drainOutbound
+            )
+            return
+        }
+
+        let hasSibling = topology.panes.contains {
+            $0.windowID == window.id && $0.id != paneID
+        }
+        if window.activePaneID == paneID, window.zoomed || !hasSibling {
+            return
+        }
+        let command = window.zoomed
+            ? "select-pane -Z -t %\(paneID.rawValue)"
+            : "resize-pane -Z -t %\(paneID.rawValue)"
+        submitCommandOnWriter(
+            command: command,
+            request: .selectPane,
+            drainOutbound: drainOutbound
+        )
+    }
+
+    private func enqueueWindowSelection(
+        windowID: TmuxWindowID,
+        preferredPaneID: TmuxPaneID?,
+        drainOutbound: Bool
+    ) {
+        preconditionOnWriterQueue()
+        guard let topology,
+              let window = topology.windows.first(where: { $0.id == windowID })
+        else {
+            reportRequestFailure(.selectWindow)
+            return
+        }
+        let paneID = preferredPaneID ?? window.activePaneID
+        let hasSibling = topology.panes.contains { pane in
+            pane.windowID == windowID && pane.id != paneID
+        }
+
+        if topology.activeWindowID == windowID {
+            guard let paneID else { return }
+            if window.zoomed || !hasSibling {
+                return
+            }
+            submitCommandOnWriter(
+                command: "resize-pane -Z -t %\(paneID.rawValue)",
+                request: .selectWindow,
+                drainOutbound: drainOutbound
+            )
+            return
+        }
+
+        if let preferredPaneID,
+           !topology.panes.contains(where: {
+               $0.id == preferredPaneID && $0.windowID == windowID
+           }) {
+            reportRequestFailure(.selectWindow)
+            return
+        }
+        let commands = Self.crossWindowSelectionCommands(
+            windowID: windowID,
+            activePaneID: window.activePaneID,
+            preferredPaneID: preferredPaneID,
+            zoomed: window.zoomed,
+            hasSibling: hasSibling
+        )
+        if commands.count == 1 {
+            submitCommandOnWriter(
+                command: commands[0],
+                request: .selectWindow,
+                drainOutbound: drainOutbound
+            )
+        } else {
+            submitCommandGroupOnWriter(
+                commands: commands,
+                request: .selectWindow,
+                drainOutbound: drainOutbound
+            )
+        }
+    }
+
+    private var hasOutstandingTopologyMutation: Bool {
+        requestsByToken.values.contains { requestMutatesTopology($0.request) }
+    }
+
+    private var navigationAdmissionBlocked: Bool {
+        hasOutstandingTopologyMutation
+            || successfulMutationRequiredAfterRevision != nil
+    }
+
+    private func requestMutatesTopology(_ request: Request) -> Bool {
+        switch request {
+        case .newWindow, .splitPane, .closePane, .closeWindow,
+             .selectWindow, .selectPane, .zoomPane:
+            true
+        case .copyMode, .setClientSize, .sendInput:
+            false
+        }
+    }
+
+    static func crossWindowSelectionCommands(
+        windowID: TmuxWindowID,
+        activePaneID: TmuxPaneID?,
+        preferredPaneID: TmuxPaneID?,
+        zoomed: Bool,
+        hasSibling: Bool
+    ) -> [String] {
+        let selectWindow = "select-window -t @\(windowID.rawValue)"
+        guard hasSibling,
+              let preferredPaneID
+        else { return [selectWindow] }
+        if zoomed, preferredPaneID == activePaneID {
+            return [selectWindow]
+        }
+        let selectPane = zoomed ? "select-pane" : "resize-pane"
+        return [
+            selectWindow,
+            "\(selectPane) -Z -t %\(preferredPaneID.rawValue)",
+        ]
+    }
+
+    private func enqueue(command: String, request: Request) {
+        queue.async { [self] in
+            enqueueOnWriter(command: command, request: request)
+        }
+    }
+
+    private func enqueueOnWriter(command: String, request: Request) {
+        submitCommandOnWriter(
+            command: command,
+            request: request,
+            drainOutbound: true
+        )
+    }
+
+    private func submitCommandOnWriter(
+        command: String,
+        request: Request,
+        drainOutbound: Bool
+    ) {
+        guard admitCommandOnWriter(command: command, request: request) else { return }
+        if drainOutbound { _ = self.drainOutbound() }
+    }
+
+    private func admitCommandOnWriter(command: String, request: Request) -> Bool {
+        preconditionOnWriterQueue()
+        guard let client, !shuttingDown else {
+            reportRequestFailure(request)
+            return false
+        }
+        var token: UInt64 = 0
+        let result = command.utf8.withContiguousStorageIfAvailable { buffer in
+            ghostty_tmux_client_enqueue_command(
+                client,
+                ghostty_tmux_bytes_s(ptr: buffer.baseAddress, len: buffer.count),
+                &token
+            )
+        } ?? Array(command.utf8).withUnsafeBufferPointer { buffer in
+            ghostty_tmux_client_enqueue_command(
+                client,
+                ghostty_tmux_bytes_s(ptr: buffer.baseAddress, len: buffer.count),
+                &token
+            )
+        }
+        guard result == GHOSTTY_TMUX_RESULT_OK else {
+            reportImmediateFailure(result, request: request)
+            return false
+        }
+        requestsByToken[token] = OutstandingRequest(
+            request: request,
+            topologyRevisionAtSubmission: topologyRevision
+        )
+        return true
+    }
+
+    private func enqueueGroupOnWriter(commands: [String], request: Request) {
+        submitCommandGroupOnWriter(
+            commands: commands,
+            request: request,
+            drainOutbound: true
+        )
+    }
+
+    private func submitCommandGroupOnWriter(
+        commands: [String],
+        request: Request,
+        drainOutbound: Bool
+    ) {
+        guard admitCommandGroupOnWriter(commands: commands, request: request) else { return }
+        if drainOutbound { _ = self.drainOutbound() }
+    }
+
+    private func admitCommandGroupOnWriter(commands: [String], request: Request) -> Bool {
+        preconditionOnWriterQueue()
+        guard let client, !shuttingDown else {
+            reportRequestFailure(request)
+            return false
+        }
+        let encoded = commands.map { Array($0.utf8) }
+        var tokens = Array(repeating: UInt64(0), count: commands.count)
+        let result = withBorrowedCommandBytes(encoded, index: 0, bytes: []) { bytes in
+            bytes.withUnsafeBufferPointer { commandBuffer in
+                tokens.withUnsafeMutableBufferPointer { tokenBuffer in
+                    ghostty_tmux_client_enqueue_command_group(
+                        client,
+                        commandBuffer.baseAddress,
+                        commandBuffer.count,
+                        tokenBuffer.baseAddress
+                    )
+                }
+            }
+        }
+        guard result == GHOSTTY_TMUX_RESULT_OK else {
+            reportImmediateFailure(result, request: request)
+            return false
+        }
+        for token in tokens {
+            requestsByToken[token] = OutstandingRequest(
+                request: request,
+                topologyRevisionAtSubmission: topologyRevision
+            )
+        }
+        return true
+    }
+
+    private func withBorrowedCommandBytes<Result>(
+        _ commands: [[UInt8]],
+        index: Int,
+        bytes: [ghostty_tmux_bytes_s],
+        body: ([ghostty_tmux_bytes_s]) -> Result
+    ) -> Result {
+        guard index < commands.count else { return body(bytes) }
+        return commands[index].withUnsafeBufferPointer { buffer in
+            withBorrowedCommandBytes(
+                commands,
+                index: index + 1,
+                bytes: bytes + [ghostty_tmux_bytes_s(ptr: buffer.baseAddress, len: buffer.count)],
+                body: body
+            )
+        }
+    }
+
+    // MARK: Helpers
+
+    private func publishState(_ next: SessionState) {
+        preconditionOnWriterQueue()
+        guard state != next else { return }
+        state = next
+        DispatchQueue.main.async { self.callbacks.onState(next) }
+    }
+
+    private func handleClientFailure(_ result: ghostty_tmux_result_e) {
+        preconditionOnWriterQueue()
+        guard !shuttingDown else { return }
+        deferredNavigationIntent = nil
+        successfulMutationRequiredAfterRevision = nil
+        switch result {
+        case GHOSTTY_TMUX_RESULT_OUT_OF_MEMORY:
+            publishState(.detached(.outOfMemory))
+        case GHOSTTY_TMUX_RESULT_CLOSED:
+            if case .closed = state { return }
+            if case .detached = state { return }
+            publishState(.detached(.channelAborted))
+        default:
+            publishState(.detached(.channelAborted))
+        }
+    }
+
+    private func reportImmediateFailure(_ result: ghostty_tmux_result_e, request: Request) {
+        preconditionOnWriterQueue()
+        guard result != GHOSTTY_TMUX_RESULT_OK else { return }
+        reportRequestFailure(request)
+        if result == GHOSTTY_TMUX_RESULT_CLIENT_FAILED || result == GHOSTTY_TMUX_RESULT_CLOSED {
+            handleClientFailure(result)
+        }
+    }
+
+    private func reportRequestFailure(_ request: Request) {
+        DispatchQueue.main.async { self.callbacks.onRequestFailed(request) }
     }
 
     private func preconditionOnWriterQueue() {
         dispatchPrecondition(condition: .onQueue(queue))
     }
 
-    // MARK: Transport plumbing (writer queue)
-
-    /// Start (or restart, after a detach) a connection attempt. The
-    /// caller is responsible for having a control-mode channel running
-    /// `tmux -C new-session -A` whose bytes flow through `pump`.
-    func connect() {
-        queue.async { [self] in
-            guard let session else { return }
-            guard ghostty_tmux_session_connect(session, Self.nowMS()) else {
-                let state = readState()
-                DispatchQueue.main.async { self.callbacks.onState(state) }
-                return
-            }
-            startTick()
-            drainOutbound()
-        }
+    private func activePaneID(in topology: TopologySnapshot?) -> TmuxPaneID? {
+        guard let topology, let windowID = topology.activeWindowID else { return nil }
+        return topology.windows.first(where: { $0.id == windowID })?.activePaneID
     }
 
-    /// Prompt detach on transport loss (SSH EOF/error). Session state
-    /// is retained for the next connect; idempotent.
-    func disconnect() {
-        queue.async { [self] in
-            guard let session else { return }
-            ghostty_tmux_session_disconnect(session)
-            tick?.cancel()
-            tick = nil
-        }
+    private static func copyString(_ bytes: ghostty_tmux_bytes_s) -> String {
+        guard let pointer = bytes.ptr, bytes.len > 0 else { return "" }
+        return String(
+            decoding: UnsafeBufferPointer(start: pointer, count: bytes.len),
+            as: UTF8.self
+        )
     }
+}
 
-    /// Inbound SSH bytes.
-    func pump(_ data: Data) {
-        let enqueuedAt = GhosttyRuntimeTrace.perfEnabled ? GhosttyRuntimeTrace.nowNanos() : 0
-        queue.async { [self] in
-            guard let session else { return }
-            let applyStart = GhosttyRuntimeTrace.perfEnabled ? GhosttyRuntimeTrace.nowNanos() : 0
-            data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                ghostty_tmux_session_pump(
-                    session,
-                    raw.bindMemory(to: UInt8.self).baseAddress,
-                    UInt(raw.count),
-                    Self.nowMS()
-                )
-            }
-            // The pump applies %output to pane terminals while holding the
-            // render mutex; its duration is the renderer-blocking hazard.
-            GhosttyRuntimeTrace.perf(
-                "tmuxPump bytes=\(data.count) wait_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: enqueuedAt, to: applyStart)) apply_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: applyStart))"
-            )
-            drainOutbound()
-        }
-    }
+private struct TopologyAccumulator {
+    var windows: [TmuxSessionController.WindowInfo] = []
+    var panes: [TmuxSessionController.PaneInfo] = []
 
-    private func startTick() {
-        preconditionOnWriterQueue()
-        tick?.cancel()
-        let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + 1, repeating: 1)
-        timer.setEventHandler { [weak self] in
-            guard let self, let session = self.session else { return }
-            ghostty_tmux_session_tick(session, Self.nowMS())
-            self.drainOutbound()
-        }
-        timer.resume()
-        tick = timer
-    }
-
-    /// Drain pending wire bytes to the transport. Called on the writer
-    /// queue after every entry point that can produce output.
-    @discardableResult
-    private func drainOutbound() -> Int {
-        preconditionOnWriterQueue()
-        guard let session else { return 0 }
-        var len: UInt = 0
-        guard let ptr = ghostty_tmux_session_outbound(session, &len), len > 0 else {
-            return 0
-        }
-        let data = Data(bytes: ptr, count: Int(len))
-        ghostty_tmux_session_outbound_consume(session, len)
-        outboundSink?(data)
-        return data.count
-    }
-
-    // MARK: Events (writer queue) -> main snapshots
-
-    private func handleEvent(_ event: ghostty_tmux_event_s) {
-        preconditionOnWriterQueue()
-        switch event.tag {
-        case GHOSTTY_TMUX_EVENT_STATE_CHANGED:
-            let state = readState()
-            DispatchQueue.main.async { self.callbacks.onState(state) }
-        case GHOSTTY_TMUX_EVENT_TOPOLOGY_CHANGED:
-            let snapshot = readTopology()
-            GhosttyRuntimeTrace.flowEventIfActive(
-                GhosttyRuntimeTrace.paneSwitchFlow,
-                event: "tmux.topology.changed",
-                fields: {
-                    let window = snapshot.activeWindowID.flatMap { id in
-                        snapshot.windows.first { $0.id == id }
-                    }
-                    let pane = window?.activePaneID.flatMap { id in
-                        snapshot.panes.first { $0.id == id }
-                    }
-                    let siblingCount = pane.map { active in
-                        snapshot.panes.count { $0.windowID == active.windowID && $0.id != active.id }
-                    }
-                    return [
-                        "active_pane": pane.map { "\($0.id)" } ?? "none",
-                        "active_window": snapshot.activeWindowID.map { "\($0)" } ?? "none",
-                        "pane_height": pane.map { "\($0.height)" } ?? "none",
-                        "pane_width": pane.map { "\($0.width)" } ?? "none",
-                        "pane_x": pane.map { "\($0.x)" } ?? "none",
-                        "pane_y": pane.map { "\($0.y)" } ?? "none",
-                        "sibling_count": siblingCount.map(String.init) ?? "none",
-                        "window_height": window.map { "\($0.height)" } ?? "none",
-                        "window_width": window.map { "\($0.width)" } ?? "none",
-                        "window_zoomed": window.map { "\($0.zoomed)" } ?? "none",
-                    ]
-                }()
-            )
-            DispatchQueue.main.async { self.callbacks.onTopology(snapshot) }
-        case GHOSTTY_TMUX_EVENT_PANE_REMOVED:
-            let id = TmuxPaneID(event.pane_id)
-            DispatchQueue.main.async { self.callbacks.onPaneRemoved(id) }
-        case GHOSTTY_TMUX_EVENT_PANE_LIVE:
-            let id = TmuxPaneID(event.pane_id)
-            GhosttyRuntimeTrace.flowEventIfActive(
-                GhosttyRuntimeTrace.paneSwitchFlow,
-                event: "tmux.pane.live",
-                fields: ["pane": "\(id)"]
-            )
-            DispatchQueue.main.async { self.callbacks.onPaneLive(id) }
-        case GHOSTTY_TMUX_EVENT_PANE_DEGRADED:
-            let id = TmuxPaneID(event.pane_id)
-            DispatchQueue.main.async { self.callbacks.onPaneDegraded(id) }
-        case GHOSTTY_TMUX_EVENT_REQUEST_FAILED:
-            let request = Request(event.request)
-            if request == .selectPane {
-                GhosttyRuntimeTrace.flowEndIfActive(
-                    GhosttyRuntimeTrace.paneSwitchFlow,
-                    event: "tmux.request.failed",
-                    fields: ["request": "selectPane"]
-                )
-            }
-            DispatchQueue.main.async { self.callbacks.onRequestFailed(request) }
+    mutating func append(_ record: ghostty_tmux_topology_record_s) {
+        switch record.tag {
+        case GHOSTTY_TMUX_TOPOLOGY_WINDOW:
+            let window = record.value.window
+            windows.append(TmuxSessionController.WindowInfo(
+                id: TmuxWindowID(window.id),
+                active: window.active,
+                zoomed: window.zoomed,
+                width: Self.uint32(window.width),
+                height: Self.uint32(window.height),
+                activePaneID: TmuxPaneID(window.active_pane_id)
+            ))
+        case GHOSTTY_TMUX_TOPOLOGY_PANE:
+            let pane = record.value.pane
+            panes.append(TmuxSessionController.PaneInfo(
+                id: TmuxPaneID(pane.id),
+                windowID: TmuxWindowID(pane.window_id),
+                x: Self.uint32(pane.x),
+                y: Self.uint32(pane.y),
+                width: Self.uint32(pane.width),
+                height: Self.uint32(pane.height),
+                phase: pane.phase == GHOSTTY_TMUX_PANE_LIVE ? .live : .hydrating
+            ))
         default:
             break
         }
     }
 
-    private func readState() -> SessionState {
-        preconditionOnWriterQueue()
-        guard let session else { return .detached(nil) }
-        switch ghostty_tmux_session_state(session) {
-        case GHOSTTY_TMUX_SESSION_STATE_ATTACHING: return .attaching
-        case GHOSTTY_TMUX_SESSION_STATE_SYNCING: return .syncing
-        case GHOSTTY_TMUX_SESSION_STATE_READY: return .ready
-        case GHOSTTY_TMUX_SESSION_STATE_CLOSED:
-            let detail = readReasonString() ?? ""
-            switch ghostty_tmux_session_close_reason(session) {
-            case GHOSTTY_TMUX_CLOSE_REASON_UNSUPPORTED_VERSION:
-                return .closed(.unsupportedVersion(detail))
-            default:
-                return .closed(.attachFailed(detail))
-            }
-        default:
-            switch ghostty_tmux_session_detach_reason(session) {
-            case GHOSTTY_TMUX_DETACH_REASON_SERVER_EXITED:
-                return .detached(.serverExited(readReasonString()))
-            case GHOSTTY_TMUX_DETACH_REASON_CHANNEL_ABORTED:
-                return .detached(.channelAborted)
-            case GHOSTTY_TMUX_DETACH_REASON_OUT_OF_MEMORY:
-                return .detached(.outOfMemory)
-            case GHOSTTY_TMUX_DETACH_REASON_BASELINE_FAILED:
-                return .detached(.baselineFailed)
-            case GHOSTTY_TMUX_DETACH_REASON_RECONCILE_FAILED:
-                return .detached(.reconcileFailed)
-            case GHOSTTY_TMUX_DETACH_REASON_TRANSPORT_CLOSED:
-                return .detached(.transportClosed)
-            default:
-                return .detached(nil)
-            }
-        }
-    }
-
-    private func readReasonString() -> String? {
-        preconditionOnWriterQueue()
-        guard let session else { return nil }
-        var len: UInt = 0
-        guard let ptr = ghostty_tmux_session_reason_string(session, &len), len > 0 else {
-            return nil
-        }
-        return String(decoding: UnsafeBufferPointer(start: ptr, count: Int(len)), as: UTF8.self)
-    }
-
-    private func readTopology() -> TopologySnapshot {
-        preconditionOnWriterQueue()
-        guard let session else {
-            return TopologySnapshot(sessionName: "", windows: [], panes: [], activeWindowID: nil)
-        }
-
-        var nameLen: UInt = 0
-        let namePtr = ghostty_tmux_session_name(session, &nameLen)
-        let sessionName: String = if let namePtr, nameLen > 0 {
-            String(decoding: UnsafeBufferPointer(start: namePtr, count: Int(nameLen)), as: UTF8.self)
-        } else {
-            ""
-        }
-
-        var windows: [WindowInfo] = []
-        let windowCount = ghostty_tmux_session_window_count(session)
-        windows.reserveCapacity(Int(windowCount))
-        for index in 0..<windowCount {
-            var raw = ghostty_tmux_window_s()
-            guard ghostty_tmux_session_window_at(session, index, &raw) else { continue }
-            let name: String = if let ptr = raw.name, raw.name_len > 0 {
-                String(decoding: UnsafeBufferPointer(start: ptr, count: Int(raw.name_len)), as: UTF8.self)
-            } else {
-                ""
-            }
-            windows.append(WindowInfo(
-                id: TmuxWindowID(raw.id),
-                name: name,
-                active: raw.active,
-                zoomed: raw.zoomed,
-                width: raw.width,
-                height: raw.height,
-                activePaneID: raw.has_active_pane ? TmuxPaneID(raw.active_pane_id) : nil
-            ))
-        }
-
-        var panes: [PaneInfo] = []
-        let paneCount = ghostty_tmux_session_pane_count(session)
-        panes.reserveCapacity(Int(paneCount))
-        for index in 0..<paneCount {
-            var raw = ghostty_tmux_pane_s()
-            guard ghostty_tmux_session_pane_at(session, index, &raw) else { continue }
-            panes.append(PaneInfo(
-                id: TmuxPaneID(raw.id),
-                windowID: TmuxWindowID(raw.window_id),
-                x: raw.x,
-                y: raw.y,
-                width: raw.width,
-                height: raw.height,
-                state: PaneState(raw.state)
-            ))
-        }
-
-        var activeWindow: UInt64 = 0
-        let hasActive = ghostty_tmux_session_active_window(session, &activeWindow)
-
-        return TopologySnapshot(
-            sessionName: sessionName,
-            windows: windows,
-            panes: panes,
-            activeWindowID: hasActive ? TmuxWindowID(activeWindow) : nil
-        )
-    }
-
-    // MARK: Bindings (writer queue)
-
-    /// Bind a pane for a surface about to be created. `wake` fires on
-    /// the writer queue whenever the pane's content changed; forward it
-    /// to the surface's render request (which is thread-safe).
-    func bind(
-        paneID: TmuxPaneID,
-        wake: @escaping @Sendable () -> Void,
-        completion: @escaping @Sendable (Result<PaneBinding, BindError>) -> Void
-    ) {
-        queue.async { [self] in
-            guard let session else {
-                DispatchQueue.main.async { completion(.failure(.detachedSession)) }
-                return
-            }
-            let box = WakeBox(wake)
-            var handle: ghostty_tmux_binding_t?
-            let result = ghostty_tmux_session_bind_pane(
-                session,
-                paneID.rawValue,
-                { ctx in
-                    guard let ctx else { return }
-                    Unmanaged<WakeBox>.fromOpaque(ctx).takeUnretainedValue().wake()
-                },
-                Unmanaged.passUnretained(box).toOpaque(),
-                &handle
-            )
-            drainOutbound()
-            switch result {
-            case GHOSTTY_TMUX_RESULT_OK:
-                let binding = PaneBinding(paneID: paneID, handle: handle!, wakeBox: box)
-                DispatchQueue.main.async { completion(.success(binding)) }
-            case GHOSTTY_TMUX_RESULT_PANE_UNKNOWN:
-                DispatchQueue.main.async { completion(.failure(.paneUnknown)) }
-            case GHOSTTY_TMUX_RESULT_ALREADY_BOUND:
-                DispatchQueue.main.async { completion(.failure(.alreadyBound)) }
-            case GHOSTTY_TMUX_RESULT_DETACHED:
-                DispatchQueue.main.async { completion(.failure(.detachedSession)) }
-            default:
-                DispatchQueue.main.async { completion(.failure(.outOfMemory)) }
-            }
-        }
-    }
-
-    /// REQUIRED for every retained binding, after its surface has been freed.
-    /// Normal retained-pane disposal only unbinds: libghostty owns engine
-    /// retirement for dead panes and session shutdown owns the remaining live
-    /// engines. Explicit dematerialization is reserved for the failed-create
-    /// cleanup below, where no retained surface exists.
-    func unbind(
-        _ binding: PaneBinding,
-        completion: @escaping @MainActor @Sendable (Result<Void, PaneReleaseError>) -> Void = { _ in }
-    ) {
-        queue.async { [self] in
-            guard let session else {
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated { completion(.failure(.missingSession)) }
-                }
-                return
-            }
-            ghostty_tmux_session_unbind_pane(session, binding.handle)
-            // Keep the wake box alive until unbind has completed: no wake can
-            // fire past this point.
-            _ = binding.wakeBox
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated { completion(.success(())) }
-            }
-        }
-    }
-
-    /// REQUIRED for every binding, AFTER the bound surface has been freed.
-    /// Unbind presentation first, then discard this consumer's local engine;
-    /// the remote tmux pane and topology are untouched. Keeping both C calls
-    /// in one writer-queue turn prevents another bind from racing between
-    /// them. `completion` fires on the main queue once release finishes.
-    func unbindAndDematerialize(
-        _ binding: PaneBinding,
-        completion: @escaping @MainActor @Sendable (Result<Void, PaneReleaseError>) -> Void = { _ in }
-    ) {
-        queue.async { [self] in
-            guard let session else {
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated { completion(.failure(.missingSession)) }
-                }
-                return
-            }
-            let startedAt = GhosttyRuntimeTrace.perfEnabled ? GhosttyRuntimeTrace.nowNanos() : 0
-            ghostty_tmux_session_unbind_pane(session, binding.handle)
-            // Keep the wake box alive until after unbind: no wake can
-            // fire past this point.
-            _ = binding.wakeBox
-            let result = ghostty_tmux_session_dematerialize_pane(session, binding.paneID.rawValue)
-            GhosttyRuntimeTrace.perf(
-                "tmuxPane.dematerialize pane=\(binding.paneID) result=\(result) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt))"
-            )
-
-            let completionResult: Result<Void, PaneReleaseError> = switch result {
-            case GHOSTTY_TMUX_RESULT_OK, GHOSTTY_TMUX_RESULT_PANE_UNKNOWN:
-                // Unknown is expected when tmux removed the pane while its
-                // bound surface was displaying the frozen zombie engine;
-                // unbind already destroyed that local engine.
-                .success(())
-            case GHOSTTY_TMUX_RESULT_PANE_BOUND:
-                .failure(.paneStillBound)
-            default:
-                .failure(.unexpectedResult)
-            }
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated { completion(completionResult) }
-            }
-        }
-    }
-
-    // MARK: Input, size, requests (writer queue)
-
-    /// Copies input onto the writer queue without blocking the caller. `true`
-    /// means this controller accepted the bytes for ordered submission, not
-    /// that tmux has already accepted them. A later libghostty rejection is
-    /// published through `onRequestFailed(.sendInput)` on the main queue.
-    func sendInput(paneID: TmuxPaneID, _ bytes: Data) -> Bool {
-        guard !bytes.isEmpty else { return true }
-
-        let enqueuedAt = GhosttyRuntimeTrace.perfEnabled
-            ? GhosttyRuntimeTrace.nowNanos() : 0
-        queue.async { [self, bytes] in
-            let applyStartedAt = GhosttyRuntimeTrace.perfEnabled
-                ? GhosttyRuntimeTrace.nowNanos() : 0
-            guard let session else {
-                GhosttyRuntimeTrace.perf(
-                    "tmuxInput.writer pane=\(paneID) bytes=\(bytes.count) wait_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: enqueuedAt, to: applyStartedAt)) result=detached"
-                )
-                reportImmediateRequestFailureIfNeeded(
-                    GHOSTTY_TMUX_RESULT_DETACHED,
-                    request: .sendInput
-                )
-                return
-            }
-            let result = bytes.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                ghostty_tmux_session_send_input(
-                    session,
-                    paneID.rawValue,
-                    raw.bindMemory(to: UInt8.self).baseAddress,
-                    UInt(raw.count)
-                )
-            }
-            drainOutbound()
-            GhosttyRuntimeTrace.perf(
-                "tmuxInput.writer pane=\(paneID) bytes=\(bytes.count) wait_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: enqueuedAt, to: applyStartedAt)) apply_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: applyStartedAt)) result=\(result)"
-            )
-            reportImmediateRequestFailureIfNeeded(result, request: .sendInput)
-        }
-        return true
-    }
-
-    /// Honest viewport reporting. Callable any time, including before
-    /// connect: the size is flushed into the attach's sync batch so
-    /// layouts arrive already sized for this client.
-    /// Host-side record of the last reported viewport, carried across
-    /// model replacement so a reconnect attaches already sized (the
-    /// engine pipelines it before the baseline; captures land at this
-    /// client's width with no relayout churn).
-    struct ClientSize: Sendable, Equatable {
-        let cols: UInt32
-        let rows: UInt32
-    }
-
-    private var writerLastClientSize: ClientSize?
-
-    var lastClientSize: ClientSize? {
-        dispatchPrecondition(condition: .notOnQueue(queue))
-        return queue.sync { writerLastClientSize }
-    }
-
-    /// The last size reported while the host viewport was in its
-    /// settled shape (no transient overlay such as the software
-    /// keyboard). Reconnects carry this one: a size captured
-    /// mid-transient would make the next attach first-paint at the
-    /// wrong shape for ~a round trip.
-    private var writerLastStableClientSize: ClientSize?
-    private var writerViewportIsStable = true
-
-    var lastStableClientSize: ClientSize? {
-        dispatchPrecondition(condition: .notOnQueue(queue))
-        return queue.sync { writerLastStableClientSize }
-    }
-
-    /// The viewport to carry into a replacement session.
-    var carriedClientSize: ClientSize? {
-        dispatchPrecondition(condition: .notOnQueue(queue))
-        let startedAt = GhosttyRuntimeTrace.perfEnabled
-            ? GhosttyRuntimeTrace.nowNanos() : 0
-        let size = queue.sync {
-            writerLastStableClientSize ?? writerLastClientSize
-        }
-        GhosttyRuntimeTrace.perf(
-            "tmuxViewport.carriedSnapshot wait_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt))"
-        )
-        return size
-    }
-
-    /// Host hint that the viewport is (not) in its settled shape.
-    /// Ordering makes this race-free without coordination: the host
-    /// flips to unstable before the overlay changes layout, so the
-    /// shrunken report that follows is never recorded as stable; it
-    /// flips back to stable before the restored layout reports, and
-    /// the stable record keeps its previous settled value until that
-    /// report arrives.
-    func setViewportStability(_ stable: Bool) {
-        queue.async { [self] in
-            writerViewportIsStable = stable
-        }
-    }
-
-    func setClientSize(cols: UInt32, rows: UInt32) {
-        GhosttyRuntimeTrace.tmuxViewport(
-            "client_size.local_submit cols=\(cols) rows=\(rows)"
-        )
-        queue.async { [self] in
-            writerLastClientSize = ClientSize(cols: cols, rows: rows)
-            if writerViewportIsStable {
-                writerLastStableClientSize = writerLastClientSize
-            }
-            guard let session else { return }
-            let result = ghostty_tmux_session_set_client_size(session, cols, rows)
-            let outboundBytes = drainOutbound()
-            GhosttyRuntimeTrace.tmuxViewport(
-                "client_size.writer_result cols=\(cols) rows=\(rows) result=\(result) outbound_bytes=\(outboundBytes)"
-            )
-            reportImmediateRequestFailureIfNeeded(result, request: .setClientSize)
-        }
-    }
-
-    func requestNewWindow() {
-        submit(request: .newWindow) { ghostty_tmux_session_request_new_window($0) }
-    }
-
-    func requestSplit(paneID: TmuxPaneID, direction: SplitDirection, zoom: Bool) {
-        let cDirection: ghostty_tmux_split_direction_e = switch direction {
-        case .left: GHOSTTY_TMUX_SPLIT_DIRECTION_LEFT
-        case .right: GHOSTTY_TMUX_SPLIT_DIRECTION_RIGHT
-        case .up: GHOSTTY_TMUX_SPLIT_DIRECTION_UP
-        case .down: GHOSTTY_TMUX_SPLIT_DIRECTION_DOWN
-        }
-        submit(request: .splitPane) {
-            ghostty_tmux_session_request_split($0, paneID.rawValue, cDirection, zoom)
-        }
-    }
-
-    func requestClosePane(paneID: TmuxPaneID) {
-        submit(request: .closePane) { ghostty_tmux_session_request_close_pane($0, paneID.rawValue) }
-    }
-
-    func requestCloseWindow(windowID: TmuxWindowID) {
-        submit(request: .closeWindow) { ghostty_tmux_session_request_close_window($0, windowID.rawValue) }
-    }
-
-    func requestSelectWindow(windowID: TmuxWindowID) {
-        submit(request: .selectWindow) { ghostty_tmux_session_request_select_window($0, windowID.rawValue) }
-    }
-
-    func requestSelectWindowZoomedPane(windowID: TmuxWindowID, paneID: TmuxPaneID) {
-        submit(request: .selectWindow) {
-            ghostty_tmux_session_request_select_window_zoomed_pane(
-                $0,
-                windowID.rawValue,
-                paneID.rawValue
-            )
-        }
-    }
-
-    func requestSelectPane(paneID: TmuxPaneID) {
-        GhosttyRuntimeTrace.flowEventIfActive(
-            GhosttyRuntimeTrace.paneSwitchFlow,
-            event: "tmux.request.enqueued",
-            fields: [
-                "pane": "\(paneID)",
-                "request": "selectPane",
-            ]
-        )
-        submit(request: .selectPane, tracePaneID: paneID) {
-            ghostty_tmux_session_request_select_pane($0, paneID.rawValue)
-        }
-    }
-
-    func requestZoomPane(paneID: TmuxPaneID) {
-        submit(request: .zoomPane) { ghostty_tmux_session_request_zoom_pane($0, paneID.rawValue) }
-    }
-
-    func requestCopyMode(paneID: TmuxPaneID) {
-        submit(request: .copyMode) { ghostty_tmux_session_request_copy_mode($0, paneID.rawValue) }
-    }
-
-    func renderPanePreviewImageAsync(
-        paneID: TmuxPaneID,
-        styleSurface: GhosttyKitControlSurface,
-        options: ghostty_surface_preview_image_options_s,
-        previewGrid: ClientSize?,
-        userdata: UnsafeMutableRawPointer?,
-        callback: ghostty_surface_preview_image_callback_f,
-        completion: @escaping @MainActor @Sendable (
-            ghostty_surface_preview_request_t?
-        ) -> Void
-    ) {
-        let submission = TmuxPanePreviewSubmission(
-            paneID: paneID,
-            styleSurface: styleSurface,
-            options: options,
-            previewGrid: previewGrid,
-            userdata: userdata,
-            callback: callback
-        )
-        queue.async { [self, submission] in
-            guard let session else {
-                DispatchQueue.main.async {
-                    completion(nil)
-                }
-                return
-            }
-            let tmuxOptions = ghostty_tmux_pane_preview_image_options_s(
-                image: submission.options,
-                preview_cols: submission.previewGrid?.cols ?? 0,
-                preview_rows: submission.previewGrid?.rows ?? 0
-            )
-            // This lock-scoped borrow intentionally covers the synchronous C
-            // call. It fences the external owner's invalidate-then-free path
-            // while libghostty copies the style, font, colors, and preview
-            // subsystem identity. The C call invokes no synchronous callback
-            // and retains no Surface pointer after it returns.
-            let requestResult = submission.styleSurface
-                .withSynchronousBorrowedSurface { styleSurface in
-                    TmuxPanePreviewRequestResult(
-                        request: ghostty_tmux_session_render_pane_preview_image_async(
-                            session,
-                            styleSurface,
-                            submission.paneID.rawValue,
-                            tmuxOptions,
-                            submission.userdata,
-                            submission.callback
-                        )
-                    )
-                }
-            guard let requestResult else {
-                DispatchQueue.main.async {
-                    completion(nil)
-                }
-                return
-            }
-            // Publish acceptance before the capture-pane command can leave
-            // the writer queue. The callback therefore cannot overtake the
-            // handle/source installation on MainActor.
-            DispatchQueue.main.async {
-                completion(requestResult.request)
-            }
-            drainOutbound()
-        }
-    }
-
-    private func submit(
-        request: Request,
-        tracePaneID: TmuxPaneID? = nil,
-        _ body: @escaping @Sendable (ghostty_tmux_session_t) -> ghostty_tmux_result_e
-    ) {
-        queue.async { [self] in
-            guard let session else {
-                if tracePaneID != nil {
-                    GhosttyRuntimeTrace.flowEndIfActive(
-                        GhosttyRuntimeTrace.paneSwitchFlow,
-                        event: "tmux.request.rejected",
-                        fields: ["reason": "missing_session"]
-                    )
-                }
-                return
-            }
-            if let tracePaneID {
-                GhosttyRuntimeTrace.flowEventIfActive(
-                    GhosttyRuntimeTrace.paneSwitchFlow,
-                    event: "tmux.request.writer.begin",
-                    fields: ["pane": "\(tracePaneID)"]
-                )
-            }
-            let result = body(session)
-            let outboundBytes = drainOutbound()
-            if let tracePaneID {
-                GhosttyRuntimeTrace.flowEventIfActive(
-                    GhosttyRuntimeTrace.paneSwitchFlow,
-                    event: "tmux.request.outbound.drained",
-                    fields: [
-                        "bytes": "\(outboundBytes)",
-                        "pane": "\(tracePaneID)",
-                        "result": "\(result)",
-                    ]
-                )
-                if result != GHOSTTY_TMUX_RESULT_OK {
-                    GhosttyRuntimeTrace.flowEndIfActive(
-                        GhosttyRuntimeTrace.paneSwitchFlow,
-                        event: "tmux.request.rejected",
-                        fields: [
-                            "pane": "\(tracePaneID)",
-                            "result": "\(result)",
-                        ]
-                    )
-                }
-            }
-            reportImmediateRequestFailureIfNeeded(result, request: request)
-        }
-    }
-
-    private func reportImmediateRequestFailureIfNeeded(
-        _ result: ghostty_tmux_result_e,
-        request: Request
-    ) {
-        preconditionOnWriterQueue()
-        guard result != GHOSTTY_TMUX_RESULT_OK else { return }
-        DispatchQueue.main.async { self.callbacks.onRequestFailed(request) }
-    }
-}
-
-/// Preview arguments cross onto the tmux writer queue and are consumed there
-/// exactly once. The strong style wrapper owns the borrowed-handle fence; no
-/// raw surface pointer crosses the queue. The queue remains the sole owner of
-/// the C session.
-private struct TmuxPanePreviewSubmission: @unchecked Sendable {
-    let paneID: TmuxPaneID
-    let styleSurface: GhosttyKitControlSurface
-    let options: ghostty_surface_preview_image_options_s
-    let previewGrid: TmuxSessionController.ClientSize?
-    let userdata: UnsafeMutableRawPointer?
-    let callback: ghostty_surface_preview_image_callback_f
-}
-
-/// The opaque request handle is transferred from the writer queue to
-/// MainActor, where the preview lease becomes its sole owner.
-private struct TmuxPanePreviewRequestResult: @unchecked Sendable {
-    let request: ghostty_surface_preview_request_t?
-}
-
-// MARK: - C enum bridging
-
-extension TmuxSessionController.Request {
-    init(_ raw: ghostty_tmux_request_e) {
-        switch raw {
-        case GHOSTTY_TMUX_REQUEST_SPLIT_PANE: self = .splitPane
-        case GHOSTTY_TMUX_REQUEST_CLOSE_PANE: self = .closePane
-        case GHOSTTY_TMUX_REQUEST_CLOSE_WINDOW: self = .closeWindow
-        case GHOSTTY_TMUX_REQUEST_SELECT_WINDOW: self = .selectWindow
-        case GHOSTTY_TMUX_REQUEST_SELECT_PANE: self = .selectPane
-        case GHOSTTY_TMUX_REQUEST_ZOOM_PANE: self = .zoomPane
-        case GHOSTTY_TMUX_REQUEST_COPY_MODE: self = .copyMode
-        case GHOSTTY_TMUX_REQUEST_SET_CLIENT_SIZE: self = .setClientSize
-        default: self = .newWindow
-        }
-    }
-}
-
-extension TmuxSessionController.PaneState {
-    init(_ raw: ghostty_tmux_pane_state_e) {
-        switch raw {
-        case GHOSTTY_TMUX_PANE_STATE_BOOTSTRAPPING: self = .bootstrapping
-        case GHOSTTY_TMUX_PANE_STATE_LIVE: self = .live
-        case GHOSTTY_TMUX_PANE_STATE_DEGRADED: self = .degraded
-        default: self = .discovered
-        }
+    private static func uint32(_ value: Int) -> UInt32 {
+        UInt32(clamping: value)
     }
 }

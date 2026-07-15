@@ -1120,9 +1120,9 @@ final class RemuxRootModel: ObservableObject {
             terminalScreenModels[key] = nil
         }
         for model in removed.values {
-            // Teardown ordering (surface free before unbind, link before
-            // controller) is owned by the model; the task retains it
-            // until shutdown completes.
+            // Teardown ordering (surface unregister/free before terminal
+            // release, link before controller) is owned by the model; the
+            // task retains it until shutdown completes.
             Task { await model.stop() }
         }
     }
