@@ -1034,10 +1034,12 @@ final class RemuxAppUITests: XCTestCase {
 
     private func liveAgentTUISessionName() throws -> String {
         try requireLiveSSHConfigurationExists()
-        guard let sessionName = liveHarnessValue(
-            environmentKey: "REMUX_LIVE_AGENT_TUI_SESSION",
-            fallbackPath: "/tmp/remux-live-agent-tui-session.txt"
-        ) else {
+        guard let sessionName = liveCleanupHarnessOverride("REMUX_LIVE_AGENT_TUI_SESSION") ??
+            liveHarnessValue(
+                environmentKey: "REMUX_LIVE_AGENT_TUI_SESSION",
+                fallbackPath: "/tmp/remux-live-agent-tui-session.txt"
+            )
+        else {
             let description = "Set REMUX_LIVE_AGENT_TUI_SESSION to an existing two-pane tmux session running real agent TUIs."
             if liveCleanupHarnessEnabled() {
                 throw LiveSSHCleanupHarnessError(description: description)

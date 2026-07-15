@@ -260,6 +260,7 @@ rm -f "$fixture_session_file"
 rm -f "$expected_host_key_file"
 printf 'pid=%s\nstartedAt=%s\n' "$$" "$(date +%s)" >"$harness_file"
 for name in \
+  REMUX_LIVE_AGENT_TUI_SESSION \
   REMUX_PROFILE_PANE_SWITCH_COUNT \
   REMUX_TRACE_FLOWS \
   REMUX_TRACE_TMUX_VIEWPORT \
