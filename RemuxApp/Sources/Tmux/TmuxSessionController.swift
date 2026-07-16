@@ -130,6 +130,7 @@ final class TmuxSessionController: @unchecked Sendable {
         var onTopology: @Sendable (TopologySnapshot) -> Void = { _ in }
         var onPaneRemoved: @Sendable (TmuxPaneID) -> Void = { _ in }
         var onPaneTerminal: @Sendable (RetainedPaneTerminal) -> Void = { _ in }
+        var onPanePhaseChanged: @Sendable (TmuxPaneID, PaneInfo.Phase) -> Void = { _, _ in }
         var onActivePaneChanged: @Sendable (TmuxPaneID) -> Void = { _ in }
         var onPaneSurfaceFailed: @Sendable (TmuxPaneID) -> Void = { _ in }
         var onRequestFailed: @Sendable (Request) -> Void = { _ in }
@@ -155,13 +156,27 @@ final class TmuxSessionController: @unchecked Sendable {
         let topologyRevisionAtSubmission: UInt64
     }
 
+    private struct DesiredPaneRefresh {
+        let size: ClientSize
+        let failureRequest: Request
+        let requiredAfterPresentation: Bool
+    }
+
+    private enum PaneRefreshState {
+        case deferred(DesiredPaneRefresh)
+        case inFlight(size: ClientSize, followUp: DesiredPaneRefresh?)
+    }
+
     let queue: DispatchQueue
 
     private let callbacks: Callbacks
     private var client: ghostty_tmux_client_t?
     private var state: SessionState = .detached(nil)
     private var topology: TopologySnapshot?
+    private var clientSize: ClientSize?
     private var retainedPaneIDs: Set<TmuxPaneID> = []
+    private var engineSizeByPaneID: [TmuxPaneID: ClientSize] = [:]
+    private var refreshStateByPaneID: [TmuxPaneID: PaneRefreshState] = [:]
     private var surfacesByPaneID: [TmuxPaneID: TerminalSurfaceHandle] = [:]
     private var requestsByToken: [UInt64: OutstandingRequest] = [:]
     private var deferredNavigationIntent: NavigationIntent?
@@ -208,6 +223,7 @@ final class TmuxSessionController: @unchecked Sendable {
                 completion(.failure(.invalidInitialGrid))
                 return
             }
+            clientSize = initialSize
 
             var config = ghostty_tmux_client_config_new()
             config.userdata = Unmanaged.passUnretained(self).toOpaque()
@@ -270,7 +286,10 @@ final class TmuxSessionController: @unchecked Sendable {
             deferredNavigationIntent = nil
             successfulMutationRequiredAfterRevision = nil
             topology = nil
+            clientSize = nil
             retainedPaneIDs.removeAll()
+            engineSizeByPaneID.removeAll()
+            refreshStateByPaneID.removeAll()
             assert(surfacesByPaneID.isEmpty, "terminal surfaces must unregister before client free")
             surfacesByPaneID.removeAll()
             if let client {
@@ -399,12 +418,24 @@ final class TmuxSessionController: @unchecked Sendable {
         let previousPaneIDs = Set(topology?.panes.map(\.id) ?? [])
         let nextPaneIDs = Set(snapshot.panes.map(\.id))
         let removed = previousPaneIDs.subtracting(nextPaneIDs).sorted()
+        for pane in snapshot.panes where refreshStateByPaneID[pane.id] == nil {
+            // Topology resizes each non-refreshing canonical terminal to its
+            // effective tmux grid. A refresh owns its target grid until its
+            // deterministic PANE_CHANGED completion.
+            if let size = effectiveEngineSize(for: pane, in: snapshot) {
+                engineSizeByPaneID[pane.id] = size
+            } else {
+                engineSizeByPaneID.removeValue(forKey: pane.id)
+            }
+        }
         topology = snapshot
         topologyRevision &+= 1
         clearSatisfiedMutationBarrier()
 
         for paneID in removed {
             retainedPaneIDs.remove(paneID)
+            engineSizeByPaneID.removeValue(forKey: paneID)
+            refreshStateByPaneID.removeValue(forKey: paneID)
             surfacesByPaneID.removeValue(forKey: paneID)
         }
         let didBecomeReady = state != .ready
@@ -421,6 +452,21 @@ final class TmuxSessionController: @unchecked Sendable {
         preconditionOnWriterQueue()
         guard let client else { return }
 
+        let completedRefresh: (size: ClientSize, followUp: DesiredPaneRefresh?)?
+        if case .inFlight(let size, let followUp) = refreshStateByPaneID[paneID] {
+            completedRefresh = (size, followUp)
+            if let topology,
+               let pane = topology.panes.first(where: { $0.id == paneID }),
+               let actualSize = effectiveEngineSize(for: pane, in: topology) {
+                engineSizeByPaneID[paneID] = actualSize
+            } else {
+                engineSizeByPaneID.removeValue(forKey: paneID)
+            }
+            refreshStateByPaneID.removeValue(forKey: paneID)
+        } else {
+            completedRefresh = nil
+        }
+
         if retainedPaneIDs.insert(paneID).inserted {
             var terminal: ghostty_terminal_t?
             let result = ghostty_tmux_client_retain_pane_terminal(
@@ -435,6 +481,7 @@ final class TmuxSessionController: @unchecked Sendable {
             }
             let handoff = RetainedPaneTerminal(paneID: paneID, handle: terminal)
             DispatchQueue.main.async { self.callbacks.onPaneTerminal(handoff) }
+            retryDeferredPaneRefreshIfNeeded(paneID, notifyPhaseChange: true)
             return
         }
 
@@ -445,6 +492,23 @@ final class TmuxSessionController: @unchecked Sendable {
                 DispatchQueue.main.async { self.callbacks.onPaneSurfaceFailed(paneID) }
                 return
             }
+        }
+
+        if let completedRefresh {
+            if let followUp = completedRefresh.followUp {
+                refreshStateByPaneID[paneID] = .deferred(followUp)
+                retryDeferredPaneRefreshIfNeeded(paneID, notifyPhaseChange: false)
+            }
+            guard refreshStateByPaneID[paneID] != nil else {
+                DispatchQueue.main.async {
+                    self.callbacks.onPanePhaseChanged(paneID, .live)
+                }
+                if activePaneID(in: topology) == paneID {
+                    DispatchQueue.main.async { self.callbacks.onActivePaneChanged(paneID) }
+                }
+                return
+            }
+            return
         }
 
         if activePaneID(in: topology) == paneID {
@@ -551,10 +615,22 @@ final class TmuxSessionController: @unchecked Sendable {
             DispatchQueue.main.async { self.callbacks.onRequestFailed(.setClientSize) }
             return
         }
-        enqueue(
-            command: "refresh-client -C \(cols)x\(rows)",
-            request: .setClientSize
-        )
+        let nextSize = ClientSize(cols: cols, rows: rows)
+        queue.async { [self] in
+            guard clientSize != nextSize else { return }
+            guard admitCommandOnWriter(
+                command: "refresh-client -C \(cols)x\(rows)",
+                request: .setClientSize
+            ) else { return }
+            clientSize = nextSize
+            if let paneID = activePaneID(in: topology) {
+                _ = admitPaneRefreshIfNeeded(
+                    paneID,
+                    failureRequest: .setClientSize
+                )
+            }
+            _ = drainOutbound()
+        }
     }
 
     func requestNewWindow() {
@@ -672,10 +748,18 @@ final class TmuxSessionController: @unchecked Sendable {
         let hasSibling = topology.panes.contains {
             $0.windowID == window.id && $0.id != paneID
         }
-        guard hasSibling, !window.zoomed else { return }
-        submitCommandOnWriter(
+        guard hasSibling, !window.zoomed else {
+            let admittedRefresh = admitPaneRefreshIfNeeded(
+                paneID,
+                failureRequest: .zoomPane
+            )
+            if admittedRefresh, drainOutbound { _ = self.drainOutbound() }
+            return
+        }
+        submitPanePresentationCommandOnWriter(
             command: "resize-pane -Z -t %\(paneID.rawValue)",
             request: .zoomPane,
+            paneID: paneID,
             drainOutbound: drainOutbound
         )
     }
@@ -705,14 +789,20 @@ final class TmuxSessionController: @unchecked Sendable {
             $0.windowID == window.id && $0.id != paneID
         }
         if window.activePaneID == paneID, window.zoomed || !hasSibling {
+            let admittedRefresh = admitPaneRefreshIfNeeded(
+                paneID,
+                failureRequest: .selectPane
+            )
+            if admittedRefresh, drainOutbound { _ = self.drainOutbound() }
             return
         }
         let command = window.zoomed
             ? "select-pane -Z -t %\(paneID.rawValue)"
             : "resize-pane -Z -t %\(paneID.rawValue)"
-        submitCommandOnWriter(
+        submitPanePresentationCommandOnWriter(
             command: command,
             request: .selectPane,
+            paneID: paneID,
             drainOutbound: drainOutbound
         )
     }
@@ -737,11 +827,17 @@ final class TmuxSessionController: @unchecked Sendable {
         if topology.activeWindowID == windowID {
             guard let paneID else { return }
             if window.zoomed || !hasSibling {
+                let admittedRefresh = admitPaneRefreshIfNeeded(
+                    paneID,
+                    failureRequest: .selectWindow
+                )
+                if admittedRefresh, drainOutbound { _ = self.drainOutbound() }
                 return
             }
-            submitCommandOnWriter(
+            submitPanePresentationCommandOnWriter(
                 command: "resize-pane -Z -t %\(paneID.rawValue)",
                 request: .selectWindow,
+                paneID: paneID,
                 drainOutbound: drainOutbound
             )
             return
@@ -762,15 +858,29 @@ final class TmuxSessionController: @unchecked Sendable {
             hasSibling: hasSibling
         )
         if commands.count == 1 {
-            submitCommandOnWriter(
+            guard let paneID else {
+                submitCommandOnWriter(
+                    command: commands[0],
+                    request: .selectWindow,
+                    drainOutbound: drainOutbound
+                )
+                return
+            }
+            submitPanePresentationCommandOnWriter(
                 command: commands[0],
                 request: .selectWindow,
+                paneID: paneID,
                 drainOutbound: drainOutbound
             )
         } else {
-            submitCommandGroupOnWriter(
+            guard let paneID else {
+                reportRequestFailure(.selectWindow)
+                return
+            }
+            submitPanePresentationCommandGroupOnWriter(
                 commands: commands,
                 request: .selectWindow,
+                paneID: paneID,
                 drainOutbound: drainOutbound
             )
         }
@@ -839,6 +949,21 @@ final class TmuxSessionController: @unchecked Sendable {
         if drainOutbound { _ = self.drainOutbound() }
     }
 
+    private func submitPanePresentationCommandOnWriter(
+        command: String,
+        request: Request,
+        paneID: TmuxPaneID,
+        drainOutbound: Bool
+    ) {
+        guard admitCommandOnWriter(command: command, request: request) else { return }
+        _ = admitPaneRefreshIfNeeded(
+            paneID,
+            failureRequest: request,
+            followsPresentation: true
+        )
+        if drainOutbound { _ = self.drainOutbound() }
+    }
+
     private func admitCommandOnWriter(command: String, request: Request) -> Bool {
         preconditionOnWriterQueue()
         guard let client, !shuttingDown else {
@@ -884,6 +1009,21 @@ final class TmuxSessionController: @unchecked Sendable {
         drainOutbound: Bool
     ) {
         guard admitCommandGroupOnWriter(commands: commands, request: request) else { return }
+        if drainOutbound { _ = self.drainOutbound() }
+    }
+
+    private func submitPanePresentationCommandGroupOnWriter(
+        commands: [String],
+        request: Request,
+        paneID: TmuxPaneID,
+        drainOutbound: Bool
+    ) {
+        guard admitCommandGroupOnWriter(commands: commands, request: request) else { return }
+        _ = admitPaneRefreshIfNeeded(
+            paneID,
+            failureRequest: request,
+            followsPresentation: true
+        )
         if drainOutbound { _ = self.drainOutbound() }
     }
 
@@ -937,7 +1077,99 @@ final class TmuxSessionController: @unchecked Sendable {
         }
     }
 
+    @discardableResult
+    private func admitPaneRefreshIfNeeded(
+        _ paneID: TmuxPaneID,
+        failureRequest: Request,
+        notifyPhaseChange: Bool = true,
+        followsPresentation: Bool = false
+    ) -> Bool {
+        preconditionOnWriterQueue()
+        guard let size = clientSize else { return false }
+        let desired = DesiredPaneRefresh(
+            size: size,
+            failureRequest: failureRequest,
+            requiredAfterPresentation: followsPresentation
+        )
+
+        if case .inFlight(let inFlightSize, let existingFollowUp) =
+            refreshStateByPaneID[paneID] {
+            let requiredAfterPresentation = followsPresentation
+                || existingFollowUp?.requiredAfterPresentation == true
+            refreshStateByPaneID[paneID] = .inFlight(
+                size: inFlightSize,
+                followUp: requiredAfterPresentation || size != inFlightSize
+                    ? DesiredPaneRefresh(
+                        size: size,
+                        failureRequest: failureRequest,
+                        requiredAfterPresentation: requiredAfterPresentation
+                    )
+                    : nil
+            )
+            return false
+        }
+
+        if engineSizeByPaneID[paneID] == size {
+            refreshStateByPaneID.removeValue(forKey: paneID)
+            return false
+        }
+
+        if case .deferred = refreshStateByPaneID[paneID] {
+            refreshStateByPaneID[paneID] = .deferred(desired)
+            return false
+        }
+
+        guard let client, !shuttingDown else {
+            reportRequestFailure(failureRequest)
+            return false
+        }
+        let result = ghostty_tmux_client_refresh_pane(client, paneID.rawValue)
+        switch result {
+        case GHOSTTY_TMUX_RESULT_OK:
+            refreshStateByPaneID[paneID] = .inFlight(size: size, followUp: nil)
+            if notifyPhaseChange {
+                DispatchQueue.main.async {
+                    self.callbacks.onPanePhaseChanged(paneID, .hydrating)
+                }
+            }
+            return true
+        case GHOSTTY_TMUX_RESULT_NOT_READY:
+            refreshStateByPaneID[paneID] = .deferred(desired)
+            return false
+        default:
+            reportImmediateFailure(result, request: failureRequest)
+            return false
+        }
+    }
+
+    private func retryDeferredPaneRefreshIfNeeded(
+        _ paneID: TmuxPaneID,
+        notifyPhaseChange: Bool
+    ) {
+        preconditionOnWriterQueue()
+        guard case .deferred(let desired) = refreshStateByPaneID[paneID] else { return }
+        refreshStateByPaneID.removeValue(forKey: paneID)
+        _ = admitPaneRefreshIfNeeded(
+            paneID,
+            failureRequest: desired.failureRequest,
+            notifyPhaseChange: notifyPhaseChange,
+            followsPresentation: desired.requiredAfterPresentation
+        )
+    }
+
     // MARK: Helpers
+
+    private func effectiveEngineSize(
+        for pane: PaneInfo,
+        in topology: TopologySnapshot
+    ) -> ClientSize? {
+        guard let window = topology.windows.first(where: { $0.id == pane.windowID })
+        else { return nil }
+        if window.zoomed, window.activePaneID == pane.id {
+            return ClientSize(cols: window.width, rows: window.height)
+        }
+        return ClientSize(cols: pane.width, rows: pane.height)
+    }
 
     private func publishState(_ next: SessionState) {
         preconditionOnWriterQueue()
