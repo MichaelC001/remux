@@ -407,6 +407,13 @@ final class RemuxAppUITests: XCTestCase {
             8_000,
             "Scrollback swipe should visibly move terminal content."
         )
+        let bottomContentRatio = liveTerminalBottomContentRatio(screenshot: after)
+        XCTAssertNotNil(bottomContentRatio)
+        XCTAssertGreaterThan(
+            bottomContentRatio ?? 0,
+            0.005,
+            "Fractional scroll rendering should not clip the terminal to a shorter, stale grid."
+        )
     }
 
     func testLiveMouseReportScrollTraceWhenConfigured() throws {
@@ -1615,6 +1622,36 @@ final class RemuxAppUITests: XCTestCase {
         }
 
         return changedPixels
+    }
+
+    private func liveTerminalBottomContentRatio(
+        screenshot: XCUIScreenshot
+    ) -> Double? {
+        guard let snapshot = liveTerminalContentPixels(screenshot: screenshot) else { return nil }
+
+        var colorCounts: [UInt32: Int] = [:]
+        colorCounts.reserveCapacity(128)
+        let pixelCount = snapshot.width * snapshot.height
+        for index in 0..<pixelCount {
+            let offset = index * 4
+            colorCounts[quantizedColor(snapshot.pixels, offset: offset), default: 0] += 1
+        }
+        guard let background = colorCounts.max(by: { $0.value < $1.value })?.key else { return nil }
+
+        let firstRow = snapshot.height * 3 / 4
+        let regionPixelCount = snapshot.width * (snapshot.height - firstRow)
+        guard regionPixelCount > 0 else { return nil }
+
+        var contentPixels = 0
+        for y in firstRow..<snapshot.height {
+            for x in 0..<snapshot.width {
+                let offset = (y * snapshot.width + x) * 4
+                if quantizedColor(snapshot.pixels, offset: offset) != background {
+                    contentPixels += 1
+                }
+            }
+        }
+        return Double(contentPixels) / Double(regionPixelCount)
     }
 
     private func liveTerminalContentPixels(
