@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GHOSTTY_REF: 1a6f9afa81ab06dbebfe7b133552e385e328dbf2
+  GHOSTTY_REF: 98fa1219801016edd43fea8132f5922fc8b80db5
   XCODE_DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
 
 jobs:
@@ -56,7 +56,6 @@ jobs:
           repository: h3nock/remux-ghostty
           ref: ${{ env.GHOSTTY_REF }}
           path: ghostty-source
-          ssh-key: ${{ secrets.REMUX_GHOSTTY_SSH_KEY }}
           persist-credentials: false
 
       - name: Select Xcode
@@ -94,7 +93,7 @@ jobs:
 
       - name: Link GhosttyKit source
         shell: bash
-        run: ln -sfn "${GITHUB_WORKSPACE}/ghostty-source" "${GITHUB_WORKSPACE}/../ghostty-tmux-pane-store-refactor"
+        run: ln -sfn "${GITHUB_WORKSPACE}/ghostty-source" "${GITHUB_WORKSPACE}/../ghostty-remux-upstream-rebuild"
 
       - name: Restore GhosttyKit
         id: ghostty-cache
