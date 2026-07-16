@@ -14,15 +14,6 @@ enum GhosttyKitRuntimeError: Error, Equatable {
     case surfaceMeasurementFailed(ghostty_terminal_surface_result_e)
 }
 
-struct GhosttyTerminalAppearance: Equatable {
-    let fontSize: Float32?
-
-    func apply(to config: inout ghostty_terminal_surface_config_s) {
-        guard let fontSize, config.font_size == 0 else { return }
-        config.font_size = fontSize
-    }
-}
-
 enum GhosttyTerminalDeviceClass {
     case phone
     case pad
@@ -32,47 +23,49 @@ enum GhosttyTerminalAppearancePolicy {
     static let phoneMinimumFontSize: Float32 = 11
     static let phoneDefaultFontSize: Float32 = 11
 
-    static func appearance(
+    static func effectiveFontSize(
         for settings: TerminalSettings,
         deviceClass: GhosttyTerminalDeviceClass,
         contentSizeCategory: UIContentSizeCategory = .large
-    ) -> GhosttyTerminalAppearance {
+    ) -> Float32? {
         if let fontSize = settings.fontSize {
-            return GhosttyTerminalAppearance(fontSize: fontSize)
+            return fontSize
         }
-        return appearance(for: deviceClass, contentSizeCategory: contentSizeCategory)
+        return effectiveFontSize(for: deviceClass, contentSizeCategory: contentSizeCategory)
     }
 
-    static func appearance(
+    static func effectiveFontSize(
         for deviceClass: GhosttyTerminalDeviceClass,
         contentSizeCategory: UIContentSizeCategory = .large
-    ) -> GhosttyTerminalAppearance {
+    ) -> Float32? {
         switch deviceClass {
         case .phone:
-            return GhosttyTerminalAppearance(
-                fontSize: phoneFontSize(contentSizeCategory: contentSizeCategory)
-            )
+            return phoneFontSize(contentSizeCategory: contentSizeCategory)
         case .pad:
-            return GhosttyTerminalAppearance(fontSize: nil)
+            return nil
         }
     }
 
     @MainActor
-    static func currentDeviceAppearance(
+    static func currentDeviceFontSize(
         settings: TerminalSettings = .default
-    ) -> GhosttyTerminalAppearance {
+    ) -> Float32? {
         let category = UIApplication.shared.preferredContentSizeCategory
         switch UIDevice.current.userInterfaceIdiom {
         case .phone:
-            return appearance(
+            return effectiveFontSize(
                 for: settings,
                 deviceClass: .phone,
                 contentSizeCategory: category
             )
         case .pad:
-            return appearance(for: settings, deviceClass: .pad, contentSizeCategory: category)
+            return effectiveFontSize(
+                for: settings,
+                deviceClass: .pad,
+                contentSizeCategory: category
+            )
         default:
-            return GhosttyTerminalAppearance(fontSize: settings.fontSize)
+            return settings.fontSize
         }
     }
 
@@ -170,11 +163,7 @@ final class GhosttyKitRuntime {
     var appHandle: ghostty_app_t { state.app }
 
     func makeTmuxBaseSurfaceConfig() -> ghostty_terminal_surface_config_s {
-        var config = ghostty_terminal_surface_config_new()
-        GhosttyTerminalAppearancePolicy
-            .currentDeviceAppearance(settings: state.terminalSettings)
-            .apply(to: &config)
-        return config
+        ghostty_terminal_surface_config_new()
     }
 
     static func prewarmTerminalRenderer(terminalSettings: TerminalSettings) {
@@ -282,12 +271,11 @@ private final class GhosttyKitRuntimeState {
         guard let config = ghostty_config_new() else {
             throw GhosttyKitRuntimeError.configCreationFailed
         }
-        let appearance = GhosttyTerminalAppearancePolicy
-            .currentDeviceAppearance(settings: terminalSettings)
         try Self.loadSettings(
             terminalSettings,
             into: config,
-            effectiveFontSize: appearance.fontSize
+            effectiveFontSize: GhosttyTerminalAppearancePolicy
+                .currentDeviceFontSize(settings: terminalSettings)
         )
         ghostty_config_finalize(config)
 
@@ -329,12 +317,11 @@ private final class GhosttyKitRuntimeState {
         }
         defer { ghostty_config_free(replacement) }
 
-        let appearance = GhosttyTerminalAppearancePolicy
-            .currentDeviceAppearance(settings: settings)
         try Self.loadSettings(
             settings,
             into: replacement,
-            effectiveFontSize: appearance.fontSize
+            effectiveFontSize: GhosttyTerminalAppearancePolicy
+                .currentDeviceFontSize(settings: settings)
         )
         ghostty_config_finalize(replacement)
         ghostty_app_update_config(app, replacement)

@@ -113,8 +113,11 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         cachedTopologySnapshot = Self.emptyTopologySnapshot
     }
 
-    func terminalAppearanceDidChange() {
+    func terminalConfigurationDidChange() {
         clearPanePreviewCache(reason: "appearance-change")
+        if let activeManagedSurface {
+            reportClientSizeIfActive(activeManagedSurface)
+        }
     }
 
     // MARK: Topology synthesis

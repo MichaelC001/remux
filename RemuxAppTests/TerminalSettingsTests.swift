@@ -96,12 +96,12 @@ final class TerminalSettingsTests: XCTestCase {
     func testExplicitFontSizeOverridesDevicePolicy() {
         let settings = TerminalSettings(fontSize: 14, theme: .ghosttyDefault)
 
-        let appearance = GhosttyTerminalAppearancePolicy.appearance(
+        let fontSize = GhosttyTerminalAppearancePolicy.effectiveFontSize(
             for: settings,
             deviceClass: .phone,
             contentSizeCategory: .accessibilityExtraExtraExtraLarge
         )
 
-        XCTAssertEqual(appearance.fontSize, 14)
+        XCTAssertEqual(fontSize, 14)
     }
 }

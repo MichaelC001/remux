@@ -42,14 +42,6 @@ final class TmuxTerminalSession: ObservableObject {
     private var zoomRequestedPaneID: TmuxPaneID?
     private var preparingSurface: TmuxPaneSurface?
     private var viewportMetrics: GhosttySurfaceDisplayMetrics?
-    private struct AppearanceSnapshot {
-        let baseConfig: ghostty_terminal_surface_config_s
-        let metrics: GhosttySurfaceDisplayMetrics
-        let theme: TerminalTheme
-    }
-    private var appearancePassInFlight = false
-    private var appearancePassWaitingForBusySurface = false
-    private var pendingAppearanceSnapshot: AppearanceSnapshot?
     private var isAppActive = true
     private var isShutDown = false
     private var shutdownDrainContinuation: CheckedContinuation<Void, Never>?
@@ -300,6 +292,7 @@ final class TmuxTerminalSession: ObservableObject {
             case .replaced:
                 if let surface,
                    surfacesByPaneID[paneID] === surface {
+                    _ = surface.applyTerminalConfiguration(theme: paneViewTheme())
                     if let currentViewportMetrics = self.viewportMetrics {
                         surface.updateCanonicalViewportMetrics(currentViewportMetrics)
                     }
@@ -312,7 +305,6 @@ final class TmuxTerminalSession: ObservableObject {
                     "tmuxPane.rendererReplacement failed pane=\(paneID)"
                 )
             }
-            resumeAppearancePassAfterBusySurface()
         }
     }
 
@@ -552,100 +544,11 @@ final class TmuxTerminalSession: ObservableObject {
         if active, let topology { presentActivePane(from: topology) }
     }
 
-    func applyTerminalTheme(_ theme: TerminalTheme) {
-        guard let viewportMetrics, !surfacesByPaneID.isEmpty else { return }
-        let snapshot = AppearanceSnapshot(
-            baseConfig: baseSurfaceConfig(),
-            metrics: viewportMetrics,
-            theme: theme
-        )
-        guard !appearancePassInFlight, !appearancePassWaitingForBusySurface else {
-            pendingAppearanceSnapshot = snapshot
-            return
-        }
-        startAppearancePass(snapshot)
-    }
-
-    private func startAppearancePass(_ snapshot: AppearanceSnapshot) {
+    func applyTerminalConfiguration(theme: TerminalTheme) {
         guard !isShutDown else { return }
-        var surfaces = Array(surfacesByPaneID.values)
-        if let active = paneSurface ?? preparingSurface,
-           let index = surfaces.firstIndex(where: { $0 === active }) {
-            surfaces.swapAt(0, index)
+        for surface in surfacesByPaneID.values where !surface.isClosing {
+            _ = surface.applyTerminalConfiguration(theme: theme)
         }
-        appearancePassInFlight = true
-        replaceRenderersForAppearance(
-            surfaces,
-            index: 0,
-            snapshot: snapshot
-        )
-    }
-
-    private func replaceRenderersForAppearance(
-        _ surfaces: [TmuxPaneSurface],
-        index: Int,
-        snapshot: AppearanceSnapshot
-    ) {
-        guard !isShutDown, index < surfaces.count else {
-            appearancePassInFlight = false
-            startPendingAppearancePassIfPossible()
-            return
-        }
-        let surface = surfaces[index]
-        guard surfacesByPaneID[surface.paneID] === surface, !surface.isClosing else {
-            replaceRenderersForAppearance(surfaces, index: index + 1, snapshot: snapshot)
-            return
-        }
-        relinquishPresentationOwnership(of: surface)
-        surface.replaceRenderer(
-            baseConfig: snapshot.baseConfig,
-            metrics: snapshot.metrics,
-            theme: snapshot.theme
-        ) { [weak self, weak surface] result in
-            guard let self else { return }
-            switch result {
-            case .replaced:
-                if let surface,
-                   surfacesByPaneID[surface.paneID] === surface {
-                    if let currentViewportMetrics = self.viewportMetrics {
-                        surface.updateCanonicalViewportMetrics(currentViewportMetrics)
-                    }
-                    if let topology,
-                       activePaneID(in: topology) == surface.paneID {
-                        presentActivePane(from: topology)
-                    }
-                }
-            case .busy:
-                if pendingAppearanceSnapshot == nil {
-                    pendingAppearanceSnapshot = snapshot
-                }
-                appearancePassWaitingForBusySurface = true
-            case .failed:
-                GhosttyRuntimeTrace.diagnostics(
-                    "tmuxPane.settingsReplacement failed pane=\(surface.map { String(describing: $0.paneID) } ?? "released")"
-                )
-            }
-            replaceRenderersForAppearance(
-                surfaces,
-                index: index + 1,
-                snapshot: snapshot
-            )
-        }
-    }
-
-    private func resumeAppearancePassAfterBusySurface() {
-        guard appearancePassWaitingForBusySurface else { return }
-        appearancePassWaitingForBusySurface = false
-        startPendingAppearancePassIfPossible()
-    }
-
-    private func startPendingAppearancePassIfPossible() {
-        guard !appearancePassInFlight,
-              !appearancePassWaitingForBusySurface,
-              let snapshot = pendingAppearanceSnapshot
-        else { return }
-        pendingAppearanceSnapshot = nil
-        startAppearancePass(snapshot)
     }
 
     private func activePaneID(

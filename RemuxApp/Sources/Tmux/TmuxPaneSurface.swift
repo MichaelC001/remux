@@ -5,8 +5,8 @@ import UIKit
 
 /// MainActor owner of one retained canonical pane terminal and its current
 /// renderer surface. Normal pane switches retain this entire object unchanged;
-/// settings or renderer failure replace only the renderer over the same
-/// terminal and UIView.
+/// only renderer failure replaces the renderer over the same terminal and
+/// UIView. Settings update the live surface in place.
 @MainActor
 final class TmuxPaneSurface {
     let paneID: TmuxPaneID
@@ -36,6 +36,7 @@ final class TmuxPaneSurface {
     private(set) var managedSurface: GhosttyManagedSurface?
     private(set) var lastFullViewportProvenance:
         GhosttyPanePreviewSession.FullViewportProvenance?
+    private var fullViewportFrameNeedsRefresh = false
     private var presented = false
     private var lifecycle = Lifecycle.active
     private var rendererFailureReported = false
@@ -354,6 +355,7 @@ final class TmuxPaneSurface {
                 pixelWidth: expected.pixelWidth,
                 pixelHeight: expected.pixelHeight
             )
+            fullViewportFrameNeedsRefresh = false
             completion(true)
         }
     }
@@ -374,8 +376,21 @@ final class TmuxPaneSurface {
         }
     }
 
-    func applyTerminalTheme(_ theme: TerminalTheme) {
+    @discardableResult
+    func applyTerminalConfiguration(theme: TerminalTheme) -> Bool {
+        guard lifecycle == .active, let renderer else { return false }
+        let result = ghostty_terminal_surface_update_config(renderer.handle)
+        guard result == GHOSTTY_TERMINAL_SURFACE_RESULT_OK else {
+            GhosttyRuntimeTrace.diagnostics(
+                "tmuxPane.configUpdate failed pane=\(paneID) result=\(String(describing: result))"
+            )
+            return false
+        }
         view.applyTerminalTheme(theme)
+        if !presented, lastFullViewportProvenance != nil {
+            fullViewportFrameNeedsRefresh = true
+        }
+        return true
     }
 
     func replaceRenderer(
@@ -400,6 +415,7 @@ final class TmuxPaneSurface {
         rendererFailureReported = true
         cancelPresentationPreparation()
         lastFullViewportProvenance = nil
+        fullViewportFrameNeedsRefresh = false
 
         let installReplacement = { [self] in
             guard lifecycle == .replacing else {
@@ -552,6 +568,30 @@ final class TmuxPaneSurface {
         else { return nil }
 
         if let provenance = lastFullViewportProvenance {
+            if fullViewportFrameNeedsRefresh {
+                guard !presented,
+                      applyDisplayMetrics(canonicalViewportMetrics),
+                      let publication = await matchingPublication(
+                        on: rendererLayer,
+                        transientVisibility: true,
+                        keepVisibleAfterSuccess: false,
+                        captureOwnedPixels: true,
+                        expectedWidth: canonicalViewportMetrics.pixelWidth,
+                        expectedHeight: canonicalViewportMetrics.pixelHeight
+                      ),
+                      case .captured(let frame) = publication,
+                      let image = await makePreviewImage(from: frame, budget: budget)
+                else { return nil }
+                let refreshedProvenance = GhosttyPanePreviewSession.FullViewportProvenance(
+                    surfaceID: instanceID.rawValue,
+                    pixelWidth: canonicalViewportMetrics.pixelWidth,
+                    pixelHeight: canonicalViewportMetrics.pixelHeight
+                )
+                lastFullViewportProvenance = refreshedProvenance
+                fullViewportFrameNeedsRefresh = false
+                return .init(image: image, source: .fullViewport(refreshedProvenance))
+            }
+
             if let frame = retainedFullViewportFrame(
                 in: rendererLayer,
                 provenance: provenance
@@ -574,6 +614,7 @@ final class TmuxPaneSurface {
                 pixelHeight: current.height_px
             )
             lastFullViewportProvenance = currentProvenance
+            fullViewportFrameNeedsRefresh = false
             guard let image = await makePreviewImage(from: frame, budget: budget) else {
                 return nil
             }
@@ -605,6 +646,7 @@ final class TmuxPaneSurface {
                 pixelHeight: current.height_px
             )
             lastFullViewportProvenance = provenance
+            fullViewportFrameNeedsRefresh = false
             source = .fullViewport(provenance)
         } else {
             source = .paneGeometry(.init(
@@ -839,7 +881,8 @@ final class TmuxPaneSurface {
     }
 
     private func hasCurrentFullViewportFrame() -> Bool {
-        guard let provenance = lastFullViewportProvenance,
+        guard !fullViewportFrameNeedsRefresh,
+              let provenance = lastFullViewportProvenance,
               provenance.pixelWidth == canonicalViewportMetrics.pixelWidth,
               provenance.pixelHeight == canonicalViewportMetrics.pixelHeight,
               let layer = GhosttyIOSurfaceFrame.rendererLayer(in: view.layer)

@@ -266,6 +266,41 @@ final class RemuxAppUITests: XCTestCase {
         assertLiveTerminalScreenshotContainsRenderedContent(minNonBackgroundPixels: 30_000)
     }
 
+    func testLiveVisitedPanePreviewsSurviveThemeChangeWhenConfigured() throws {
+        let sessionName = try liveAgentTUISessionName()
+        try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
+
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 90)
+
+        for paneIndex in 1...2 {
+            openPanesSheet()
+            tapPickerButton(
+                identifier: "terminal.pane.tile.\(paneIndex)",
+                fallbackLabel: "Pane \(paneIndex) of 2"
+            )
+            waitForLiveTerminalReady(timeout: 30)
+        }
+
+        openHomeFromTerminal()
+        XCTAssertTrue(app.buttons["library.settings"].waitForExistence(timeout: 5))
+        app.buttons["library.settings"].tap()
+        XCTAssertTrue(settingsForm.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Mocha"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["Latte"].waitForExistence(timeout: 2))
+        app.buttons["Mocha"].tap()
+        app.buttons["Latte"].tap()
+        app.navigationBars["Terminal"].buttons.element(boundBy: 0).tap()
+
+        let activeSession = activeSessionRows.firstMatch
+        XCTAssertTrue(activeSession.waitForExistence(timeout: 5))
+        activeSession.tap()
+        waitForLiveTerminalReady(timeout: 30)
+        openPanesSheet()
+        assertPreviewTileUsesFullViewportWidth(tileIdentifier: "terminal.pane.tile.1")
+        assertPreviewTileUsesFullViewportWidth(tileIdentifier: "terminal.pane.tile.2")
+    }
+
     /// Deliberately synthetic scrollback/throughput stress. This proves lossless
     /// high-volume output handling; it is not a representative agent-TUI
     /// rendering or pane-switch benchmark. Use the gated agent-TUI profile for
@@ -1800,6 +1835,12 @@ final class RemuxAppUITests: XCTestCase {
             screenshot: screenshot,
             tile: tile
         ) else { return nil }
+        return previewTileRenderedPixelStats(snapshot)
+    }
+
+    private func previewTileRenderedPixelStats(
+        _ snapshot: (pixels: [UInt8], width: Int, height: Int)
+    ) -> (distinctColors: Int, nonBackgroundPixels: Int, brightPixels: Int) {
         let stats = pixelStats(snapshot)
         var brightPixels = 0
         for offset in stride(from: 0, to: snapshot.pixels.count, by: 4) {
@@ -1862,17 +1903,27 @@ final class RemuxAppUITests: XCTestCase {
         var lastSpan: Double = 0
         var lastTrailingPixels = 0
         var lastTrailingRowRatio: Double = 0
+        var lastDistinctColors = 0
+        var lastNonBackgroundPixels = 0
+        var lastBrightPixels = 0
         while Date() < deadline {
             let screenshot = XCUIScreen.main.screenshot()
             if let pixels = previewTileRenderedPixels(
                 screenshot: screenshot,
                 tile: tile
             ) {
+                let rendered = previewTileRenderedPixelStats(pixels)
+                lastDistinctColors = rendered.distinctColors
+                lastNonBackgroundPixels = rendered.nonBackgroundPixels
+                lastBrightPixels = rendered.brightPixels
                 let coverage = previewWidthCoverage(pixels)
                 lastSpan = coverage.span
                 lastTrailingPixels = coverage.trailingPixels
                 lastTrailingRowRatio = coverage.trailingRowRatio
-                if coverage.span >= 0.72,
+                if lastDistinctColors > 8,
+                   lastNonBackgroundPixels > 2_500,
+                   lastBrightPixels > 1_000,
+                   coverage.span >= 0.72,
                    coverage.trailingPixels >= 100,
                    coverage.trailingRowRatio >= 0.18 {
                     let attachment = XCTAttachment(screenshot: screenshot)
@@ -1886,7 +1937,7 @@ final class RemuxAppUITests: XCTestCase {
         }
 
         XCTFail(
-            "Preview tile \(tileIdentifier) remained split-width after a live full-viewport visit; span=\(lastSpan) trailingPixels=\(lastTrailingPixels) trailingRowRatio=\(lastTrailingRowRatio)",
+            "Preview tile \(tileIdentifier) remained blank or split-width after a live full-viewport visit; distinctColors=\(lastDistinctColors) nonBackgroundPixels=\(lastNonBackgroundPixels) brightPixels=\(lastBrightPixels) span=\(lastSpan) trailingPixels=\(lastTrailingPixels) trailingRowRatio=\(lastTrailingRowRatio)",
             file: file,
             line: line
         )

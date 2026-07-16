@@ -35,52 +35,42 @@ final class GhosttyKitRuntimeTests: XCTestCase {
         XCTAssertEqual(view.frame.size.height, 1)
     }
 
-    func testPhoneTerminalAppearanceUsesAccessibleMobileDensity() {
-        var config = ghostty_terminal_surface_config_new()
-
-        GhosttyTerminalAppearancePolicy.appearance(
+    func testPhoneTerminalAppearanceUsesAccessibleMobileDensity() throws {
+        let fontSize = GhosttyTerminalAppearancePolicy.effectiveFontSize(
             for: .phone,
             contentSizeCategory: .large
-        ).apply(to: &config)
+        )
 
-        XCTAssertGreaterThanOrEqual(config.font_size, GhosttyTerminalAppearancePolicy.phoneMinimumFontSize)
-        XCTAssertEqual(config.font_size, GhosttyTerminalAppearancePolicy.phoneDefaultFontSize)
+        XCTAssertGreaterThanOrEqual(
+            try XCTUnwrap(fontSize),
+            GhosttyTerminalAppearancePolicy.phoneMinimumFontSize
+        )
+        XCTAssertEqual(fontSize, GhosttyTerminalAppearancePolicy.phoneDefaultFontSize)
     }
 
-    func testPhoneTerminalAppearanceScalesWithAccessibilityTextSize() {
-        var regularConfig = ghostty_terminal_surface_config_new()
-        var accessibilityConfig = ghostty_terminal_surface_config_new()
-
-        GhosttyTerminalAppearancePolicy.appearance(
+    func testPhoneTerminalAppearanceScalesWithAccessibilityTextSize() throws {
+        let regular = GhosttyTerminalAppearancePolicy.effectiveFontSize(
             for: .phone,
             contentSizeCategory: .large
-        ).apply(to: &regularConfig)
-        GhosttyTerminalAppearancePolicy.appearance(
+        )
+        let accessibility = GhosttyTerminalAppearancePolicy.effectiveFontSize(
             for: .phone,
             contentSizeCategory: .accessibilityExtraExtraExtraLarge
-        ).apply(to: &accessibilityConfig)
+        )
 
-        XCTAssertGreaterThan(accessibilityConfig.font_size, regularConfig.font_size)
-    }
-
-    func testPhoneTerminalAppearancePreservesExplicitGhosttyFontSize() {
-        var config = ghostty_terminal_surface_config_new()
-        config.font_size = 14
-
-        GhosttyTerminalAppearancePolicy.appearance(
-            for: .phone,
-            contentSizeCategory: .accessibilityExtraExtraExtraLarge
-        ).apply(to: &config)
-
-        XCTAssertEqual(config.font_size, 14)
+        XCTAssertGreaterThan(try XCTUnwrap(accessibility), try XCTUnwrap(regular))
     }
 
     func testPadTerminalAppearanceUsesGhosttyDefaultDensity() {
-        var config = ghostty_terminal_surface_config_new()
+        let fontSize = GhosttyTerminalAppearancePolicy.effectiveFontSize(for: .pad)
 
-        GhosttyTerminalAppearancePolicy.appearance(for: .pad).apply(to: &config)
+        XCTAssertNil(fontSize)
+    }
 
-        XCTAssertEqual(config.font_size, 0)
+    func testTmuxBaseSurfaceConfigDoesNotOverrideAppOwnedFontSize() throws {
+        let runtime = try GhosttyKitRuntime()
+
+        XCTAssertEqual(runtime.makeTmuxBaseSurfaceConfig().font_size, 0)
     }
 
     func testTerminalSurfaceReplacementLeavesOneRendererLayerAndDetachesFreedLayers() throws {
@@ -131,18 +121,117 @@ final class GhosttyKitRuntimeTests: XCTestCase {
         XCTAssertGreaterThan(image.height, 0)
     }
 
+    func testLiveConfigUpdatePreservesSurfaceAndTerminalOSCBackgroundOverride() async throws {
+        let fixture = try NativeTerminalSurfaceFixture(
+            settings: TerminalSettings(fontSize: 11, theme: .remuxDark)
+        )
+        defer { fixture.close() }
+        let layer = try fixture.createSurface()
+        try await awaitPublication(
+            on: layer,
+            matchingBGRPixel: [0x2E, 0x1E, 0x1E]
+        ) {
+            try fixture.setVisible()
+        }
+        XCTAssertTrue(
+            try GhosttyIOSurfaceFrame.read(from: layer).bgrPixel
+                .isApproximatelyEqual(to: [0x2E, 0x1E, 0x1E])
+        )
+        try await awaitPublication(on: layer, matchingBGRPixel: [3, 2, 1]) {
+            try fixture.feed("\u{1B}]11;#010203\u{1B}\\")
+        }
+        let originalSurface = try XCTUnwrap(fixture.surfaceHandle)
+        let originalSize = try fixture.surfaceSize()
+        XCTAssertEqual(try GhosttyIOSurfaceFrame.read(from: layer).bgrPixel, [3, 2, 1])
+
+        try await awaitPublication(on: layer, matchingBGRPixel: [3, 2, 1]) {
+            try fixture.updateSettings(
+                TerminalSettings(fontSize: 11, theme: .remuxLight)
+            )
+        }
+
+        XCTAssertEqual(fixture.surfaceHandle, originalSurface)
+        XCTAssertTrue(viewRendererLayer(fixture.view) === layer)
+        let updatedSize = try fixture.surfaceSize()
+        XCTAssertEqual(updatedSize.width_px, originalSize.width_px)
+        XCTAssertEqual(updatedSize.height_px, originalSize.height_px)
+        XCTAssertEqual(updatedSize.cell_width_px, originalSize.cell_width_px)
+        XCTAssertEqual(updatedSize.cell_height_px, originalSize.cell_height_px)
+        XCTAssertEqual(try GhosttyIOSurfaceFrame.read(from: layer).bgrPixel, [3, 2, 1])
+
+        try await awaitPublication(
+            on: layer,
+            matchingBGRPixel: [0xF5, 0xF1, 0xEF]
+        ) {
+            try fixture.feed("\u{1B}]111\u{1B}\\")
+        }
+        XCTAssertTrue(
+            try GhosttyIOSurfaceFrame.read(from: layer).bgrPixel
+                .isApproximatelyEqual(to: [0xF5, 0xF1, 0xEF])
+        )
+    }
+
+    func testLiveConfigUpdateAdoptsAppOwnedFontSize() throws {
+        let fixture = try NativeTerminalSurfaceFixture(
+            settings: TerminalSettings(fontSize: 11, theme: .remuxDark)
+        )
+        defer { fixture.close() }
+        _ = try fixture.createSurface()
+        let before = try fixture.surfaceSize()
+
+        try fixture.updateSettings(TerminalSettings(fontSize: 18, theme: .remuxDark))
+
+        let after = try fixture.surfaceSize()
+        XCTAssertEqual(after.width_px, before.width_px)
+        XCTAssertEqual(after.height_px, before.height_px)
+        XCTAssertGreaterThan(after.cell_width_px, before.cell_width_px)
+        XCTAssertGreaterThan(after.cell_height_px, before.cell_height_px)
+    }
+
+    func testLiveConfigUpdatePreservesExplicitPerSurfaceFontOverride() throws {
+        let fixture = try NativeTerminalSurfaceFixture(
+            settings: TerminalSettings(fontSize: 11, theme: .remuxDark),
+            surfaceFontSizeOverride: 14
+        )
+        defer { fixture.close() }
+        _ = try fixture.createSurface()
+        let originalSurface = fixture.surfaceHandle
+        let before = try fixture.surfaceSize()
+
+        try fixture.updateSettings(TerminalSettings(fontSize: 20, theme: .remuxLight))
+
+        let after = try fixture.surfaceSize()
+        XCTAssertEqual(fixture.surfaceHandle, originalSurface)
+        XCTAssertEqual(after.width_px, before.width_px)
+        XCTAssertEqual(after.height_px, before.height_px)
+        XCTAssertEqual(after.cell_width_px, before.cell_width_px)
+        XCTAssertEqual(after.cell_height_px, before.cell_height_px)
+    }
+
     private func awaitPublication(
         on layer: CALayer,
+        matchingBGRPixel expectedPixel: [UInt8]? = nil,
         perform: () throws -> Void
     ) async throws {
         let publication = expectation(description: "renderer publishes IOSurface")
         publication.assertForOverFulfill = false
-        let observation = layer.observe(\.contents, options: [.new]) { _, _ in
+        let observation = layer.observe(\.contents, options: [.new]) { layer, _ in
+            guard let expectedPixel else {
+                publication.fulfill()
+                return
+            }
+            guard let frame = try? GhosttyIOSurfaceFrame.read(from: layer),
+                  frame.bgrPixel.isApproximatelyEqual(to: expectedPixel)
+            else { return }
             publication.fulfill()
         }
         defer { observation.invalidate() }
         try perform()
         await fulfillment(of: [publication], timeout: 2)
+    }
+
+    private func viewRendererLayer(_ view: UIView) -> CALayer? {
+        GhosttyIOSurfaceFrame.rendererLayer(in: view.layer)
     }
 
 }
@@ -166,10 +255,17 @@ private final class NativeTerminalSurfaceFixture {
 
     private let producer: ghostty_terminal_producer_t
     private let terminal: ghostty_terminal_t
+    private let surfaceFontSizeOverride: Float32
     private var surface: ghostty_terminal_surface_t?
 
-    init() throws {
-        runtime = try GhosttyKitRuntime()
+    var surfaceHandle: ghostty_terminal_surface_t? { surface }
+
+    init(
+        settings: TerminalSettings = .default,
+        surfaceFontSizeOverride: Float32 = 0
+    ) throws {
+        runtime = try GhosttyKitRuntime(terminalSettings: settings)
+        self.surfaceFontSizeOverride = surfaceFontSizeOverride
         var producerConfig = ghostty_terminal_producer_config_new()
         producerConfig.columns = 80
         producerConfig.rows = 24
@@ -208,6 +304,7 @@ private final class NativeTerminalSurfaceFixture {
         precondition(surface == nil)
         let scale = max(window.screen.scale, 1)
         var config = runtime.makeTmuxBaseSurfaceConfig()
+        config.font_size = surfaceFontSizeOverride
         config.platform_tag = GHOSTTY_PLATFORM_IOS
         config.platform = ghostty_platform_u(ios: ghostty_platform_ios_s(
             uiview: Unmanaged.passUnretained(view).toOpaque()
@@ -264,6 +361,26 @@ private final class NativeTerminalSurfaceFixture {
         ghostty_app_tick(runtime.appHandleForTesting)
     }
 
+    func updateSettings(_ settings: TerminalSettings) throws {
+        try runtime.applyTerminalSettings(settings)
+        guard let surface else { throw FixtureError.missingRendererLayer }
+        let result = ghostty_terminal_surface_update_config(surface)
+        guard result == GHOSTTY_TERMINAL_SURFACE_RESULT_OK else {
+            throw FixtureError.surface(result)
+        }
+        ghostty_app_tick(runtime.appHandleForTesting)
+    }
+
+    func surfaceSize() throws -> ghostty_surface_size_s {
+        guard let surface else { throw FixtureError.missingRendererLayer }
+        var size = ghostty_surface_size_s()
+        let result = ghostty_terminal_surface_size(surface, &size)
+        guard result == GHOSTTY_TERMINAL_SURFACE_RESULT_OK else {
+            throw FixtureError.surface(result)
+        }
+        return size
+    }
+
     func freeSurface() -> CALayer? {
         guard let surface else { return nil }
         let layer = view.layer.sublayers?.first
@@ -279,5 +396,19 @@ private final class NativeTerminalSurfaceFixture {
         ghostty_terminal_release(terminal)
         ghostty_terminal_producer_free(producer)
         _ = runtime
+    }
+}
+
+private extension GhosttyIOSurfaceFrame {
+    var bgrPixel: [UInt8] {
+        Array(bytes.prefix(3))
+    }
+}
+
+private extension Array where Element == UInt8 {
+    func isApproximatelyEqual(to expected: [UInt8], tolerance: Int = 1) -> Bool {
+        count == expected.count && zip(self, expected).allSatisfy { actual, expected in
+            abs(Int(actual) - Int(expected)) <= tolerance
+        }
     }
 }

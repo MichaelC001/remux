@@ -253,16 +253,14 @@ final class TmuxScreenModel: ObservableObject {
         }
     }
 
-    /// Live settings application: updates the runtime's config (which
-    /// libghostty propagates to existing surfaces), the base config used
-    /// for surfaces bound to panes in the future, and the bound pane
-    /// view's theme.
+    /// Live settings application: updates the runtime's canonical app config
+    /// before each retained pane surface re-snapshots it in place.
     func applyTerminalSettings(_ settings: TerminalSettings) throws {
         guard settings != currentTerminalSettings else { return }
         try runtime?.applyTerminalSettings(settings)
         currentTerminalSettings = settings
-        terminalScreenAdapter.terminalAppearanceDidChange()
-        session?.applyTerminalTheme(settings.theme)
+        session?.applyTerminalConfiguration(theme: settings.theme)
+        terminalScreenAdapter.terminalConfigurationDidChange()
     }
 
     func stop() async {
