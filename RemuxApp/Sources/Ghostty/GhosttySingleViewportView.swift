@@ -54,11 +54,13 @@ private struct GhosttySingleViewportRepresentable: UIViewRepresentable {
     func makeUIView(context: Context) -> GhosttySingleViewportContainerView {
         let view = GhosttySingleViewportContainerView()
         view.backgroundColor = terminalTheme.terminalBackgroundUIColor
+        view.updateSelectionHandleStyle(terminalTheme.terminalChromeStyle)
         return view
     }
 
     func updateUIView(_ view: GhosttySingleViewportContainerView, context: Context) {
         view.backgroundColor = terminalTheme.terminalBackgroundUIColor
+        view.updateSelectionHandleStyle(terminalTheme.terminalChromeStyle)
         view.update(
             projection: projection,
             surfaceLookup: surfaceLookup,
@@ -181,6 +183,15 @@ private final class GhosttySingleViewportContainerView: UIView,
             ? startSelectionHandle
             : endSelectionHandle
         return handle.hitTest(convert(point, to: handle), with: event)
+    }
+
+    func updateSelectionHandleStyle(_ style: GhosttyTerminalChromeStyle) {
+        let fillColor = UIColor(style.accent)
+        let borderColor = UIColor(style.accentForeground).cgColor
+        startSelectionHandle.backgroundColor = fillColor
+        endSelectionHandle.backgroundColor = fillColor
+        startSelectionHandle.layer.borderColor = borderColor
+        endSelectionHandle.layer.borderColor = borderColor
     }
 
     func update(
@@ -796,8 +807,6 @@ private final class GhosttySelectionHandleView: UIView {
     init(endpoint: ghostty_terminal_surface_selection_endpoint_e) {
         self.endpoint = endpoint
         super.init(frame: CGRect(x: 0, y: 0, width: 18, height: 18))
-        backgroundColor = .systemBlue
-        layer.borderColor = UIColor.white.cgColor
         layer.borderWidth = 1
         layer.cornerRadius = 9
     }
