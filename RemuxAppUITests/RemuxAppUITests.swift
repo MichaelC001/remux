@@ -882,19 +882,69 @@ final class RemuxAppUITests: XCTestCase {
         sendTerminalCommand("clear; printf '\(marker) alpha beta gamma\\n'")
         hideKeyboardIfPresent()
 
+        guard waitForStableLiveTerminalScreenshot(
+            minNonBackgroundPixels: 1_000,
+            attachmentName: "live-terminal-stationary-selection-ready"
+        ) != nil else {
+            return
+        }
+
         let terminal = app.otherElements["terminal.screen"].firstMatch
         XCTAssertTrue(terminal.waitForExistence(timeout: 10))
-        terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.001, dy: 0.02))
-            .press(
-                forDuration: 0.7,
-                thenDragTo: terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.02))
-            )
+        terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.18, dy: 0.02))
+            .press(forDuration: 0.70)
 
         let copy = waitForCopyMenuItem(timeout: 5)
         copy.tap()
         XCTAssertTrue(
-            waitForPasteboard(containing: marker, timeout: 5),
-            "Copy should write selected terminal text to the simulator pasteboard."
+            waitForPasteboard(equalTo: marker, timeout: 5),
+            "Stationary terminal word selection should copy exactly the selected marker."
+        )
+    }
+
+    func testLiveTerminalLongPressSteeringWhenConfigured() throws {
+        let sessionName = try generatedLiveLatencySessionName("steering")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 90)
+
+        let collector = [
+            #"tty=/dev/tty"#,
+            #"saved=$(stty -g <$tty) || exit"#,
+            #"trap "stty $saved <$tty" EXIT"#,
+            #"stty raw -echo <$tty"#,
+            #"data= chunk="#,
+            #"IFS= read -r -k 3 -t 8 chunk <$tty; status=$?; [[ -n $chunk ]] && data+=$chunk"#,
+            #"while (( status == 0 )); do chunk=; IFS= read -r -k 3 -t 0.6 chunk <$tty; status=$?; [[ -n $chunk ]] && data+=$chunk; done"#,
+            #"stty $saved <$tty || exit; trap - EXIT"#,
+            #"esc=$(printf "\033"); csi="${esc}[D"; ss3="${esc}OD"; rest=$data; count=0; valid=1"#,
+            #"while [[ -n $rest ]]; do if [[ $rest == ${csi}* ]]; then rest=${rest[4,-1]}; elif [[ $rest == ${ss3}* ]]; then rest=${rest[4,-1]}; else valid=0; break; fi; (( count++ )); done"#,
+            #"if (( valid && count >= 3 )); then print -r -- REMUX_STEER_REPEAT_OK; else hex=$(print -rn -- "$data" | od -An -tx1 | tr -d " \n"); print -r -- "REMUX_STEER_REPEAT_FAIL_$hex"; fi"#,
+        ].joined(separator: "; ")
+        sendTerminalCommand("zsh -fc '\(collector)'")
+        hideKeyboardIfPresent()
+
+        let terminal = app.otherElements["terminal.screen"].firstMatch
+        XCTAssertTrue(terminal.waitForExistence(timeout: 10))
+        terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.60, dy: 0.50))
+            .press(
+                forDuration: 0.55,
+                thenDragTo: terminal.coordinate(
+                    withNormalizedOffset: CGVector(dx: 0.52, dy: 0.50)
+                ),
+                withVelocity: .slow,
+                thenHoldForDuration: 0.90
+            )
+
+        RunLoop.current.run(until: Date().addingTimeInterval(4.5))
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: "REMUX_STEER_REPEAT_OK"
         )
     }
 
@@ -2470,19 +2520,19 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func waitForPasteboard(
-        containing marker: String,
+        equalTo expected: String,
         timeout: TimeInterval,
         pollInterval: TimeInterval = 0.1
     ) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         repeat {
-            if readPasteboardStringAllowingPermission(timeout: 1)?.contains(marker) == true {
+            if readPasteboardStringAllowingPermission(timeout: 1) == expected {
                 return true
             }
             RunLoop.current.run(until: Date().addingTimeInterval(pollInterval))
         } while Date() < deadline
 
-        return readPasteboardStringAllowingPermission(timeout: 1)?.contains(marker) == true
+        return readPasteboardStringAllowingPermission(timeout: 1) == expected
     }
 
     private func readPasteboardStringAllowingPermission(timeout: TimeInterval) -> String? {
