@@ -379,6 +379,7 @@ final class TmuxTerminalSession: ObservableObject {
                     resumeShutdownDrainIfQuiescent()
                     return
                 }
+                surface.setSceneActive(isAppActive)
                 surfacesByPaneID[paneID] = surface
                 if let topology { presentActivePane(from: topology) }
             }
@@ -451,6 +452,7 @@ final class TmuxTerminalSession: ObservableObject {
             // that has not yet been presented must wait for hydration.
             if paneSurface?.paneID == paneID,
                isFullViewport(paneID: paneID, in: snapshot) {
+                paneSurface?.setSceneActive(true)
                 return
             }
             if preparingSurface?.paneID == paneID { cancelPendingPresentation() }
@@ -470,6 +472,7 @@ final class TmuxTerminalSession: ObservableObject {
 
         guard paneSurface?.paneID != paneID else {
             pendingPaneID = nil
+            paneSurface?.setSceneActive(true)
             return
         }
         guard !failedCreationPaneIDs.contains(paneID),
@@ -501,6 +504,7 @@ final class TmuxTerminalSession: ObservableObject {
             }
             paneSurface = surface
             pendingPaneID = nil
+            surface.setSceneActive(isAppActive)
             surface.setPresented(true)
         }
     }
@@ -539,7 +543,7 @@ final class TmuxTerminalSession: ObservableObject {
         isAppActive = active
         if !active {
             cancelPendingPresentation()
-            unpublishPane()
+            paneSurface?.setSceneActive(false)
         }
         if active, let topology { presentActivePane(from: topology) }
     }

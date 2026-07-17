@@ -323,8 +323,6 @@ private final class GhosttySingleViewportContainerView: UIView,
         if changedFrame || changedContainer {
             container.layoutIfNeeded()
         }
-        surface.setVisible(true)
-        surface.setFocused(true)
         GhosttyRuntimeTrace.flowEndIfActive(
             GhosttyRuntimeTrace.paneSwitchFlow,
             event: "presentation.reveal.ready",

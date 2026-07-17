@@ -38,6 +38,7 @@ final class TmuxPaneSurface {
         GhosttyPanePreviewSession.FullViewportProvenance?
     private var fullViewportFrameNeedsRefresh = false
     private var presented = false
+    private var sceneActive = true
     private var lifecycle = Lifecycle.active
     private var rendererFailureReported = false
     private var closeCompletions: [@MainActor @Sendable () -> Void] = []
@@ -266,6 +267,7 @@ final class TmuxPaneSurface {
         )
         managed.onDisplayUpdate = onDisplayUpdate
         managedSurface = managed
+        applyPresentationActivity()
         return managed
     }
 
@@ -277,20 +279,15 @@ final class TmuxPaneSurface {
             // newer viewport-sized frame arrives. Resize first, then make the
             // already-published pane surface visible and interactive.
             _ = applyDisplayMetrics(canonicalViewportMetrics)
-            if let managedSurface {
-                managedSurface.setFocused(true)
-                managedSurface.setVisible(true)
-            } else {
-                _ = renderer?.control.setFocused(true)
-                _ = renderer?.control.setVisible(true)
-            }
-        } else if let managedSurface {
-            managedSurface.setFocused(false)
-            managedSurface.setVisible(false)
-        } else {
-            _ = renderer?.control.setFocused(false)
-            _ = renderer?.control.setVisible(false)
         }
+        applyPresentationActivity()
+    }
+
+    func setSceneActive(_ active: Bool) {
+        guard lifecycle != .closed, lifecycle != .closing else { return }
+        guard active != sceneActive else { return }
+        sceneActive = active
+        applyPresentationActivity()
     }
 
     func refreshInteractionState() {
@@ -662,6 +659,17 @@ final class TmuxPaneSurface {
         guard lifecycle == .active, !rendererFailureReported else { return }
         rendererFailureReported = true
         onRendererFailure(paneID)
+    }
+
+    private func applyPresentationActivity() {
+        let active = presented && sceneActive
+        if let managedSurface {
+            managedSurface.setFocused(active)
+            managedSurface.setVisible(active)
+        } else {
+            _ = renderer?.control.setFocused(active)
+            _ = renderer?.control.setVisible(active)
+        }
     }
 
     private func destroyUnregisteredRenderer() {

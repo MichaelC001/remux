@@ -227,8 +227,6 @@ final class GhosttyPaneScrollContainerView: UIView, UIScrollViewDelegate, UIGest
 
     func detachCurrentSurfaceForRemoval() {
         guard let surface else { return }
-        surface.setFocused(false)
-        surface.setVisible(false)
         detachSurfaceIfNeeded(surface)
     }
 
