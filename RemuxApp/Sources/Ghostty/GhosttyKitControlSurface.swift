@@ -154,6 +154,15 @@ enum GhosttyLocalSelectionOutcome: Equatable {
     case unavailable
 }
 
+enum GhosttyLocalLinkSelectionOutcome: Equatable {
+    case match(
+        snapshot: GhosttyLocalSelectionSnapshot,
+        explicitTarget: String?
+    )
+    case noMatch(snapshot: GhosttyLocalSelectionSnapshot)
+    case unavailable
+}
+
 extension TmuxControlViewport {
     init?(ghosttySurfaceSize size: ghostty_surface_size_s) {
         guard size.columns > 0, size.rows > 0 else { return nil }
@@ -307,6 +316,55 @@ final class GhosttyKitControlSurface {
                 Double(point.y) * scaleFactor,
                 snapshot
             )
+        }
+    }
+
+    func selectLink(at point: CGPoint) -> GhosttyLocalLinkSelectionOutcome {
+        guard !invalidated else { return .unavailable }
+
+        var snapshotValue = ghostty_terminal_surface_selection_snapshot_s()
+        var matched = false
+        var target = ghostty_text_s()
+        let result = ghostty_terminal_surface_select_link(
+            handle,
+            Double(point.x) * scaleFactor,
+            Double(point.y) * scaleFactor,
+            &snapshotValue,
+            &matched,
+            &target
+        )
+        defer {
+            if target.text != nil {
+                let freeResult = ghostty_terminal_surface_free_text(handle, &target)
+                assert(freeResult == GHOSTTY_TERMINAL_SURFACE_INPUT_CONSUMED_NO_OUTPUT)
+            }
+        }
+
+        let snapshot = GhosttyLocalSelectionSnapshot(
+            cValue: snapshotValue,
+            scaleFactor: scaleFactor
+        )
+        switch result {
+        case GHOSTTY_TERMINAL_SURFACE_RESULT_OK where matched:
+            let explicitTarget = target.text == nil
+                ? nil
+                : Self.decodeGhosttyText(target)
+            return .match(snapshot: snapshot, explicitTarget: explicitTarget)
+        case GHOSTTY_TERMINAL_SURFACE_RESULT_OK:
+            return .noMatch(snapshot: snapshot)
+        case GHOSTTY_TERMINAL_SURFACE_RESULT_INVALID_INPUT,
+             GHOSTTY_TERMINAL_SURFACE_RESULT_OUT_OF_MEMORY:
+            return .unavailable
+        case GHOSTTY_TERMINAL_SURFACE_RESULT_FAILED:
+            let retry = ghostty_terminal_surface_terminal_changed(handle)
+            guard retry == GHOSTTY_TERMINAL_SURFACE_RESULT_OK else {
+                fail(.native(retry))
+                return .unavailable
+            }
+            return .unavailable
+        default:
+            fail(.native(result))
+            return .unavailable
         }
     }
 

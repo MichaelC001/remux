@@ -902,6 +902,29 @@ final class RemuxAppUITests: XCTestCase {
             waitForPasteboard(equalTo: marker, timeout: 5),
             "Stationary terminal word selection should copy exactly the selected marker."
         )
+
+        let link = "http://localhost:3000/dashboard"
+        UIPasteboard.general.string = "REMUX_LINK_COPY_SENTINEL"
+        sendTerminalCommand("clear; printf '\(link)\\n'")
+        hideKeyboardIfPresent()
+
+        guard waitForStableLiveTerminalScreenshot(
+            minNonBackgroundPixels: 1_000,
+            attachmentName: "live-terminal-exact-link-selection-ready"
+        ) != nil else {
+            return
+        }
+
+        terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.18, dy: 0.02))
+            .press(forDuration: 0.70)
+
+        let linkCopy = waitForCopyMenuItem(timeout: 5)
+        attach(name: "live-terminal-exact-link-selected")
+        linkCopy.tap()
+        XCTAssertTrue(
+            waitForPasteboard(equalTo: link, timeout: 5),
+            "Stationary terminal link selection should copy the entire URL exactly."
+        )
     }
 
     func testLiveTerminalLongPressSteeringWhenConfigured() throws {

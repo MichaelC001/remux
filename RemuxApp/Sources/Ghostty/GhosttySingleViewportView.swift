@@ -456,8 +456,16 @@ private final class GhosttySingleViewportContainerView: UIView,
             return
         }
 
-        longPressOriginalPoint = nil
-        applySelectionOutcome(control.selectWord(at: point), presentMenu: true)
+        switch control.selectLink(at: point) {
+        case .match(let snapshot, _):
+            longPressOriginalPoint = nil
+            applySelectionOutcome(.snapshot(snapshot), presentMenu: true)
+        case .noMatch:
+            longPressOriginalPoint = nil
+            applySelectionOutcome(control.selectWord(at: point), presentMenu: true)
+        case .unavailable:
+            reconcileLocalSelectionAfterLongPress()
+        }
     }
 
     private func presentSelectionCopyMenu() {
