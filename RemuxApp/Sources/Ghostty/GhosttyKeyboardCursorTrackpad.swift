@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import QuartzCore
 
 /// Translates the iOS spacebar long-press / floating-cursor drag into
 /// terminal arrow-key emissions. The further the user has pushed past the
@@ -71,7 +72,6 @@ struct GhosttyKeyboardCursorTrackpad: Equatable {
     private var rawSinceLockLocked: CGFloat = 0
     private var rawSinceLockOrtho: CGFloat = 0
     private var axisDisplacement: CGFloat = 0
-    private var lastEmittedDirection: Direction?
 
     init(configuration: Configuration = .default) {
         precondition(configuration.horizontalStep > 0, "horizontalStep must be positive")
@@ -100,7 +100,6 @@ struct GhosttyKeyboardCursorTrackpad: Equatable {
         rawSinceLockLocked = 0
         rawSinceLockOrtho = 0
         axisDisplacement = 0
-        lastEmittedDirection = nil
         return HUDState(activeDirection: nil, intensity: 0, isVisible: true)
     }
 
@@ -113,7 +112,6 @@ struct GhosttyKeyboardCursorTrackpad: Equatable {
         rawSinceLockLocked = 0
         rawSinceLockOrtho = 0
         axisDisplacement = 0
-        lastEmittedDirection = nil
         return .hidden
     }
 
@@ -190,6 +188,9 @@ struct GhosttyKeyboardCursorTrackpad: Equatable {
         let multiplier = 1.0 + intensity * (configuration.maxAccelMultiplier - 1.0)
         let baseStep = (axis == .horizontal) ? configuration.horizontalStep : configuration.verticalStep
         let effectiveStep = baseStep / multiplier
+        let heldDirection = abs(axisDisplacement) >= baseStep
+            ? directionFor(axis: axis, signedAccumulator: axisDisplacement)
+            : nil
 
         var steps: [Step] = []
         let count = Int(abs(stepAcc) / effectiveStep)
@@ -205,13 +206,12 @@ struct GhosttyKeyboardCursorTrackpad: Equatable {
             // regardless of how UIKit chunks the floating-cursor stream.
             let consumed = CGFloat(bounded) * effectiveStep
             stepAcc = stepAcc > 0 ? stepAcc - consumed : stepAcc + consumed
-            lastEmittedDirection = direction
         }
 
         return UpdateOutcome(
             steps: steps,
             hud: HUDState(
-                activeDirection: lastEmittedDirection,
+                activeDirection: heldDirection,
                 intensity: intensity,
                 isVisible: true
             ),
@@ -231,6 +231,215 @@ struct GhosttyKeyboardCursorTrackpad: Equatable {
             return signedAccumulator >= 0 ? .right : .left
         case .vertical:
             return signedAccumulator >= 0 ? .down : .up
+        }
+    }
+}
+
+/// Owns the one clock used by held cursor-steering gestures. Movement remains
+/// synchronous: the trackpad's immediate steps are sent from `update`. The
+/// repeating timer exists only while a direction is held, and adds one repeated
+/// arrow at a time after the initial delay.
+@MainActor
+final class GhosttyKeyboardCursorTrackpadDriver {
+    static let initialRepeatDelay: TimeInterval = 0.30
+    static let slowRepeatInterval: TimeInterval = 0.18
+    static let mediumRepeatInterval: TimeInterval = 0.10
+    static let fastRepeatInterval: TimeInterval = 0.06
+
+    private struct RepeatState {
+        var direction: GhosttyKeyboardCursorTrackpad.Direction
+        var interval: TimeInterval
+        var nextFireAt: TimeInterval
+    }
+
+    private weak var owner: AnyObject?
+    private var trackpad: GhosttyKeyboardCursorTrackpad?
+    private var sendKeyEvent: ((GhosttySurfaceKeyEvent) -> Bool)?
+    private var publishHUD: ((GhosttyKeyboardCursorTrackpad.HUDState) -> Void)?
+    private var repeatState: RepeatState?
+    private var repeatTimer: Timer?
+    private var didSteer = false
+
+    var isRepeatScheduled: Bool { repeatTimer != nil }
+
+    func begin(
+        owner: AnyObject,
+        at point: CGPoint,
+        sendKeyEvent: @escaping (GhosttySurfaceKeyEvent) -> Bool,
+        onHUDStateChange: @escaping (GhosttyKeyboardCursorTrackpad.HUDState) -> Void
+    ) {
+        cancelCurrentGesture()
+
+        var trackpad = GhosttyKeyboardCursorTrackpad()
+        let hud = trackpad.begin(at: point)
+        self.owner = owner
+        self.trackpad = trackpad
+        self.sendKeyEvent = sendKeyEvent
+        publishHUD = onHUDStateChange
+        didSteer = false
+        onHUDStateChange(hud)
+        Haptic.tap(.soft)
+    }
+
+    func update(
+        owner: AnyObject,
+        at point: CGPoint,
+        now: TimeInterval = CACurrentMediaTime()
+    ) -> GhosttyKeyboardCursorTrackpad.UpdateOutcome? {
+        guard self.owner === owner, var trackpad else { return nil }
+
+        let outcome = trackpad.update(at: point)
+        self.trackpad = trackpad
+
+        for step in outcome.steps {
+            didSteer = true
+            guard send(direction: step.direction) else {
+                rejectCurrentGesture()
+                return outcome
+            }
+        }
+
+        if outcome.didLockAxis {
+            Haptic.selection()
+        }
+        publishHUD?(outcome.hud)
+        updateRepeat(for: outcome.hud, now: now)
+        return outcome
+    }
+
+    /// Returns whether this gesture sent or attempted any steering key. A
+    /// non-owner gets `nil`, allowing another gesture entry point to decide
+    /// whether a stationary release should begin text selection.
+    @discardableResult
+    func end(owner: AnyObject) -> Bool? {
+        guard self.owner === owner else { return nil }
+        let result = didSteer
+        cancelCurrentGesture()
+        return result
+    }
+
+    @discardableResult
+    func cancel(owner: AnyObject) -> Bool {
+        guard self.owner === owner else { return false }
+        cancelCurrentGesture()
+        return true
+    }
+
+    /// Internal time injection keeps repeat timing deterministic in tests.
+    func repeatTick(at now: TimeInterval) {
+        guard let nextFireAt = repeatState?.nextFireAt, now >= nextFireAt else { return }
+        emitRepeat(at: now)
+    }
+
+    private func emitRepeat(at now: TimeInterval) {
+        guard owner != nil else {
+            cancelCurrentGesture()
+            return
+        }
+        guard var state = repeatState else { return }
+
+        didSteer = true
+        guard send(direction: state.direction) else {
+            rejectCurrentGesture()
+            return
+        }
+
+        // Never catch up after a delayed frame. One tick sends at most one key
+        // and the next deadline is measured from the actual send time.
+        state.nextFireAt = now + state.interval
+        repeatState = state
+    }
+
+    private func updateRepeat(
+        for hud: GhosttyKeyboardCursorTrackpad.HUDState,
+        now: TimeInterval
+    ) {
+        guard let direction = hud.activeDirection else {
+            stopRepeating()
+            return
+        }
+
+        let interval = repeatInterval(for: hud.intensity)
+        if var state = repeatState, state.direction == direction {
+            if state.interval != interval {
+                state.interval = interval
+                state.nextFireAt = now + interval
+                repeatState = state
+                scheduleRepeat(every: interval, firstFireAfter: interval)
+            }
+        } else {
+            repeatState = RepeatState(
+                direction: direction,
+                interval: interval,
+                nextFireAt: now + Self.initialRepeatDelay
+            )
+            scheduleRepeat(every: interval, firstFireAfter: Self.initialRepeatDelay)
+        }
+    }
+
+    private func send(direction: GhosttyKeyboardCursorTrackpad.Direction) -> Bool {
+        sendKeyEvent?(GhosttySurfaceKeyEvent(keyCode: direction.keyCode)) == true
+    }
+
+    private func rejectCurrentGesture() {
+        trackpad = nil
+        stopRepeating()
+        publishHUD?(.hidden)
+    }
+
+    private func cancelCurrentGesture() {
+        trackpad = nil
+        stopRepeating()
+        if owner != nil {
+            publishHUD?(.hidden)
+        }
+        owner = nil
+        sendKeyEvent = nil
+        publishHUD = nil
+        didSteer = false
+    }
+
+    private func repeatInterval(for intensity: CGFloat) -> TimeInterval {
+        if intensity >= 1 { return Self.fastRepeatInterval }
+        if intensity > 0 { return Self.mediumRepeatInterval }
+        return Self.slowRepeatInterval
+    }
+
+    private func scheduleRepeat(every interval: TimeInterval, firstFireAfter delay: TimeInterval) {
+        repeatTimer?.invalidate()
+        let timer = Timer(
+            timeInterval: interval,
+            target: self,
+            selector: #selector(repeatTimerFired),
+            userInfo: nil,
+            repeats: true
+        )
+        timer.fireDate = Date(timeIntervalSinceNow: delay)
+        RunLoop.main.add(timer, forMode: .common)
+        repeatTimer = timer
+    }
+
+    private func stopRepeating() {
+        repeatState = nil
+        repeatTimer?.invalidate()
+        repeatTimer = nil
+    }
+
+    @objc private func repeatTimerFired() {
+        emitRepeat(at: CACurrentMediaTime())
+        if let interval = repeatState?.interval {
+            repeatTimer?.fireDate = Date(timeIntervalSinceNow: interval)
+        }
+    }
+}
+
+private extension GhosttyKeyboardCursorTrackpad.Direction {
+    var keyCode: GhosttySurfaceKeyEvent.KeyCode {
+        switch self {
+        case .up: .arrowUp
+        case .down: .arrowDown
+        case .left: .arrowLeft
+        case .right: .arrowRight
         }
     }
 }

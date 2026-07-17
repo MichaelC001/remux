@@ -5,6 +5,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
     let isEnabled: Bool
     let wantsFirstResponder: Bool
     let activationToken: Int
+    let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     let keyboardAppearance: UIKeyboardAppearance
     let sendText: (String) -> Bool
     let sendPaste: (String) -> Bool
@@ -15,6 +16,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
         isEnabled: Bool,
         wantsFirstResponder: Bool,
         activationToken: Int,
+        trackpadDriver: GhosttyKeyboardCursorTrackpadDriver,
         keyboardAppearance: UIKeyboardAppearance = .dark,
         sendText: @escaping (String) -> Bool,
         sendPaste: @escaping (String) -> Bool,
@@ -24,6 +26,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
         self.isEnabled = isEnabled
         self.wantsFirstResponder = wantsFirstResponder
         self.activationToken = activationToken
+        self.trackpadDriver = trackpadDriver
         self.keyboardAppearance = keyboardAppearance
         self.sendText = sendText
         self.sendPaste = sendPaste
@@ -32,7 +35,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> GhosttyTerminalResponderUIView {
-        let view = GhosttyTerminalResponderUIView()
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: trackpadDriver)
         view.backgroundColor = .clear
         view.isAccessibilityElement = false
         return view
@@ -91,10 +94,20 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     private var sendPasteHandler: ((String) -> Bool)?
     private var sendKeyEventHandler: ((GhosttySurfaceKeyEvent) -> Bool)?
     var trackpadStateHandler: ((GhosttyKeyboardCursorTrackpad.HUDState) -> Void)?
-    private var trackpad: GhosttyKeyboardCursorTrackpad?
+    private let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     lazy var floatingCursorTokenizer: UITextInputTokenizer =
         UITextInputStringTokenizer(textInput: self)
     weak var inputDelegate: UITextInputDelegate?
+
+    init(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver) {
+        self.trackpadDriver = trackpadDriver
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unavailable")
+    }
 
     func update(
         isEnabled: Bool,
@@ -247,11 +260,16 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
 
     func beginFloatingCursor(at point: CGPoint) {
         guard isInputEnabled else { return }
-        var trackpad = GhosttyKeyboardCursorTrackpad()
-        let hud = trackpad.begin(at: point)
-        self.trackpad = trackpad
-        trackpadStateHandler?(hud)
-        Haptic.tap(.soft)
+        trackpadDriver.begin(
+            owner: self,
+            at: point,
+            sendKeyEvent: { [weak self] event in
+                self?.sendKeyEventHandler?(event) == true
+            },
+            onHUDStateChange: { [weak self] state in
+                self?.trackpadStateHandler?(state)
+            }
+        )
         GhosttyRuntimeTrace.flowEventIfActive(
             "terminal.input",
             event: "responder.trackpad.begin",
@@ -263,20 +281,9 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     }
 
     func updateFloatingCursor(at point: CGPoint) {
-        guard isInputEnabled, var trackpad else { return }
+        guard isInputEnabled else { return }
         let traceStart = GhosttyRuntimeTrace.nowNanos()
-        let outcome = trackpad.update(at: point)
-        self.trackpad = trackpad
-
-        for step in outcome.steps {
-            let event = GhosttySurfaceKeyEvent(keyCode: step.direction.keyCode)
-            _ = sendKeyEventHandler?(event)
-        }
-
-        if outcome.didLockAxis {
-            Haptic.selection()
-        }
-        trackpadStateHandler?(outcome.hud)
+        guard let outcome = trackpadDriver.update(owner: self, at: point) else { return }
 
         if !outcome.steps.isEmpty || outcome.didLockAxis {
             GhosttyRuntimeTrace.perf(
@@ -286,11 +293,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     }
 
     func endFloatingCursor() {
-        guard trackpad != nil else { return }
-        var trackpad = self.trackpad!
-        let hud = trackpad.end()
-        self.trackpad = nil
-        trackpadStateHandler?(hud)
+        guard trackpadDriver.end(owner: self) != nil else { return }
         GhosttyRuntimeTrace.flowEventIfActive(
             "terminal.input",
             event: "responder.trackpad.end",
@@ -302,11 +305,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     }
 
     func cancelTrackpadGestureIfActive(reason: String) {
-        guard trackpad != nil else { return }
-        var trackpad = self.trackpad!
-        let hud = trackpad.end()
-        self.trackpad = nil
-        trackpadStateHandler?(hud)
+        guard trackpadDriver.cancel(owner: self) else { return }
         GhosttyRuntimeTrace.flowEventIfActive(
             "terminal.input",
             event: "responder.trackpad.cancel",
@@ -620,16 +619,5 @@ enum GhosttyTerminalHardwareCommandMapping {
         if modifiers.contains(.alphaShift) { result.insert(.caps) }
 
         return result
-    }
-}
-
-private extension GhosttyKeyboardCursorTrackpad.Direction {
-    var keyCode: GhosttySurfaceKeyEvent.KeyCode {
-        switch self {
-        case .up: return .arrowUp
-        case .down: return .arrowDown
-        case .left: return .arrowLeft
-        case .right: return .arrowRight
-        }
     }
 }

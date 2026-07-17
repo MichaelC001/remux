@@ -3,6 +3,8 @@ import XCTest
 @testable import Remux
 
 final class GhosttyKeyboardCursorTrackpadTests: XCTestCase {
+    private final class GestureOwner {}
+
     private let configuration = GhosttyKeyboardCursorTrackpad.Configuration(
         horizontalStep: 10,
         verticalStep: 18,
@@ -222,5 +224,170 @@ final class GhosttyKeyboardCursorTrackpadTests: XCTestCase {
         let second = trackpad.update(at: .init(x: 27, y: 0))
         XCTAssertEqual(second.steps.count, 1)
         XCTAssertEqual(second.steps.first?.direction, .right)
+    }
+
+    @MainActor
+    func testDriverStartsClockOnlyAfterImmediateMovementAndHonorsInitialDelay() {
+        let driver = GhosttyKeyboardCursorTrackpadDriver()
+        let owner = GestureOwner()
+        var events: [GhosttySurfaceKeyEvent.KeyCode] = []
+
+        driver.begin(
+            owner: owner,
+            at: .zero,
+            sendKeyEvent: {
+                events.append($0.keyCode)
+                return true
+            },
+            onHUDStateChange: { _ in }
+        )
+        XCTAssertFalse(driver.isRepeatScheduled)
+
+        _ = driver.update(owner: owner, at: .init(x: 15, y: 0), now: 0)
+        XCTAssertFalse(driver.isRepeatScheduled)
+        XCTAssertTrue(events.isEmpty)
+
+        _ = driver.update(owner: owner, at: .init(x: 25, y: 0), now: 0)
+        XCTAssertEqual(events, [.arrowRight])
+        XCTAssertTrue(driver.isRepeatScheduled)
+
+        driver.repeatTick(at: GhosttyKeyboardCursorTrackpadDriver.initialRepeatDelay - 0.001)
+        XCTAssertEqual(events.count, 1)
+        driver.repeatTick(at: GhosttyKeyboardCursorTrackpadDriver.initialRepeatDelay)
+        XCTAssertEqual(events, [.arrowRight, .arrowRight])
+    }
+
+    @MainActor
+    func testDriverUsesThreeRepeatGearsWithoutCatchUp() {
+        let driver = GhosttyKeyboardCursorTrackpadDriver()
+        let owner = GestureOwner()
+        var events: [GhosttySurfaceKeyEvent.KeyCode] = []
+        driver.begin(
+            owner: owner,
+            at: .zero,
+            sendKeyEvent: {
+                events.append($0.keyCode)
+                return true
+            },
+            onHUDStateChange: { _ in }
+        )
+        _ = driver.update(owner: owner, at: .init(x: 15, y: 0), now: 0)
+        _ = driver.update(owner: owner, at: .init(x: 25, y: 0), now: 0)
+
+        driver.repeatTick(at: GhosttyKeyboardCursorTrackpadDriver.initialRepeatDelay)
+        let afterFirstSlowRepeat = events.count
+        driver.repeatTick(
+            at: GhosttyKeyboardCursorTrackpadDriver.initialRepeatDelay +
+                GhosttyKeyboardCursorTrackpadDriver.slowRepeatInterval - 0.001
+        )
+        XCTAssertEqual(events.count, afterFirstSlowRepeat)
+        let slowDeadline = GhosttyKeyboardCursorTrackpadDriver.initialRepeatDelay +
+            GhosttyKeyboardCursorTrackpadDriver.slowRepeatInterval
+        driver.repeatTick(at: slowDeadline)
+        XCTAssertEqual(events.count, afterFirstSlowRepeat + 1)
+
+        _ = driver.update(owner: owner, at: .init(x: 80, y: 0), now: slowDeadline)
+        driver.repeatTick(at: slowDeadline + GhosttyKeyboardCursorTrackpadDriver.slowRepeatInterval)
+        let afterFirstMediumRepeat = events.count
+        driver.repeatTick(
+            at: slowDeadline + GhosttyKeyboardCursorTrackpadDriver.slowRepeatInterval +
+                GhosttyKeyboardCursorTrackpadDriver.mediumRepeatInterval
+        )
+        XCTAssertEqual(events.count, afterFirstMediumRepeat + 1)
+
+        let mediumDeadline = slowDeadline + GhosttyKeyboardCursorTrackpadDriver.slowRepeatInterval +
+            GhosttyKeyboardCursorTrackpadDriver.mediumRepeatInterval
+        _ = driver.update(owner: owner, at: .init(x: 130, y: 0), now: mediumDeadline)
+        driver.repeatTick(at: mediumDeadline + GhosttyKeyboardCursorTrackpadDriver.mediumRepeatInterval)
+        let afterFirstFastRepeat = events.count
+        driver.repeatTick(
+            at: mediumDeadline + GhosttyKeyboardCursorTrackpadDriver.mediumRepeatInterval +
+                GhosttyKeyboardCursorTrackpadDriver.fastRepeatInterval
+        )
+        XCTAssertEqual(events.count, afterFirstFastRepeat + 1)
+
+        driver.repeatTick(at: 100)
+        XCTAssertEqual(events.count, afterFirstFastRepeat + 2, "a delayed frame emits only one repeat")
+    }
+
+    @MainActor
+    func testDriverNeutralAndDirectionChangesResetRepeatDelay() {
+        let driver = GhosttyKeyboardCursorTrackpadDriver()
+        let owner = GestureOwner()
+        var events: [GhosttySurfaceKeyEvent.KeyCode] = []
+        driver.begin(
+            owner: owner,
+            at: .zero,
+            sendKeyEvent: {
+                events.append($0.keyCode)
+                return true
+            },
+            onHUDStateChange: { _ in }
+        )
+        _ = driver.update(owner: owner, at: .init(x: 15, y: 0), now: 0)
+        _ = driver.update(owner: owner, at: .init(x: 25, y: 0), now: 0)
+        XCTAssertTrue(driver.isRepeatScheduled)
+
+        _ = driver.update(owner: owner, at: .init(x: 15, y: 0), now: 0.1)
+        XCTAssertFalse(driver.isRepeatScheduled)
+        let neutralEventCount = events.count
+        driver.repeatTick(at: 1)
+        XCTAssertEqual(events.count, neutralEventCount)
+
+        _ = driver.update(owner: owner, at: .init(x: 5, y: 0), now: 1)
+        XCTAssertTrue(driver.isRepeatScheduled)
+        let leftMovementEventCount = events.count
+        driver.repeatTick(at: 1 + GhosttyKeyboardCursorTrackpadDriver.initialRepeatDelay - 0.001)
+        XCTAssertEqual(events.count, leftMovementEventCount)
+        driver.repeatTick(at: 1 + GhosttyKeyboardCursorTrackpadDriver.initialRepeatDelay)
+        XCTAssertEqual(events.last, .arrowLeft)
+        XCTAssertEqual(events.count, leftMovementEventCount + 1)
+    }
+
+    @MainActor
+    func testDriverInputRejectionStopsClockAndPreservesSteeredResult() {
+        let driver = GhosttyKeyboardCursorTrackpadDriver()
+        let owner = GestureOwner()
+        var sendAttempts = 0
+        var hudStates: [GhosttyKeyboardCursorTrackpad.HUDState] = []
+        driver.begin(
+            owner: owner,
+            at: .zero,
+            sendKeyEvent: { _ in
+                sendAttempts += 1
+                return false
+            },
+            onHUDStateChange: { hudStates.append($0) }
+        )
+        _ = driver.update(owner: owner, at: .init(x: 15, y: 0), now: 0)
+        _ = driver.update(owner: owner, at: .init(x: 25, y: 0), now: 0)
+
+        XCTAssertEqual(sendAttempts, 1)
+        XCTAssertFalse(driver.isRepeatScheduled)
+        XCTAssertEqual(hudStates.last, .hidden)
+        driver.repeatTick(at: 10)
+        _ = driver.update(owner: owner, at: .init(x: 50, y: 0), now: 10)
+        XCTAssertEqual(sendAttempts, 1)
+        XCTAssertEqual(driver.end(owner: owner), true)
+    }
+
+    @MainActor
+    func testDriverEndCancelsClockAndHidesHUD() {
+        let driver = GhosttyKeyboardCursorTrackpadDriver()
+        let owner = GestureOwner()
+        var hudStates: [GhosttyKeyboardCursorTrackpad.HUDState] = []
+        driver.begin(
+            owner: owner,
+            at: .zero,
+            sendKeyEvent: { _ in true },
+            onHUDStateChange: { hudStates.append($0) }
+        )
+        _ = driver.update(owner: owner, at: .init(x: 15, y: 0), now: 0)
+        _ = driver.update(owner: owner, at: .init(x: 25, y: 0), now: 0)
+
+        XCTAssertEqual(driver.end(owner: owner), true)
+        XCTAssertFalse(driver.isRepeatScheduled)
+        XCTAssertEqual(hudStates.last, .hidden)
+        XCTAssertNil(driver.end(owner: owner))
     }
 }

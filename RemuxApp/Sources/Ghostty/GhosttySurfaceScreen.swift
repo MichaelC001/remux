@@ -51,6 +51,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var terminalViewportCoordinator = GhosttyTerminalViewportCoordinator()
     @State private var keyboardViewportTransitionCoordinator = GhosttyKeyboardViewportTransitionCoordinator()
     @State private var topologyActionInputRefocusCoordinator = GhosttyTopologyActionInputRefocusCoordinator()
+    @State private var trackpadDriver = GhosttyKeyboardCursorTrackpadDriver()
     @State private var trackpadHUDState = GhosttyKeyboardCursorTrackpad.HUDState.hidden
     @State private var isShortcutPalettePresented = false
     @State private var isShortcutsSettingsPresented = false
@@ -197,6 +198,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             isEnabled: terminalResponderFocusPolicy.isResponderEnabled,
                             wantsFirstResponder: terminalResponderFocusPolicy.wantsFirstResponder,
                             activationToken: inputCoordinator.terminalActivationToken,
+                            trackpadDriver: trackpadDriver,
                             keyboardAppearance: presentation.terminalTheme.terminalKeyboardAppearance,
                             sendText: sendTerminalText,
                             sendPaste: sendTerminalPaste,

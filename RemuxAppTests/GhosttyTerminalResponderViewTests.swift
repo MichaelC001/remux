@@ -5,7 +5,7 @@ import XCTest
 final class GhosttyTerminalResponderViewTests: XCTestCase {
     @MainActor
     func testResponderReportsTextWhenEnabled() {
-        let view = GhosttyTerminalResponderUIView()
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
 
         view.update(
             isEnabled: true,
@@ -22,7 +22,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
     @MainActor
     func testDeleteBackwardSendsBackspaceKeyEvent() {
-        let view = GhosttyTerminalResponderUIView()
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
         var receivedEvent: GhosttySurfaceKeyEvent?
 
         view.update(
@@ -45,7 +45,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
     @MainActor
     func testInsertTextSendsRawTerminalInputWhenEnabled() {
-        let view = GhosttyTerminalResponderUIView()
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
         var receivedText: [String] = []
 
         view.update(
@@ -68,7 +68,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
     @MainActor
     func testReplaceTextSendsCommittedTerminalInputWhenEnabled() {
-        let view = GhosttyTerminalResponderUIView()
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
         var receivedText: [String] = []
 
         view.update(
@@ -91,7 +91,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
     @MainActor
     func testInsertTextIsIgnoredWhenDisabled() {
-        let view = GhosttyTerminalResponderUIView()
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
         var receivedText: [String] = []
 
         view.update(
@@ -114,7 +114,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
     @MainActor
     func testReplaceTextIsIgnoredWhenDisabled() {
-        let view = GhosttyTerminalResponderUIView()
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
         var receivedText: [String] = []
 
         view.update(
@@ -137,7 +137,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
     @MainActor
     func testPasteUsesPasteHandlerInsteadOfRawTextHandler() {
-        let view = GhosttyTerminalResponderUIView()
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
         var rawText: [String] = []
         var pastedText: [String] = []
 
@@ -166,7 +166,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
     @MainActor
     func testPasteIgnoresEmptyPasteboardString() {
-        let view = GhosttyTerminalResponderUIView()
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
         var pastedText: [String] = []
 
         view.update(
@@ -496,7 +496,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
     @MainActor
     func testResponderRequestsFirstResponderWhenInputBecomesEnabledWithSameActivationToken() async {
-        let view = GhosttyTerminalResponderUIView()
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
         window.rootViewController = UIViewController()
         window.rootViewController?.view.addSubview(view)
@@ -533,7 +533,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
     @MainActor
     func testResponderDefersBecomeWhenWanted() async {
-        let view = GhosttyTerminalResponderUIView()
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
         window.rootViewController = UIViewController()
         window.rootViewController?.view.addSubview(view)
@@ -575,7 +575,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
     @MainActor
     func testResponderRecoversFirstResponderWhenStillEnabledWithSameActivationToken() async {
-        let view = GhosttyTerminalResponderUIView()
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
         window.rootViewController = UIViewController()
         window.rootViewController?.view.addSubview(view)
@@ -619,7 +619,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
     @MainActor
     func testResponderDefersResignWhenNoLongerWanted() async {
-        let view = GhosttyTerminalResponderUIView()
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
         window.rootViewController = UIViewController()
         window.rootViewController?.view.addSubview(view)
@@ -673,7 +673,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
     @MainActor
     func testResponderRejectsTextEditMenuActionsAfterUITextInputConformance() {
-        let view = GhosttyTerminalResponderUIView()
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
 
         view.update(
             isEnabled: true,
@@ -701,7 +701,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
     @MainActor
     func testResponderProvidesNonNilUITextInputDocumentEndpoints() {
-        let view = GhosttyTerminalResponderUIView()
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
         XCTAssertNotNil(view.beginningOfDocument)
         XCTAssertNotNil(view.endOfDocument)
         XCTAssertNotNil(view.selectedTextRange)
@@ -712,7 +712,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
     @MainActor
     func testFloatingCursorSweepEmitsArrowRightKeyEvents() {
-        let view = GhosttyTerminalResponderUIView()
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
         var receivedEvents: [GhosttySurfaceKeyEvent] = []
         var receivedHUDStates: [GhosttyKeyboardCursorTrackpad.HUDState] = []
 
@@ -747,7 +747,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
     @MainActor
     func testResignFirstResponderClearsTrackpadHUDDuringActiveGesture() async {
-        let view = GhosttyTerminalResponderUIView()
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
         window.rootViewController = UIViewController()
         window.rootViewController?.view.addSubview(view)
@@ -783,7 +783,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
     @MainActor
     func testRemovingResponderFromWindowDuringTrackpadGestureClearsHUD() {
-        let view = GhosttyTerminalResponderUIView()
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
         window.rootViewController = UIViewController()
         window.rootViewController?.view.addSubview(view)
@@ -820,7 +820,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
     @MainActor
     func testDismantleRepresentableDuringTrackpadGestureClearsHUD() {
-        let view = GhosttyTerminalResponderUIView()
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
         var receivedHUDStates: [GhosttyKeyboardCursorTrackpad.HUDState] = []
 
         view.update(
@@ -845,8 +845,10 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
     @MainActor
     func testDisablingResponderDuringTrackpadGestureClearsHUD() {
-        let view = GhosttyTerminalResponderUIView()
+        let driver = GhosttyKeyboardCursorTrackpadDriver()
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: driver)
         var receivedHUDStates: [GhosttyKeyboardCursorTrackpad.HUDState] = []
+        var receivedEvents: [GhosttySurfaceKeyEvent] = []
 
         view.update(
             isEnabled: true,
@@ -854,7 +856,10 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             activationToken: 1,
             sendText: { _ in true },
             sendPaste: { _ in true },
-            sendKeyEvent: { _ in true },
+            sendKeyEvent: {
+                receivedEvents.append($0)
+                return true
+            },
             onTrackpadStateChange: { state in
                 receivedHUDStates.append(state)
             }
@@ -862,6 +867,8 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
         view.beginFloatingCursor(at: .init(x: 0, y: 0))
         view.updateFloatingCursor(at: .init(x: 18, y: 0))
+        view.updateFloatingCursor(at: .init(x: 28, y: 0))
+        XCTAssertTrue(driver.isRepeatScheduled)
 
         view.update(
             isEnabled: false,
@@ -876,5 +883,9 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
         )
 
         XCTAssertEqual(receivedHUDStates.last, .hidden)
+        XCTAssertFalse(driver.isRepeatScheduled)
+        let eventCountAfterDisable = receivedEvents.count
+        driver.repeatTick(at: .greatestFiniteMagnitude)
+        XCTAssertEqual(receivedEvents.count, eventCountAfterDisable)
     }
 }
