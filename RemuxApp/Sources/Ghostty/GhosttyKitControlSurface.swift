@@ -124,6 +124,41 @@ struct GhosttySurfaceInteractionState: Equatable {
     }
 }
 
+struct GhosttyLocalSelectionSnapshot: Equatable {
+    static let inactive = GhosttyLocalSelectionSnapshot(
+        cValue: ghostty_terminal_surface_selection_snapshot_s(),
+        scaleFactor: 1
+    )
+
+    let start: CGRect?
+    let end: CGRect?
+    let isActive: Bool
+
+    init(cValue: ghostty_terminal_surface_selection_snapshot_s, scaleFactor: Double) {
+        start = Self.rect(cValue.start, scaleFactor: scaleFactor)
+        end = Self.rect(cValue.end, scaleFactor: scaleFactor)
+        isActive = cValue.active
+    }
+
+    private static func rect(
+        _ value: ghostty_terminal_surface_selection_rect_s,
+        scaleFactor: Double
+    ) -> CGRect? {
+        guard value.visible else { return nil }
+        return CGRect(
+            x: CGFloat(value.x_px / scaleFactor),
+            y: CGFloat(value.y_px / scaleFactor),
+            width: CGFloat(Double(value.width_px) / scaleFactor),
+            height: CGFloat(Double(value.height_px) / scaleFactor)
+        )
+    }
+}
+
+enum GhosttyLocalSelectionOutcome: Equatable {
+    case snapshot(GhosttyLocalSelectionSnapshot)
+    case unavailable
+}
+
 extension TmuxControlViewport {
     init?(ghosttySurfaceSize size: ghostty_surface_size_s) {
         guard size.columns > 0, size.rows > 0 else { return nil }
@@ -274,6 +309,45 @@ final class GhosttyKitControlSurface {
         interactionState().mouseCaptured
     }
 
+    func selectionSnapshot() -> GhosttyLocalSelectionOutcome {
+        guard !invalidated else { return .unavailable }
+        var snapshot = ghostty_terminal_surface_selection_snapshot_s()
+        let result = ghostty_terminal_surface_selection_snapshot(handle, &snapshot)
+        return selectionOutcome(result, snapshot: snapshot, retryCommittedWake: false)
+    }
+
+    func selectWord(at point: CGPoint) -> GhosttyLocalSelectionOutcome {
+        mutateSelection { snapshot in
+            ghostty_terminal_surface_select_word(
+                handle,
+                Double(point.x) * scaleFactor,
+                Double(point.y) * scaleFactor,
+                snapshot
+            )
+        }
+    }
+
+    func setSelectionEndpoint(
+        _ endpoint: ghostty_terminal_surface_selection_endpoint_e,
+        at point: CGPoint
+    ) -> GhosttyLocalSelectionOutcome {
+        mutateSelection { snapshot in
+            ghostty_terminal_surface_set_selection_endpoint(
+                handle,
+                endpoint,
+                Double(point.x) * scaleFactor,
+                Double(point.y) * scaleFactor,
+                snapshot
+            )
+        }
+    }
+
+    func clearSelection() -> GhosttyLocalSelectionOutcome {
+        mutateSelection { snapshot in
+            ghostty_terminal_surface_clear_selection(handle, snapshot)
+        }
+    }
+
     func readSelection() -> String? {
         guard !invalidated else { return nil }
         var text = ghostty_text_s()
@@ -326,6 +400,44 @@ final class GhosttyKitControlSurface {
             decoding: UnsafeRawBufferPointer(start: pointer, count: Int(text.text_len)),
             as: UTF8.self
         )
+    }
+
+    private func mutateSelection(
+        _ operation: (UnsafeMutablePointer<ghostty_terminal_surface_selection_snapshot_s>)
+            -> ghostty_terminal_surface_result_e
+    ) -> GhosttyLocalSelectionOutcome {
+        guard !invalidated else { return .unavailable }
+        var snapshot = ghostty_terminal_surface_selection_snapshot_s()
+        let result = operation(&snapshot)
+        return selectionOutcome(result, snapshot: snapshot, retryCommittedWake: true)
+    }
+
+    private func selectionOutcome(
+        _ result: ghostty_terminal_surface_result_e,
+        snapshot value: ghostty_terminal_surface_selection_snapshot_s,
+        retryCommittedWake: Bool
+    ) -> GhosttyLocalSelectionOutcome {
+        let snapshot = GhosttyLocalSelectionSnapshot(
+            cValue: value,
+            scaleFactor: scaleFactor
+        )
+        switch result {
+        case GHOSTTY_TERMINAL_SURFACE_RESULT_OK,
+             GHOSTTY_TERMINAL_SURFACE_RESULT_INVALID_INPUT:
+            return .snapshot(snapshot)
+        case GHOSTTY_TERMINAL_SURFACE_RESULT_OUT_OF_MEMORY:
+            return .unavailable
+        case GHOSTTY_TERMINAL_SURFACE_RESULT_FAILED where retryCommittedWake:
+            let retry = ghostty_terminal_surface_terminal_changed(handle)
+            guard retry == GHOSTTY_TERMINAL_SURFACE_RESULT_OK else {
+                fail(.native(retry))
+                return .unavailable
+            }
+            return .snapshot(snapshot)
+        default:
+            fail(.native(result))
+            return .unavailable
+        }
     }
 
     private func withUTF8<Result>(

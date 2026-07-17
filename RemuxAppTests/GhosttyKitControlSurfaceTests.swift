@@ -171,6 +171,61 @@ final class GhosttyKitControlSurfaceTests: XCTestCase {
         XCTAssertNotNil(tracker.nextMetrics(size: size, scale: 3))
     }
 
+    func testSelectionSnapshotConvertsBackingPixelsWithoutSwappingEndpointRoles() {
+        let snapshot = GhosttyLocalSelectionSnapshot(
+            cValue: ghostty_terminal_surface_selection_snapshot_s(
+                start: ghostty_terminal_surface_selection_rect_s(
+                    x_px: 180,
+                    y_px: 30,
+                    width_px: 24,
+                    height_px: 60,
+                    visible: true
+                ),
+                end: ghostty_terminal_surface_selection_rect_s(
+                    x_px: 60,
+                    y_px: 90,
+                    width_px: 24,
+                    height_px: 60,
+                    visible: true
+                ),
+                active: true,
+                rectangle: false
+            ),
+            scaleFactor: 3
+        )
+
+        XCTAssertTrue(snapshot.isActive)
+        XCTAssertEqual(snapshot.start, CGRect(x: 60, y: 10, width: 8, height: 20))
+        XCTAssertEqual(snapshot.end, CGRect(x: 20, y: 30, width: 8, height: 20))
+    }
+
+    func testSelectionSnapshotOmitsInvisibleEndpointGeometry() {
+        let snapshot = GhosttyLocalSelectionSnapshot(
+            cValue: ghostty_terminal_surface_selection_snapshot_s(
+                start: ghostty_terminal_surface_selection_rect_s(
+                    x_px: 30,
+                    y_px: 60,
+                    width_px: 24,
+                    height_px: 60,
+                    visible: true
+                ),
+                end: ghostty_terminal_surface_selection_rect_s(
+                    x_px: 0,
+                    y_px: 0,
+                    width_px: 0,
+                    height_px: 0,
+                    visible: false
+                ),
+                active: true,
+                rectangle: false
+            ),
+            scaleFactor: 3
+        )
+
+        XCTAssertEqual(snapshot.start, CGRect(x: 10, y: 20, width: 8, height: 20))
+        XCTAssertNil(snapshot.end)
+    }
+
 
     func testDecodeGhosttyTextReturnsEmptyStringForMissingBuffer() {
         XCTAssertEqual(
