@@ -110,6 +110,18 @@ struct GhosttyTerminalViewportCoordinator: Equatable {
 
     @discardableResult
     mutating func observeLiveSize(_ size: CGSize) -> GhosttyTerminalViewportLiveSizeObservation {
+        updateLiveSize(size, reconcilesStoredSize: false)
+    }
+
+    @discardableResult
+    mutating func reconcileLiveSize(_ size: CGSize) -> GhosttyTerminalViewportLiveSizeObservation {
+        updateLiveSize(size, reconcilesStoredSize: true)
+    }
+
+    private mutating func updateLiveSize(
+        _ size: CGSize,
+        reconcilesStoredSize: Bool
+    ) -> GhosttyTerminalViewportLiveSizeObservation {
         let normalizedSize = Self.normalized(size)
         let previousLiveSize = lastLiveSize
         let previousEffectiveSize = effectiveSize(liveSize: previousLiveSize)
@@ -130,11 +142,15 @@ struct GhosttyTerminalViewportCoordinator: Equatable {
             )
         }
 
-        guard didChangeLiveSize else { return observation(outcome: .unchanged) }
+        guard didChangeLiveSize || reconcilesStoredSize else {
+            return observation(outcome: .unchanged)
+        }
         guard Self.isUsable(normalizedSize) else {
             holdReasons.insert(.unsizedInitialLayout)
             freeze(using: normalizedSize)
-            return observation(outcome: .observedWithoutStableUpdate)
+            return observation(
+                outcome: didChangeLiveSize ? .observedWithoutStableUpdate : .unchanged
+            )
         }
 
         let didReleaseUnsizedInitialLayout = holdReasons.contains(.unsizedInitialLayout)
@@ -145,12 +161,16 @@ struct GhosttyTerminalViewportCoordinator: Equatable {
                 releasePolicy: .adoptLatestLive
             )
         }
-        guard !isGeometryFrozen else { return observation(outcome: .observedWithoutStableUpdate) }
+        guard !isGeometryFrozen else {
+            return observation(
+                outcome: didChangeLiveSize ? .observedWithoutStableUpdate : .unchanged
+            )
+        }
         guard lastStableSize != normalizedSize else {
             return observation(
                 outcome: didReleaseUnsizedInitialLayout
                     ? .appliedStableSize
-                    : .observedWithoutStableUpdate
+                    : didChangeLiveSize ? .observedWithoutStableUpdate : .unchanged
             )
         }
 

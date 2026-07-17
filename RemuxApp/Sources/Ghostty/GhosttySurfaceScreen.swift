@@ -253,6 +253,14 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             context: viewportTraceContext
                         )
                     }
+                    .onChange(of: scenePhase) { _, newPhase in
+                        guard newPhase == .active else { return }
+                        updateTerminalViewportLiveSize(
+                            liveTerminalViewportSize,
+                            context: viewportTraceContext,
+                            reconcileStoredSize: true
+                        )
+                    }
                     .onChange(of: selectionSheet?.id) { _, newValue in
                         traceTerminalViewportSnapshot(
                             event: "selectionSheet.changed",
@@ -1526,15 +1534,22 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func updateTerminalViewportLiveSize(
         _ size: CGSize,
-        context: GhosttyTerminalViewportTraceLayoutContext
+        context: GhosttyTerminalViewportTraceLayoutContext,
+        reconcileStoredSize: Bool = false
     ) {
-        let observation = terminalViewportCoordinator.observeLiveSize(size)
-        if observation.didChangeLiveSize {
+        let observation: GhosttyTerminalViewportLiveSizeObservation
+        if reconcileStoredSize {
+            observation = terminalViewportCoordinator.reconcileLiveSize(size)
+        } else {
+            observation = terminalViewportCoordinator.observeLiveSize(size)
+        }
+
+        if observation.didChangeLiveSize || reconcileStoredSize {
             GhosttyRuntimeTrace.perf(
-                "viewport.live size=\(observation.liveSize.traceLabel) previous=\(observation.previousLiveSize.traceLabel) frozen=\(observation.wasFrozen) holdReasons=\(terminalViewportCoordinator.holdReasonTraceLabel) transitionActive=\(terminalViewportCoordinator.isKeyboardTransitionActive) transitionTarget=\(terminalViewportCoordinator.keyboardTransitionTarget.traceLabel) awaitingSystem=\(isAwaitingSystemKeyboardPresentation)"
+                "viewport.\(reconcileStoredSize ? "reconcile" : "live") size=\(observation.liveSize.traceLabel) previous=\(observation.previousLiveSize.traceLabel) frozen=\(observation.wasFrozen) holdReasons=\(terminalViewportCoordinator.holdReasonTraceLabel) transitionActive=\(terminalViewportCoordinator.isKeyboardTransitionActive) transitionTarget=\(terminalViewportCoordinator.keyboardTransitionTarget.traceLabel) awaitingSystem=\(isAwaitingSystemKeyboardPresentation)"
             )
             traceTerminalViewportSnapshot(
-                event: "viewport.live",
+                event: reconcileStoredSize ? "viewport.reconcile" : "viewport.live",
                 liveSize: observation.liveSize,
                 effectiveSize: observation.effectiveSize,
                 context: context,
@@ -1546,7 +1561,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
         guard observation.didApplyStableSize else { return }
 
-        GhosttyRuntimeTrace.perf("viewport.live applied size=\(observation.liveSize.traceLabel)")
+        GhosttyRuntimeTrace.perf(
+            "viewport.\(reconcileStoredSize ? "reconcile" : "live") applied size=\(observation.liveSize.traceLabel)"
+        )
         model.prepareInitialViewport(
             size: observation.effectiveSize,
             scale: displayScale

@@ -57,6 +57,46 @@ final class GhosttyTerminalViewportCoordinatorTests: XCTestCase {
         XCTAssertEqual(observation.outcome, .unchanged)
     }
 
+    func testLiveSizeReconciliationAdoptsStaleStoredViewport() {
+        var coordinator = GhosttyTerminalViewportCoordinator()
+        let keyboard = CGSize(width: 402, height: 452)
+        let full = CGSize(width: 402, height: 726)
+
+        XCTAssertEqual(coordinator.observeLiveSize(keyboard).outcome, .appliedStableSize)
+        coordinator.requestTopologyRefocus(liveSize: keyboard)
+        XCTAssertFalse(coordinator.observeLiveSize(full).didApplyStableSize)
+        coordinator.completeTopologyRefocus(
+            liveSize: full,
+            releasePolicy: .preserveCurrentEffective
+        )
+        XCTAssertEqual(coordinator.latestLiveSize, full)
+        XCTAssertEqual(coordinator.effectiveSize(liveSize: full), keyboard)
+
+        let observation = coordinator.reconcileLiveSize(full)
+
+        XCTAssertFalse(observation.didChangeLiveSize)
+        XCTAssertTrue(observation.didApplyStableSize)
+        XCTAssertEqual(observation.effectiveSize, full)
+        XCTAssertEqual(coordinator.effectiveSize(liveSize: full), full)
+    }
+
+    func testLiveSizeReconciliationRespectsActiveGeometryHold() {
+        var coordinator = GhosttyTerminalViewportCoordinator()
+        let keyboard = CGSize(width: 402, height: 452)
+        let full = CGSize(width: 402, height: 726)
+
+        XCTAssertEqual(coordinator.observeLiveSize(keyboard).outcome, .appliedStableSize)
+        coordinator.setSheetPresented(true, liveSize: keyboard)
+        XCTAssertFalse(coordinator.observeLiveSize(full).didApplyStableSize)
+
+        let observation = coordinator.reconcileLiveSize(full)
+
+        XCTAssertFalse(observation.didChangeLiveSize)
+        XCTAssertFalse(observation.didApplyStableSize)
+        XCTAssertEqual(observation.outcome, .unchanged)
+        XCTAssertEqual(coordinator.effectiveSize(liveSize: full), keyboard)
+    }
+
     func testTopologyRefocusPreservesPreviousStableViewportThroughKeyboardChurn() {
         var coordinator = GhosttyTerminalViewportCoordinator()
         let full = CGSize(width: 402, height: 726)
