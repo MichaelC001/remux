@@ -45,7 +45,7 @@ final class GhosttyKitRuntimeTests: XCTestCase {
             try XCTUnwrap(fontSize),
             GhosttyTerminalAppearancePolicy.phoneMinimumFontSize
         )
-        XCTAssertEqual(fontSize, GhosttyTerminalAppearancePolicy.phoneDefaultFontSize)
+        XCTAssertEqual(fontSize, 10)
     }
 
     func testPhoneTerminalAppearanceScalesWithAccessibilityTextSize() throws {

@@ -20,8 +20,8 @@ enum GhosttyTerminalDeviceClass {
 }
 
 enum GhosttyTerminalAppearancePolicy {
-    static let phoneMinimumFontSize: Float32 = 11
-    static let phoneDefaultFontSize: Float32 = 11
+    static let phoneMinimumFontSize: Float32 = 10
+    static let phoneDefaultFontSize: Float32 = 10
 
     static func effectiveFontSize(
         for settings: TerminalSettings,

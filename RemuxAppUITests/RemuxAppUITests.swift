@@ -81,7 +81,9 @@ final class RemuxAppUITests: XCTestCase {
 
         XCTAssertTrue(settingsForm.waitForExistence(timeout: 2))
         tapFontDefaultToggle()
-        XCTAssertTrue(app.descendants(matching: .any)["settings.font-size"].waitForExistence(timeout: 2))
+        let fontSize = app.descendants(matching: .any)["settings.font-size"]
+        XCTAssertTrue(fontSize.waitForExistence(timeout: 2))
+        XCTAssertEqual(fontSize.label, "Font size, 10")
 
         let themeButton = app.descendants(matching: .any)["settings.theme"]
         XCTAssertTrue(themeButton.waitForExistence(timeout: 2))
