@@ -43,30 +43,3 @@ enum GhosttyMouseInputSubmissionOutcome: Equatable, Sendable {
         self == .sent
     }
 }
-
-enum GhosttyTerminalSelectionAvailabilityOutcome: Equatable, Sendable {
-    case available
-    case noFocusedSurface
-    case missingSurface(UUID)
-    case emptySelection
-
-    var isAvailable: Bool {
-        self == .available
-    }
-}
-
-enum GhosttyTerminalSelectionReadOutcome: Equatable, Sendable {
-    case text(String)
-    case noFocusedSurface
-    case missingSurface(UUID)
-    case emptySelection
-
-    var selectedText: String? {
-        switch self {
-        case .text(let value):
-            value
-        case .noFocusedSurface, .missingSurface, .emptySelection:
-            nil
-        }
-    }
-}

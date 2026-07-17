@@ -384,6 +384,7 @@ final class TmuxPaneSurface {
             return false
         }
         view.applyTerminalTheme(theme)
+        managedSurface?.notifyLocalSelectionGeometryChanged()
         if !presented, lastFullViewportProvenance != nil {
             fullViewportFrameNeedsRefresh = true
         }

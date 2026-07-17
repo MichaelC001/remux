@@ -1,3 +1,4 @@
+import GhosttyKit
 import SwiftUI
 import UIKit
 
@@ -7,32 +8,30 @@ struct GhosttySingleViewportView: View {
     let surfaceLookup: GhosttyManagedSurfaceLookup
     let projection: GhosttyTerminalViewportPresentationProjection
     let terminalTheme: TerminalTheme
+    let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     let onSurfaceTap: ((UUID) -> Void)?
     let onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?
-    let onCopySelection: ((UUID) -> Bool)?
-    let selectionAvailability: (UUID) -> GhosttyTerminalSelectionAvailabilityOutcome
-    let selectSurface: (UUID, String) -> GhosttySurfaceSelectionOutcome
+    let sendKeyEvent: (GhosttySurfaceKeyEvent) -> Bool
+    let onTrackpadStateChange: (GhosttyKeyboardCursorTrackpad.HUDState) -> Void
     let isMouseCaptured: (UUID) -> Bool
     let submitMouseButton: ((UUID, GhosttySurfaceMouseButtonEvent) -> GhosttyMouseInputSubmissionOutcome)?
     let submitMousePosition: ((UUID, CGPoint, GhosttySurfaceKeyEvent.Mods) -> GhosttyMouseInputSubmissionOutcome)?
     let submitMouseScroll: ((UUID, GhosttySurfaceMouseScrollEvent) -> GhosttyMouseInputSubmissionOutcome)?
-    let submitMousePressure: ((UUID, GhosttySurfaceMousePressureEvent) -> GhosttyMouseInputSubmissionOutcome)?
 
     var body: some View {
         GhosttySingleViewportRepresentable(
             surfaceLookup: surfaceLookup,
             projection: projection,
             terminalTheme: terminalTheme,
+            trackpadDriver: trackpadDriver,
             onSurfaceTap: onSurfaceTap,
             onWindowSwipe: onWindowSwipe,
-            onCopySelection: onCopySelection,
-            selectionAvailability: selectionAvailability,
-            selectSurface: selectSurface,
+            sendKeyEvent: sendKeyEvent,
+            onTrackpadStateChange: onTrackpadStateChange,
             isMouseCaptured: isMouseCaptured,
             submitMouseButton: submitMouseButton,
             submitMousePosition: submitMousePosition,
-            submitMouseScroll: submitMouseScroll,
-            submitMousePressure: submitMousePressure
+            submitMouseScroll: submitMouseScroll
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -42,16 +41,15 @@ private struct GhosttySingleViewportRepresentable: UIViewRepresentable {
     let surfaceLookup: GhosttyManagedSurfaceLookup
     let projection: GhosttyTerminalViewportPresentationProjection
     let terminalTheme: TerminalTheme
+    let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     let onSurfaceTap: ((UUID) -> Void)?
     let onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?
-    let onCopySelection: ((UUID) -> Bool)?
-    let selectionAvailability: (UUID) -> GhosttyTerminalSelectionAvailabilityOutcome
-    let selectSurface: (UUID, String) -> GhosttySurfaceSelectionOutcome
+    let sendKeyEvent: (GhosttySurfaceKeyEvent) -> Bool
+    let onTrackpadStateChange: (GhosttyKeyboardCursorTrackpad.HUDState) -> Void
     let isMouseCaptured: (UUID) -> Bool
     let submitMouseButton: ((UUID, GhosttySurfaceMouseButtonEvent) -> GhosttyMouseInputSubmissionOutcome)?
     let submitMousePosition: ((UUID, CGPoint, GhosttySurfaceKeyEvent.Mods) -> GhosttyMouseInputSubmissionOutcome)?
     let submitMouseScroll: ((UUID, GhosttySurfaceMouseScrollEvent) -> GhosttyMouseInputSubmissionOutcome)?
-    let submitMousePressure: ((UUID, GhosttySurfaceMousePressureEvent) -> GhosttyMouseInputSubmissionOutcome)?
 
     func makeUIView(context: Context) -> GhosttySingleViewportContainerView {
         let view = GhosttySingleViewportContainerView()
@@ -64,16 +62,15 @@ private struct GhosttySingleViewportRepresentable: UIViewRepresentable {
         view.update(
             projection: projection,
             surfaceLookup: surfaceLookup,
+            trackpadDriver: trackpadDriver,
             onSurfaceTap: onSurfaceTap,
             onWindowSwipe: onWindowSwipe,
-            onCopySelection: onCopySelection,
-            selectionAvailability: selectionAvailability,
-            selectSurface: selectSurface,
+            sendKeyEvent: sendKeyEvent,
+            onTrackpadStateChange: onTrackpadStateChange,
             isMouseCaptured: isMouseCaptured,
             submitMouseButton: submitMouseButton,
             submitMousePosition: submitMousePosition,
-            submitMouseScroll: submitMouseScroll,
-            submitMousePressure: submitMousePressure
+            submitMouseScroll: submitMouseScroll
         )
     }
 
@@ -93,28 +90,31 @@ private final class GhosttySingleViewportContainerView: UIView,
     private var projection = GhosttyTerminalViewportPresentationProjection.empty
     private var activeContainer: GhosttyPaneScrollContainerView?
     private var activeSurfaceID: UUID?
+    private var trackpadDriver: GhosttyKeyboardCursorTrackpadDriver?
 
     private var onSurfaceTap: ((UUID) -> Void)?
     private var onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?
-    private var onCopySelection: ((UUID) -> Bool)?
-    private var selectionAvailability: (UUID) -> GhosttyTerminalSelectionAvailabilityOutcome = { _ in
-        .noFocusedSurface
-    }
-    private var selectSurface: (UUID, String) -> GhosttySurfaceSelectionOutcome = { surfaceID, _ in
-        .missingSurface(surfaceID)
-    }
+    private var sendKeyEvent: ((GhosttySurfaceKeyEvent) -> Bool)?
+    private var onTrackpadStateChange: ((GhosttyKeyboardCursorTrackpad.HUDState) -> Void)?
     private var isMouseCaptured: (UUID) -> Bool = { _ in false }
     private var submitMouseButton: ((UUID, GhosttySurfaceMouseButtonEvent) -> GhosttyMouseInputSubmissionOutcome)?
     private var submitMousePosition: ((UUID, CGPoint, GhosttySurfaceKeyEvent.Mods) -> GhosttyMouseInputSubmissionOutcome)?
     private var submitMouseScroll: ((UUID, GhosttySurfaceMouseScrollEvent) -> GhosttyMouseInputSubmissionOutcome)?
-    private var submitMousePressure: ((UUID, GhosttySurfaceMousePressureEvent) -> GhosttyMouseInputSubmissionOutcome)?
 
     private var activePanAxis: GhosttySurfacePanGesture.Axis?
     private var isPanGestureActive = false
     private var didNavigateForActivePan = false
-    private var activeSelectionSurfaceID: UUID?
-    private var selectionCopyMenuSurfaceID: UUID?
-    private var selectionCopyMenuSourcePoint = CGPoint.zero
+    private weak var localSelectionSurface: GhosttyManagedSurface?
+    private weak var localSelectionControlSurface: GhosttyKitControlSurface?
+    private var longPressOriginalPoint: CGPoint?
+    private var selectionSnapshot = GhosttyLocalSelectionSnapshot.inactive
+
+    private lazy var startSelectionHandle = makeSelectionHandle(
+        endpoint: GHOSTTY_TERMINAL_SURFACE_SELECTION_ENDPOINT_START
+    )
+    private lazy var endSelectionHandle = makeSelectionHandle(
+        endpoint: GHOSTTY_TERMINAL_SURFACE_SELECTION_ENDPOINT_END
+    )
 
     private lazy var panRecognizer: UIPanGestureRecognizer = {
         let recognizer = UIPanGestureRecognizer(
@@ -158,6 +158,8 @@ private final class GhosttySingleViewportContainerView: UIView,
         addGestureRecognizer(selectionLongPressRecognizer)
         addGestureRecognizer(surfaceTapRecognizer)
         addInteraction(selectionEditMenuInteraction)
+        addSubview(startSelectionHandle)
+        addSubview(endSelectionHandle)
     }
 
     @available(*, unavailable)
@@ -165,44 +167,64 @@ private final class GhosttySingleViewportContainerView: UIView,
         fatalError("init(coder:) has not been implemented")
     }
 
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let inset = (GhosttySelectionHandleView.hitTargetSize - startSelectionHandle.bounds.width) / 2
+        guard !startSelectionHandle.isHidden,
+              !endSelectionHandle.isHidden,
+              startSelectionHandle.frame.insetBy(dx: -inset, dy: -inset).contains(point),
+              endSelectionHandle.frame.insetBy(dx: -inset, dy: -inset).contains(point)
+        else { return super.hitTest(point, with: event) }
+
+        let startDistance = point.squaredDistance(to: startSelectionHandle.center)
+        let endDistance = point.squaredDistance(to: endSelectionHandle.center)
+        let handle = startDistance <= endDistance
+            ? startSelectionHandle
+            : endSelectionHandle
+        return handle.hitTest(convert(point, to: handle), with: event)
+    }
+
     func update(
         projection: GhosttyTerminalViewportPresentationProjection,
         surfaceLookup: GhosttyManagedSurfaceLookup,
+        trackpadDriver: GhosttyKeyboardCursorTrackpadDriver,
         onSurfaceTap: ((UUID) -> Void)?,
         onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?,
-        onCopySelection: ((UUID) -> Bool)?,
-        selectionAvailability: @escaping (UUID) -> GhosttyTerminalSelectionAvailabilityOutcome,
-        selectSurface: @escaping (UUID, String) -> GhosttySurfaceSelectionOutcome,
+        sendKeyEvent: @escaping (GhosttySurfaceKeyEvent) -> Bool,
+        onTrackpadStateChange: @escaping (GhosttyKeyboardCursorTrackpad.HUDState) -> Void,
         isMouseCaptured: @escaping (UUID) -> Bool,
         submitMouseButton: ((UUID, GhosttySurfaceMouseButtonEvent) -> GhosttyMouseInputSubmissionOutcome)?,
         submitMousePosition: ((UUID, CGPoint, GhosttySurfaceKeyEvent.Mods) -> GhosttyMouseInputSubmissionOutcome)?,
-        submitMouseScroll: ((UUID, GhosttySurfaceMouseScrollEvent) -> GhosttyMouseInputSubmissionOutcome)?,
-        submitMousePressure: ((UUID, GhosttySurfaceMousePressureEvent) -> GhosttyMouseInputSubmissionOutcome)?
+        submitMouseScroll: ((UUID, GhosttySurfaceMouseScrollEvent) -> GhosttyMouseInputSubmissionOutcome)?
     ) {
         self.projection = projection
         self.surfaceLookup = surfaceLookup
+        self.trackpadDriver = trackpadDriver
         self.onSurfaceTap = onSurfaceTap
         self.onWindowSwipe = onWindowSwipe
-        self.onCopySelection = onCopySelection
-        self.selectionAvailability = selectionAvailability
-        self.selectSurface = selectSurface
+        self.sendKeyEvent = sendKeyEvent
+        self.onTrackpadStateChange = onTrackpadStateChange
         self.isMouseCaptured = isMouseCaptured
         self.submitMouseButton = submitMouseButton
         self.submitMousePosition = submitMousePosition
         self.submitMouseScroll = submitMouseScroll
-        self.submitMousePressure = submitMousePressure
 
         if activePanAxis == .horizontal, !projection.canNavigateWindows {
             resetActivePanState()
         }
-        if activeSelectionSurfaceID != projection.surfaceID {
-            activeSelectionSurfaceID = nil
-        }
-        if selectionCopyMenuSurfaceID != projection.surfaceID {
-            selectionCopyMenuSurfaceID = nil
-        }
-
+        let previousSurfaceID = activeSurfaceID
         syncActiveSurface()
+        var shouldRestoreSelection = previousSurfaceID != activeSurfaceID
+        if localSelectionSurface != nil {
+            if exactLocalSelectionSurface() == nil {
+                cancelLocalSelectionInteraction()
+                shouldRestoreSelection = true
+            } else {
+                layoutSelectionHandles()
+            }
+        }
+        if shouldRestoreSelection {
+            restoreLocalSelectionIfPresent()
+        }
         flushLayoutIfPossible()
     }
 
@@ -220,23 +242,22 @@ private final class GhosttySingleViewportContainerView: UIView,
     }
 
     private func disableInteractions() {
+        cancelLocalSelectionInteraction()
         onSurfaceTap = nil
         onWindowSwipe = nil
-        onCopySelection = nil
-        selectionAvailability = { _ in .noFocusedSurface }
-        selectSurface = { surfaceID, _ in .missingSurface(surfaceID) }
+        sendKeyEvent = nil
+        onTrackpadStateChange = nil
         isMouseCaptured = { _ in false }
         submitMouseButton = nil
         submitMousePosition = nil
         submitMouseScroll = nil
-        submitMousePressure = nil
-        activeSelectionSurfaceID = nil
-        selectionCopyMenuSurfaceID = nil
+        trackpadDriver = nil
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         layoutActiveSurface()
+        layoutSelectionHandles()
     }
 
     private func syncActiveSurface() {
@@ -252,11 +273,13 @@ private final class GhosttySingleViewportContainerView: UIView,
         }
 
         guard let desiredID = projection.surfaceID else {
+            cancelLocalSelectionInteraction()
             retireActiveContainer()
             return
         }
 
         if activeSurfaceID != desiredID {
+            cancelLocalSelectionInteraction()
             retireActiveContainer()
         }
         guard let surface = surfaceLookup.managedSurface(for: desiredID) else {
@@ -277,6 +300,8 @@ private final class GhosttySingleViewportContainerView: UIView,
         if container.superview !== self {
             container.removeFromSuperview()
             addSubview(container)
+            bringSubviewToFront(startSelectionHandle)
+            bringSubviewToFront(endSelectionHandle)
         }
         if changed {
             container.layoutIfNeeded()
@@ -348,63 +373,99 @@ private final class GhosttySingleViewportContainerView: UIView,
 
     @objc
     private func handleSelectionLongPress(_ recognizer: UILongPressGestureRecognizer) {
-        guard let surfaceID = projection.surfaceID,
-              let surface = surfaceLookup.managedSurface(for: surfaceID),
-              let phase = GhosttySurfaceLongPressSelectionGesture.Phase(recognizer.state)
-        else { return }
-
-        if phase == .began {
-            guard !isPanGestureActive else {
-                activeSelectionSurfaceID = nil
-                return
-            }
-            _ = selectSurface(surfaceID, "viewport.longPress")
-            guard !isMouseCaptured(surfaceID) else {
-                activeSelectionSurfaceID = nil
-                return
-            }
-            activeSelectionSurfaceID = surfaceID
-        }
-
-        guard activeSelectionSurfaceID == surfaceID else { return }
-        _ = selectSurface(surfaceID, "viewport.longPress.update")
-        for action in GhosttySurfaceLongPressSelectionGesture.actions(
-            forLocalPoint: recognizer.location(in: surface.view),
-            phase: phase
-        ) {
-            switch action {
-            case .mousePosition(let position):
-                _ = submitMousePosition?(surfaceID, position, [])
-            case .mouseButton(let event):
-                _ = submitMouseButton?(surfaceID, event)
-            case .mousePressure(let event):
-                _ = submitMousePressure?(surfaceID, event)
-            }
-        }
-
-        if phase == .ended {
-            presentSelectionCopyMenuIfAvailable(
-                surfaceID: surfaceID,
-                sourcePoint: recognizer.location(in: self)
-            )
-        }
-        if phase == .ended || phase == .cancelled {
-            activeSelectionSurfaceID = nil
+        switch recognizer.state {
+        case .began:
+            beginTerminalLongPress(recognizer)
+        case .changed:
+            updateTerminalLongPress(recognizer)
+        case .ended:
+            endTerminalLongPress()
+        case .cancelled, .failed:
+            reconcileLocalSelectionAfterLongPress()
+        case .possible:
+            break
+        @unknown default:
+            cancelLocalSelectionInteraction()
         }
     }
 
-    private func presentSelectionCopyMenuIfAvailable(
-        surfaceID: UUID,
-        sourcePoint: CGPoint
-    ) {
-        guard onCopySelection != nil,
-              selectionAvailability(surfaceID).isAvailable
+    private func beginTerminalLongPress(_ recognizer: UILongPressGestureRecognizer) {
+        guard !isPanGestureActive,
+              let driver = trackpadDriver,
+              let surfaceID = projection.surfaceID,
+              let surface = surfaceLookup.managedSurface(for: surfaceID),
+              surface.view.isDescendant(of: self)
         else { return }
-        selectionCopyMenuSourcePoint = sourcePoint
-        selectionCopyMenuSurfaceID = surfaceID
-        selectionEditMenuInteraction.presentEditMenu(
-            with: UIEditMenuConfiguration(identifier: nil, sourcePoint: sourcePoint)
+
+        cancelLocalSelectionInteraction()
+        localSelectionSurface = surface
+        localSelectionControlSurface = surface.controlSurface
+        longPressOriginalPoint = recognizer.location(in: surface.view)
+        surface.onLocalSelectionGeometryChange = { [weak self] in
+            self?.refreshLocalSelectionGeometry()
+        }
+        driver.begin(
+            owner: self,
+            at: recognizer.location(in: surface.view),
+            sendKeyEvent: { [weak self] event in
+                guard self?.exactLocalSelectionSurface() != nil else { return false }
+                return self?.sendKeyEvent?(event) == true
+            },
+            onHUDStateChange: { [weak self] state in
+                self?.onTrackpadStateChange?(state)
+            }
         )
+    }
+
+    private func updateTerminalLongPress(_ recognizer: UILongPressGestureRecognizer) {
+        guard let driver = trackpadDriver,
+              let (surface, _) = exactLocalSelectionSurface()
+        else {
+            cancelLocalSelectionInteraction()
+            return
+        }
+        _ = driver.update(owner: self, at: recognizer.location(in: surface.view))
+    }
+
+    private func endTerminalLongPress() {
+        guard let driver = trackpadDriver else {
+            cancelLocalSelectionInteraction()
+            return
+        }
+        let didSteer = driver.end(owner: self)
+        guard didSteer == false else {
+            reconcileLocalSelectionAfterLongPress()
+            return
+        }
+
+        guard let point = longPressOriginalPoint,
+              let (_, control) = exactLocalSelectionSurface()
+        else {
+            cancelLocalSelectionInteraction()
+            return
+        }
+
+        longPressOriginalPoint = nil
+        applySelectionOutcome(control.selectWord(at: point), presentMenu: true)
+    }
+
+    private func presentSelectionCopyMenu() {
+        guard selectionSnapshot.isActive,
+              exactLocalSelectionSurface() != nil,
+              let anchor = selectionMenuAnchorHandle
+        else { return }
+        selectionEditMenuInteraction.presentEditMenu(
+            with: UIEditMenuConfiguration(
+                identifier: nil,
+                sourcePoint: anchor.center
+            )
+        )
+    }
+
+    private var selectionMenuAnchorHandle: GhosttySelectionHandleView? {
+        if !endSelectionHandle.isHidden { return endSelectionHandle }
+        if !startSelectionHandle.isHidden { return startSelectionHandle }
+        return nil
     }
 
     @objc
@@ -414,8 +475,14 @@ private final class GhosttySingleViewportContainerView: UIView,
               let surface = surfaceLookup.managedSurface(for: surfaceID)
         else { return }
 
+        if selectionSnapshot.isActive,
+           let (_, control) = exactLocalSelectionSurface() {
+            _ = control.clearSelection()
+            cancelLocalSelectionInteraction()
+            return
+        }
+
         let mouseCaptured = isMouseCaptured(surfaceID)
-        _ = selectSurface(surfaceID, "viewport.tap")
         if activeContainer?.consumeMomentumCatchTap() == true {
             return
         }
@@ -445,7 +512,7 @@ private final class GhosttySingleViewportContainerView: UIView,
             resetActivePanState()
             isPanGestureActive = true
         }
-        if activeSelectionSurfaceID != nil {
+        if longPressOriginalPoint != nil {
             resetActivePanStateIfEnded(phase)
             return
         }
@@ -490,6 +557,168 @@ private final class GhosttySingleViewportContainerView: UIView,
         didNavigateForActivePan = false
     }
 
+    private func exactLocalSelectionSurface()
+        -> (GhosttyManagedSurface, GhosttyKitControlSurface)? {
+        guard let recordedSurface = projectedLocalSelectionSurface(),
+              let recordedControl = localSelectionControlSurface,
+              recordedSurface.controlSurface === recordedControl
+        else { return nil }
+        return (recordedSurface, recordedControl)
+    }
+
+    private func projectedLocalSelectionSurface() -> GhosttyManagedSurface? {
+        guard let recordedSurface = localSelectionSurface,
+              projection.surfaceID == recordedSurface.id,
+              activeSurfaceID == recordedSurface.id,
+              surfaceLookup.managedSurface(for: recordedSurface.id) === recordedSurface,
+              recordedSurface.view.isDescendant(of: self)
+        else { return nil }
+        return recordedSurface
+    }
+
+    private func refreshLocalSelectionGeometry() {
+        guard let surface = projectedLocalSelectionSurface() else {
+            cancelLocalSelectionInteraction()
+            return
+        }
+        let control = surface.controlSurface
+        localSelectionControlSurface = control
+        // Output during neutral/steering must not resurrect an older selection.
+        guard longPressOriginalPoint == nil, selectionSnapshot.isActive else { return }
+        applySelectionOutcome(control.selectionSnapshot(), presentMenu: false)
+    }
+
+    private func reconcileLocalSelectionAfterLongPress() {
+        _ = trackpadDriver?.cancel(owner: self)
+        longPressOriginalPoint = nil
+        guard let surface = projectedLocalSelectionSurface() else {
+            cancelLocalSelectionInteraction()
+            return
+        }
+        localSelectionControlSurface = surface.controlSurface
+        applySelectionOutcome(
+            surface.controlSurface.selectionSnapshot(),
+            presentMenu: false
+        )
+    }
+
+    private func restoreLocalSelectionIfPresent() {
+        guard localSelectionSurface == nil,
+              let surfaceID = activeSurfaceID,
+              let surface = surfaceLookup.managedSurface(for: surfaceID),
+              surface.view.isDescendant(of: self),
+              case .snapshot(let snapshot) = surface.controlSurface.selectionSnapshot(),
+              snapshot.isActive
+        else { return }
+
+        localSelectionSurface = surface
+        localSelectionControlSurface = surface.controlSurface
+        surface.onLocalSelectionGeometryChange = { [weak self] in
+            self?.refreshLocalSelectionGeometry()
+        }
+        selectionSnapshot = snapshot
+        layoutSelectionHandles()
+    }
+
+    private func applySelectionOutcome(
+        _ outcome: GhosttyLocalSelectionOutcome,
+        presentMenu: Bool
+    ) {
+        guard case .snapshot(let snapshot) = outcome else {
+            cancelLocalSelectionInteraction()
+            return
+        }
+        selectionSnapshot = snapshot
+        guard selectionSnapshot.isActive else {
+            cancelLocalSelectionInteraction()
+            return
+        }
+        layoutSelectionHandles()
+        if presentMenu { presentSelectionCopyMenu() }
+    }
+
+    private func cancelLocalSelectionInteraction() {
+        _ = trackpadDriver?.cancel(owner: self)
+        localSelectionSurface?.onLocalSelectionGeometryChange = nil
+        selectionEditMenuInteraction.dismissMenu()
+        localSelectionSurface = nil
+        localSelectionControlSurface = nil
+        longPressOriginalPoint = nil
+        selectionSnapshot = .inactive
+        startSelectionHandle.isHidden = true
+        endSelectionHandle.isHidden = true
+    }
+
+    private func makeSelectionHandle(
+        endpoint: ghostty_terminal_surface_selection_endpoint_e
+    ) -> GhosttySelectionHandleView {
+        let handle = GhosttySelectionHandleView(endpoint: endpoint)
+        handle.isHidden = true
+        handle.addGestureRecognizer(UIPanGestureRecognizer(
+            target: self,
+            action: #selector(handleSelectionEndpointPan(_:))
+        ))
+        return handle
+    }
+
+    @objc
+    private func handleSelectionEndpointPan(_ recognizer: UIPanGestureRecognizer) {
+        guard let handle = recognizer.view as? GhosttySelectionHandleView,
+              let (surface, control) = exactLocalSelectionSurface()
+        else {
+            cancelLocalSelectionInteraction()
+            return
+        }
+        if recognizer.state == .began {
+            selectionEditMenuInteraction.dismissMenu()
+        }
+        if recognizer.state == .changed {
+            applySelectionOutcome(
+                control.setSelectionEndpoint(
+                    handle.endpoint,
+                    at: recognizer.location(in: surface.view)
+                ),
+                presentMenu: false
+            )
+        } else if recognizer.state == .ended || recognizer.state == .cancelled {
+            presentSelectionCopyMenu()
+        }
+    }
+
+    private func layoutSelectionHandles() {
+        guard selectionSnapshot.isActive,
+              let (surface, _) = exactLocalSelectionSurface()
+        else {
+            startSelectionHandle.isHidden = true
+            endSelectionHandle.isHidden = true
+            return
+        }
+        position(startSelectionHandle, surface: surface)
+        position(endSelectionHandle, surface: surface)
+    }
+
+    private func position(
+        _ handle: GhosttySelectionHandleView,
+        surface: GhosttyManagedSurface
+    ) {
+        let isStart = handle.endpoint == GHOSTTY_TERMINAL_SURFACE_SELECTION_ENDPOINT_START
+        let rect = isStart ? selectionSnapshot.start : selectionSnapshot.end
+        guard let rect else {
+            handle.isHidden = true
+            return
+        }
+        let anchor = isStart
+            ? CGPoint(x: rect.minX, y: rect.minY)
+            : CGPoint(x: rect.maxX, y: rect.maxY)
+        let rawCenter = surface.view.convert(anchor, to: self)
+        let inset = handle.bounds.width / 2
+        handle.center = CGPoint(
+            x: min(max(rawCenter.x, bounds.minX + inset), bounds.maxX - inset),
+            y: min(max(rawCenter.y, bounds.minY + inset), bounds.maxY - inset)
+        )
+        handle.isHidden = false
+    }
+
     func gestureRecognizer(
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
@@ -499,6 +728,16 @@ private final class GhosttySingleViewportContainerView: UIView,
         }
         return gestureRecognizer is UIPanGestureRecognizer &&
             otherGestureRecognizer is UIPanGestureRecognizer
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldReceive touch: UITouch
+    ) -> Bool {
+        _ = gestureRecognizer
+        guard let touchedView = touch.view else { return true }
+        return !touchedView.isDescendant(of: startSelectionHandle)
+            && !touchedView.isDescendant(of: endSelectionHandle)
     }
 
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
@@ -524,16 +763,18 @@ private final class GhosttySingleViewportContainerView: UIView,
         _ = interaction
         _ = configuration
         _ = suggestedActions
-        guard let surfaceID = selectionCopyMenuSurfaceID,
-              selectionAvailability(surfaceID).isAvailable
+        guard selectionSnapshot.isActive,
+              exactLocalSelectionSurface() != nil,
+              selectionMenuAnchorHandle != nil
         else { return nil }
 
         return UIMenu(children: [
             UIAction(title: "Copy", image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in
-                _ = self?.onCopySelection?(surfaceID)
-                if self?.selectionCopyMenuSurfaceID == surfaceID {
-                    self?.selectionCopyMenuSurfaceID = nil
-                }
+                guard let (_, control) = self?.exactLocalSelectionSurface(),
+                      let text = control.readSelection(),
+                      !text.isEmpty
+                else { return }
+                UIPasteboard.general.string = text
             },
         ])
     }
@@ -544,12 +785,40 @@ private final class GhosttySingleViewportContainerView: UIView,
     ) -> CGRect {
         _ = interaction
         _ = configuration
-        return CGRect(
-            x: selectionCopyMenuSourcePoint.x - 1,
-            y: selectionCopyMenuSourcePoint.y - 1,
-            width: 2,
-            height: 2
-        )
+        return selectionMenuAnchorHandle?.frame ?? .zero
+    }
+}
+
+private final class GhosttySelectionHandleView: UIView {
+    static let hitTargetSize: CGFloat = 44
+    let endpoint: ghostty_terminal_surface_selection_endpoint_e
+
+    init(endpoint: ghostty_terminal_surface_selection_endpoint_e) {
+        self.endpoint = endpoint
+        super.init(frame: CGRect(x: 0, y: 0, width: 18, height: 18))
+        backgroundColor = .systemBlue
+        layer.borderColor = UIColor.white.cgColor
+        layer.borderWidth = 1
+        layer.cornerRadius = 9
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        _ = event
+        let inset = (Self.hitTargetSize - bounds.width) / 2
+        return bounds.insetBy(dx: -inset, dy: -inset).contains(point)
+    }
+}
+
+private extension CGPoint {
+    func squaredDistance(to other: CGPoint) -> CGFloat {
+        let dx = x - other.x
+        let dy = y - other.y
+        return dx * dx + dy * dy
     }
 }
 
@@ -558,19 +827,6 @@ private extension GhosttySurfacePanGesture.WindowNavigationDirection {
         switch self {
         case .previous: .previous
         case .next: .next
-        }
-    }
-}
-
-private extension GhosttySurfaceLongPressSelectionGesture.Phase {
-    init?(_ state: UIGestureRecognizer.State) {
-        switch state {
-        case .began: self = .began
-        case .changed: self = .changed
-        case .ended: self = .ended
-        case .cancelled, .failed: self = .cancelled
-        case .possible: return nil
-        @unknown default: return nil
         }
     }
 }

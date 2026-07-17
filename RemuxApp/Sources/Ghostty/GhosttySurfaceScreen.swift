@@ -160,17 +160,11 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             surfaceLookup: model.terminalManagedSurfaceLookup,
                             projection: screenProjection.viewport,
                             terminalTheme: presentation.terminalTheme,
+                            trackpadDriver: trackpadDriver,
                             onSurfaceTap: handleSurfaceTap,
                             onWindowSwipe: handleWindowSwipe,
-                            onCopySelection: { surfaceID in
-                                copyTerminalSelection(from: surfaceID)
-                            },
-                            selectionAvailability: { surfaceID in
-                                model.selectionAvailability(for: surfaceID)
-                            },
-                            selectSurface: { surfaceID, reason in
-                                model.selectTerminalSurface(surfaceID, reason: reason)
-                            },
+                            sendKeyEvent: sendTerminalKeyEvent,
+                            onTrackpadStateChange: { trackpadHUDState = $0 },
                             isMouseCaptured: { surfaceID in
                                 model.isMouseCaptured(for: surfaceID)
                             },
@@ -182,9 +176,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             },
                             submitMouseScroll: { surfaceID, event in
                                 model.sendMouseScroll(to: surfaceID, event)
-                            },
-                            submitMousePressure: { surfaceID, event in
-                                model.sendMousePressure(to: surfaceID, event)
                             }
                         )
                             .frame(
@@ -1459,15 +1450,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             submitPendingPrefix: submitTerminalText(_:),
             sendPaste: { model.sendPaste($0, to: surfaceID).isAccepted }
         )
-    }
-
-    private func copyTerminalSelection(from surfaceID: UUID) -> Bool {
-        guard case .text(let selection) = model.readSelection(from: surfaceID) else {
-            return false
-        }
-
-        UIPasteboard.general.string = selection
-        return true
     }
 
     private func sendTerminalKeyEvent(_ event: GhosttySurfaceKeyEvent) -> Bool {

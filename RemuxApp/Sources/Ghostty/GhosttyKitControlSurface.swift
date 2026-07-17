@@ -95,32 +95,27 @@ struct GhosttySurfaceInteractionState: Equatable {
     static let empty = GhosttySurfaceInteractionState(
         scrollState: .empty,
         scrollRoute: .viewport,
-        mouseCaptured: false,
-        hasSelection: false
+        mouseCaptured: false
     )
 
     let scrollState: GhosttySurfaceScrollState
     let scrollRoute: GhosttySurfaceScrollRoute
     let mouseCaptured: Bool
-    let hasSelection: Bool
 
     init(cValue: ghostty_terminal_surface_interaction_state_s) {
         scrollState = GhosttySurfaceScrollState(cValue: cValue.scrollbar)
         scrollRoute = GhosttySurfaceScrollRoute(cValue: cValue.route)
         mouseCaptured = cValue.mouse_captured
-        hasSelection = cValue.has_selection
     }
 
     private init(
         scrollState: GhosttySurfaceScrollState,
         scrollRoute: GhosttySurfaceScrollRoute,
-        mouseCaptured: Bool,
-        hasSelection: Bool
+        mouseCaptured: Bool
     ) {
         self.scrollState = scrollState
         self.scrollRoute = scrollRoute
         self.mouseCaptured = mouseCaptured
-        self.hasSelection = hasSelection
     }
 }
 
@@ -272,14 +267,6 @@ final class GhosttyKitControlSurface {
         ))
     }
 
-    @discardableResult
-    func sendMousePressure(_ event: GhosttySurfaceMousePressureEvent) -> Bool {
-        guard !invalidated else { return false }
-        return event.withCValues {
-            Self.accepted(ghostty_terminal_surface_mouse_pressure(handle, $0, $1))
-        }
-    }
-
     func interactionState() -> GhosttySurfaceInteractionState {
         guard !invalidated else { return .empty }
         var state = ghostty_terminal_surface_interaction_state_s()
@@ -299,10 +286,6 @@ final class GhosttyKitControlSurface {
         )
         _ = report(result)
         return GhosttySurfaceScrollState(cValue: state.scrollbar)
-    }
-
-    func hasSelection() -> Bool {
-        interactionState().hasSelection
     }
 
     func isMouseCaptured() -> Bool {

@@ -486,34 +486,6 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         return focusedManagedSurface?.sendKeyEvent(event) ?? .noFocusedSurface
     }
 
-    func readSelection(from surfaceID: UUID) -> GhosttyTerminalSelectionReadOutcome {
-        guard let managed = managedSurface(for: surfaceID) else {
-            return .missingSurface(surfaceID)
-        }
-        guard let text = managed.readSelection(), !text.isEmpty else {
-            return .emptySelection
-        }
-        return .text(text)
-    }
-
-    func selectionAvailability(for surfaceID: UUID) -> GhosttyTerminalSelectionAvailabilityOutcome {
-        guard let managed = managedSurface(for: surfaceID) else {
-            return .missingSurface(surfaceID)
-        }
-        return managed.hasSelection() ? .available : .emptySelection
-    }
-
-    func selectTerminalSurface(_ surfaceID: UUID, reason: String) -> GhosttySurfaceSelectionOutcome {
-        // Only the active retained surface is published through this adapter;
-        // native-side selection is therefore redundant or impossible.
-        guard let managed = managedSurface(for: surfaceID) else {
-            return .missingSurface(surfaceID)
-        }
-        _ = reason
-        managed.setFocused(true)
-        return .alreadySelected
-    }
-
     func isMouseCaptured(for surfaceID: UUID) -> Bool {
         managedSurface(for: surfaceID)?.controlSurface.isMouseCaptured() ?? false
     }
@@ -548,17 +520,6 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
             return .missingTarget(surfaceID)
         }
         managed.sendMouseScroll(event)
-        return .sent
-    }
-
-    func sendMousePressure(
-        to surfaceID: UUID,
-        _ event: GhosttySurfaceMousePressureEvent
-    ) -> GhosttyMouseInputSubmissionOutcome {
-        guard let managed = managedSurface(for: surfaceID) else {
-            return .missingTarget(surfaceID)
-        }
-        managed.controlSurface.sendMousePressure(event)
         return .sent
     }
 

@@ -34,21 +34,4 @@ final class GhosttyTerminalSurfaceInteractionOutcomeTests: XCTestCase {
         XCTAssertFalse(GhosttyMouseInputSubmissionOutcome.surfaceRejected.isSent)
     }
 
-    func testSelectionAvailabilityState() {
-        let missingSurface = UUID()
-
-        XCTAssertTrue(GhosttyTerminalSelectionAvailabilityOutcome.available.isAvailable)
-        XCTAssertFalse(GhosttyTerminalSelectionAvailabilityOutcome.noFocusedSurface.isAvailable)
-        XCTAssertFalse(GhosttyTerminalSelectionAvailabilityOutcome.missingSurface(missingSurface).isAvailable)
-        XCTAssertFalse(GhosttyTerminalSelectionAvailabilityOutcome.emptySelection.isAvailable)
-    }
-
-    func testSelectionReadSelectedText() {
-        let missingSurface = UUID()
-
-        XCTAssertEqual(GhosttyTerminalSelectionReadOutcome.text("selected").selectedText, "selected")
-        XCTAssertNil(GhosttyTerminalSelectionReadOutcome.noFocusedSurface.selectedText)
-        XCTAssertNil(GhosttyTerminalSelectionReadOutcome.missingSurface(missingSurface).selectedText)
-        XCTAssertNil(GhosttyTerminalSelectionReadOutcome.emptySelection.selectedText)
-    }
 }

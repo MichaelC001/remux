@@ -32,21 +32,6 @@ struct GhosttyTmuxCommandFailureEvent: Equatable {
     let message: String
 }
 
-enum GhosttySurfaceSelectionOutcome: Equatable, Sendable {
-    case selected
-    case alreadySelected
-    case missingSurface(UUID)
-
-    var isSelected: Bool {
-        switch self {
-        case .selected, .alreadySelected:
-            true
-        case .missingSurface:
-            false
-        }
-    }
-}
-
 /// App-level scene lifecycle phases forwarded into terminal screen models.
 enum GhosttyAppLifecyclePhase: Equatable {
     case active
@@ -87,12 +72,6 @@ protocol GhosttyTerminalInputModeling: ObservableObject {
     @discardableResult
     func sendKeyEventToFocusedSurface(_ event: GhosttySurfaceKeyEvent) -> FocusedTerminalInputSubmissionResult
 
-    func readSelection(from surfaceID: UUID) -> GhosttyTerminalSelectionReadOutcome
-    func selectionAvailability(for surfaceID: UUID) -> GhosttyTerminalSelectionAvailabilityOutcome
-
-    @discardableResult
-    func selectTerminalSurface(_ surfaceID: UUID, reason: String) -> GhosttySurfaceSelectionOutcome
-
     func isMouseCaptured(for surfaceID: UUID) -> Bool
 
     @discardableResult
@@ -114,11 +93,6 @@ protocol GhosttyTerminalInputModeling: ObservableObject {
         _ event: GhosttySurfaceMouseScrollEvent
     ) -> GhosttyMouseInputSubmissionOutcome
 
-    @discardableResult
-    func sendMousePressure(
-        to surfaceID: UUID,
-        _ event: GhosttySurfaceMousePressureEvent
-    ) -> GhosttyMouseInputSubmissionOutcome
 }
 
 @MainActor

@@ -142,29 +142,6 @@ struct GhosttySurfaceMouseScrollEvent: Equatable {
     }
 }
 
-struct GhosttySurfaceMousePressureEvent: Equatable {
-    enum Stage: UInt32, Equatable {
-        case none = 0
-        case normal = 1
-        case deep = 2
-    }
-
-    let stage: Stage
-    let pressure: Double
-
-    init(
-        stage: Stage,
-        pressure: Double
-    ) {
-        self.stage = stage
-        self.pressure = pressure
-    }
-
-    func withCValues<T>(_ body: (UInt32, Double) -> T) -> T {
-        body(stage.rawValue, pressure)
-    }
-}
-
 struct GhosttySurfaceTapGesture {
     enum Action: Equatable {
         case activateInput
@@ -185,56 +162,5 @@ struct GhosttySurfaceTapGesture {
             .mouseButton(.init(state: .release, button: .left)),
         ])
         return actions
-    }
-}
-
-struct GhosttySurfaceLongPressSelectionGesture {
-    enum Phase: Equatable {
-        case began
-        case changed
-        case ended
-        case cancelled
-    }
-
-    enum Action: Equatable {
-        case mousePosition(CGPoint)
-        case mouseButton(GhosttySurfaceMouseButtonEvent)
-        case mousePressure(GhosttySurfaceMousePressureEvent)
-    }
-
-    static func actions(
-        forLocalPoint point: CGPoint,
-        phase: Phase
-    ) -> [Action] {
-        switch phase {
-        case .began:
-            [
-                .mousePosition(point),
-                .mouseButton(.init(state: .press, button: .left)),
-                .mousePressure(.init(stage: .deep, pressure: 1)),
-            ]
-
-        case .changed:
-            [
-                .mousePosition(point),
-            ]
-
-        case .ended, .cancelled:
-            [
-                .mousePosition(point),
-                .mouseButton(.init(state: .release, button: .left)),
-                .mousePressure(.init(stage: .none, pressure: 0)),
-            ]
-        }
-    }
-
-    static func actionsForWordSelection(atLocalPoint point: CGPoint) -> [Action] {
-        [
-            .mousePosition(point),
-            .mouseButton(.init(state: .press, button: .left)),
-            .mousePressure(.init(stage: .deep, pressure: 1)),
-            .mouseButton(.init(state: .release, button: .left)),
-            .mousePressure(.init(stage: .none, pressure: 0)),
-        ]
     }
 }

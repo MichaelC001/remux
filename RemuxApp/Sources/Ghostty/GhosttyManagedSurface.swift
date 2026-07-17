@@ -55,6 +55,7 @@ final class GhosttyManagedSurface {
     private(set) var scrollRoute: GhosttySurfaceScrollRoute
     var onScrollStateChange: (() -> Void)?
     var onDisplayUpdate: ((GhosttyManagedSurface, CGSize, CGFloat) -> Void)?
+    var onLocalSelectionGeometryChange: (() -> Void)?
 
     private var displayUpdateTracker = GhosttySurfaceDisplayUpdateTracker()
 
@@ -80,7 +81,9 @@ final class GhosttyManagedSurface {
     @discardableResult
     func sendInput(_ text: String) -> FocusedTerminalInputSubmissionResult {
         guard !text.isEmpty else { return .empty }
-        return controlSurface.sendInput(text) ? .accepted : .surfaceRejected
+        guard controlSurface.sendInput(text) else { return .surfaceRejected }
+        onLocalSelectionGeometryChange?()
+        return .accepted
     }
 
     @discardableResult
@@ -91,7 +94,9 @@ final class GhosttyManagedSurface {
 
     @discardableResult
     func sendKeyEvent(_ event: GhosttySurfaceKeyEvent) -> FocusedTerminalInputSubmissionResult {
-        controlSurface.sendKeyEvent(event) ? .accepted : .surfaceRejected
+        guard controlSurface.sendKeyEvent(event) else { return .surfaceRejected }
+        onLocalSelectionGeometryChange?()
+        return .accepted
     }
 
     func setVisible(_ visible: Bool) {
@@ -113,6 +118,8 @@ final class GhosttyManagedSurface {
         setVisible(false)
         view.isHidden = true
         view.removeFromSuperview()
+        onLocalSelectionGeometryChange?()
+        onLocalSelectionGeometryChange = nil
     }
 
     func replaceControlSurface(_ replacement: GhosttyKitControlSurface) {
@@ -130,6 +137,7 @@ final class GhosttyManagedSurface {
         }
         guard paneOwner?.updateDisplay(metrics: metrics) == true else { return false }
         onDisplayUpdate?(self, size, scale)
+        onLocalSelectionGeometryChange?()
         return true
     }
 
@@ -139,14 +147,7 @@ final class GhosttyManagedSurface {
         scrollState = state.scrollState
         scrollRoute = state.scrollRoute
         if changed { onScrollStateChange?() }
-    }
-
-    func hasSelection() -> Bool {
-        controlSurface.hasSelection()
-    }
-
-    func readSelection() -> String? {
-        controlSurface.readSelection()
+        onLocalSelectionGeometryChange?()
     }
 
     @discardableResult
@@ -172,11 +173,12 @@ final class GhosttyManagedSurface {
         guard next != scrollState else { return scrollState }
         scrollState = next
         onScrollStateChange?()
+        onLocalSelectionGeometryChange?()
         return scrollState
     }
 
-    func sendMousePressure(_ event: GhosttySurfaceMousePressureEvent) {
-        _ = controlSurface.sendMousePressure(event)
+    func notifyLocalSelectionGeometryChanged() {
+        onLocalSelectionGeometryChange?()
     }
 
     func isMouseCaptured() -> Bool {
