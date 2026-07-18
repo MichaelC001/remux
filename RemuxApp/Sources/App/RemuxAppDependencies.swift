@@ -211,7 +211,7 @@ struct RemuxAppDependencies: Sendable {
             for: target,
             trustedHostStore: trustedHostStore
         )
-        let provider = GhosttyAttachmentCitadelSFTPClientProvider(
+        let provider = RemuxCitadelSFTPClientProvider(
             sshRootService: sshRootService,
             rootKey: RemuxSSHRootKey(target: target),
             rootConfiguration: rootConfiguration,

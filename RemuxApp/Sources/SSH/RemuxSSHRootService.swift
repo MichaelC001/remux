@@ -42,6 +42,36 @@ struct RemuxSSHRootConfiguration: Sendable {
     }
 }
 
+struct RemuxSSHDirectTCPIPTarget: Equatable, Sendable {
+    let host: String
+    let port: Int
+
+    init(host: String, port: Int) throws {
+        guard !host.isEmpty else {
+            throw RemuxSSHDirectTCPIPTargetError.invalidHost
+        }
+        guard (1...Int(UInt16.max)).contains(port) else {
+            throw RemuxSSHDirectTCPIPTargetError.invalidPort(port)
+        }
+
+        self.host = host
+        self.port = port
+    }
+
+    func channelType(originatorAddress: SocketAddress) -> SSHChannelType {
+        .directTCPIP(.init(
+            targetHost: host,
+            targetPort: port,
+            originatorAddress: originatorAddress
+        ))
+    }
+}
+
+enum RemuxSSHDirectTCPIPTargetError: Error, Equatable, Sendable {
+    case invalidHost
+    case invalidPort(Int)
+}
+
 enum RemuxSSHRootReadiness: Equatable, Sendable {
     case connecting
     case ready
@@ -82,11 +112,11 @@ struct RemuxSSHRootServiceSnapshot: Equatable, Sendable {
 
 final class RemuxSSHRoot: @unchecked Sendable {
     let rootChannel: Channel
-    private let sessionChannelOpener: RemuxSSHSessionChannelOpener
+    private let childChannelOpener: RemuxSSHChildChannelOpener
 
-    fileprivate init(rootChannel: Channel, sessionChannelOpener: RemuxSSHSessionChannelOpener) {
+    fileprivate init(rootChannel: Channel, childChannelOpener: RemuxSSHChildChannelOpener) {
         self.rootChannel = rootChannel
-        self.sessionChannelOpener = sessionChannelOpener
+        self.childChannelOpener = childChannelOpener
     }
 
     func close() async {
@@ -98,11 +128,26 @@ final class RemuxSSHRoot: @unchecked Sendable {
     }
 
     func openSessionChannel(trace: RemuxTransportStartupTrace) async throws -> Channel {
-        try await sessionChannelOpener.openSessionChannel(on: rootChannel, trace: trace)
+        try await childChannelOpener.openSessionChannel(on: rootChannel, trace: trace)
+    }
+
+    func openDirectTCPIPChannel(
+        to target: RemuxSSHDirectTCPIPTarget,
+        originatorAddress: SocketAddress,
+        trace: RemuxTransportStartupTrace,
+        channelInitializer: @escaping @Sendable (Channel) -> EventLoopFuture<Void>
+    ) async throws -> Channel {
+        try await childChannelOpener.openDirectTCPIPChannel(
+            on: rootChannel,
+            target: target,
+            originatorAddress: originatorAddress,
+            trace: trace,
+            channelInitializer: channelInitializer
+        )
     }
 }
 
-private final class RemuxSSHSessionChannelOpener: @unchecked Sendable {
+private final class RemuxSSHChildChannelOpener: @unchecked Sendable {
     private let sshHandler: NIOSSHHandler
 
     init(sshHandler: NIOSSHHandler) {
@@ -113,23 +158,60 @@ private final class RemuxSSHSessionChannelOpener: @unchecked Sendable {
         on rootChannel: Channel,
         trace: RemuxTransportStartupTrace
     ) async throws -> Channel {
-        try await trace.stage("sessionChannel.open") {
-            try await rootChannel.eventLoop.flatSubmit { [sshHandler, eventLoop = rootChannel.eventLoop] in
+        try await openChildChannel(
+            on: rootChannel,
+            type: .session,
+            trace: trace,
+            traceStage: "sessionChannel.open",
+            channelInitializer: { channel in
+                channel.eventLoop.makeSucceededFuture(())
+            }
+        )
+    }
+
+    func openDirectTCPIPChannel(
+        on rootChannel: Channel,
+        target: RemuxSSHDirectTCPIPTarget,
+        originatorAddress: SocketAddress,
+        trace: RemuxTransportStartupTrace,
+        channelInitializer: @escaping @Sendable (Channel) -> EventLoopFuture<Void>
+    ) async throws -> Channel {
+        try await openChildChannel(
+            on: rootChannel,
+            type: target.channelType(originatorAddress: originatorAddress),
+            trace: trace,
+            traceStage: "directTCPIPChannel.open",
+            channelInitializer: channelInitializer
+        )
+    }
+
+    private func openChildChannel(
+        on rootChannel: Channel,
+        type requestedType: SSHChannelType,
+        trace: RemuxTransportStartupTrace,
+        traceStage: String,
+        channelInitializer: @escaping @Sendable (Channel) -> EventLoopFuture<Void>
+    ) async throws -> Channel {
+        try await trace.stage(traceStage) {
+            try await rootChannel.eventLoop.flatSubmit { [self, eventLoop = rootChannel.eventLoop] in
                 let promise = eventLoop.makePromise(of: Channel.self)
-                sshHandler.createChannel(promise) { channel, channelType in
-                    guard case .session = channelType else {
+                sshHandler.createChannel(
+                    promise,
+                    channelType: requestedType
+                ) { channel, openedType in
+                    guard openedType == requestedType else {
                         return channel.eventLoop.makeFailedFuture(
                             RemuxSSHRootServiceError.unsupportedInboundChannel
                         )
                     }
 
-                    return channel.eventLoop.makeSucceededFuture(())
+                    return channelInitializer(channel)
                 }
                 return promise.futureResult.always { _ in
                     // Recorded on the event loop the instant the open
-                    // completes: the gap to sessionChannel.open.end is
+                    // completes: the gap to the trace stage ending is
                     // Swift-concurrency resume lag, not wire time.
-                    trace.event("sessionChannel.open.wireComplete")
+                    trace.event("\(traceStage).wireComplete")
                 }
             }.get()
         }
@@ -383,9 +465,9 @@ actor RemuxSSHRootService {
         case close
     }
 
-    /// SSH multiplexes channels over one authenticated connection;
-    /// each session needs exactly one exec channel. Bounding the
-    /// share keeps the blast radius of a dying root modest.
+    /// SSH multiplexes child channels over one authenticated connection.
+    /// Bounding concurrent consumers keeps the blast radius of a dying
+    /// root modest.
     static let maxConcurrentLeases = 4
 
     private let idleTimeout: Duration
@@ -1083,7 +1165,7 @@ private enum RemuxSSHRootBootstrap {
 
             return RemuxSSHRoot(
                 rootChannel: channel,
-                sessionChannelOpener: RemuxSSHSessionChannelOpener(sshHandler: sshHandler)
+                childChannelOpener: RemuxSSHChildChannelOpener(sshHandler: sshHandler)
             )
         } catch {
             if let rootChannel {

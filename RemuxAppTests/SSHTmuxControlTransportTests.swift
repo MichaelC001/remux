@@ -85,8 +85,8 @@ final class SSHTmuxControlTransportTests: XCTestCase {
     }
 
     func testSFTPLeaseOpenTimeoutReturnsSuccessfulOperation() async throws {
-        let value = try await GhosttyAttachmentCitadelSFTPClientProvider.withLeaseOpenTimeout(
-            operationTimeout: .seconds(1),
+        let value = try await RemuxSFTPTimeout.run(
+            timeout: .seconds(1),
             operation: {
                 42
             }
@@ -99,15 +99,15 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         let start = DispatchTime.now().uptimeNanoseconds
 
         do {
-            _ = try await GhosttyAttachmentCitadelSFTPClientProvider.withLeaseOpenTimeout(
-                operationTimeout: .milliseconds(20),
+            _ = try await RemuxSFTPTimeout.run(
+                timeout: .milliseconds(20),
                 operation: {
                     try await Task.sleep(nanoseconds: 5_000_000_000)
                     return 42
                 }
             )
             XCTFail("expected SFTP lease open to time out")
-        } catch let error as GhosttyAttachmentSFTPClientError {
+        } catch let error as RemuxSFTPClientError {
             XCTAssertEqual(error, .operationTimedOut)
         } catch {
             XCTFail("unexpected error: \(error)")
@@ -121,8 +121,8 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         let recorder = LateSFTPOpenCleanupRecorder()
 
         do {
-            _ = try await GhosttyAttachmentCitadelSFTPClientProvider.withLeaseOpenTimeout(
-                operationTimeout: .milliseconds(20),
+            _ = try await RemuxSFTPTimeout.run(
+                timeout: .milliseconds(20),
                 operation: {
                     try? await Task.sleep(nanoseconds: 100_000_000)
                     return 42
@@ -132,7 +132,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
                 }
             )
             XCTFail("expected SFTP lease open to time out")
-        } catch let error as GhosttyAttachmentSFTPClientError {
+        } catch let error as RemuxSFTPClientError {
             XCTAssertEqual(error, .operationTimedOut)
         } catch {
             XCTFail("unexpected error: \(error)")
@@ -141,6 +141,198 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         try await Task.sleep(nanoseconds: 200_000_000)
         let cleanedValues = await recorder.values()
         XCTAssertEqual(cleanedValues, [42])
+    }
+
+    func testSFTPTimeoutRunsInvalidationBeforeReturning() async {
+        let recorder = SFTPTimeoutRecorder()
+
+        do {
+            _ = try await RemuxSFTPTimeout.run(
+                timeout: .milliseconds(20),
+                operation: {
+                    try await Task.sleep(nanoseconds: 5_000_000_000)
+                    return 42
+                },
+                onTimeout: {
+                    await recorder.recordInvalidation()
+                }
+            )
+            XCTFail("expected SFTP operation to time out")
+        } catch let error as RemuxSFTPClientError {
+            XCTAssertEqual(error, .operationTimedOut)
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+
+        let didInvalidate = await recorder.didInvalidate
+        XCTAssertTrue(didInvalidate)
+    }
+
+    func testSFTPLeaseInvalidationReleasesRootOnceWithoutWaitingForHungChildClose() async throws {
+        let recorder = SFTPLeaseTeardownRecorder()
+        let teardown = RemuxSFTPLeaseTeardown(
+            closeChild: {
+                await recorder.closeChild()
+            },
+            releaseRoot: { disposition in
+                await recorder.releaseRoot(disposition)
+            }
+        )
+        let start = DispatchTime.now().uptimeNanoseconds
+
+        do {
+            _ = try await RemuxSFTPTimeout.run(
+                timeout: .milliseconds(20),
+                operation: {
+                    try await Task.sleep(nanoseconds: 5_000_000_000)
+                },
+                onTimeout: {
+                    await teardown.invalidate()
+                }
+            )
+            XCTFail("expected SFTP operation to time out")
+        } catch let error as RemuxSFTPClientError {
+            XCTAssertEqual(error, .operationTimedOut)
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+
+        let elapsedMilliseconds = Double(
+            DispatchTime.now().uptimeNanoseconds - start
+        ) / 1_000_000
+        XCTAssertLessThan(elapsedMilliseconds, 1_000)
+
+        await recorder.waitForChildCloseToStart()
+        let isChildCloseFinished = await recorder.isChildCloseFinished
+        XCTAssertFalse(isChildCloseFinished)
+
+        try await teardown.close()
+        await teardown.invalidate()
+        try await teardown.close()
+
+        let childCloseCount = await recorder.childCloseCount
+        let rootDispositions = await recorder.rootDispositions
+        XCTAssertEqual(childCloseCount, 1)
+        XCTAssertEqual(rootDispositions, [.invalidated])
+
+        await recorder.finishChildClose()
+    }
+
+    func testSFTPLeaseCloseTimeoutInvalidatesRootOnce() async throws {
+        let recorder = SFTPLeaseTeardownRecorder()
+        let teardown = RemuxSFTPLeaseTeardown(
+            closeChild: {
+                throw RemuxSFTPClientError.operationTimedOut
+            },
+            releaseRoot: { disposition in
+                await recorder.releaseRoot(disposition)
+            }
+        )
+
+        do {
+            try await teardown.close()
+            XCTFail("expected SFTP child close timeout")
+        } catch let error as RemuxSFTPClientError {
+            XCTAssertEqual(error, .operationTimedOut)
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+
+        try await teardown.close()
+        await teardown.invalidate()
+
+        let rootDispositions = await recorder.rootDispositions
+        XCTAssertEqual(rootDispositions, [.invalidated])
+    }
+
+    func testSFTPLeaseTeardownRejectsFollowUpWorkAfterInvalidation() async throws {
+        let teardown = RemuxSFTPLeaseTeardown(
+            closeChild: {},
+            releaseRoot: { _ in }
+        )
+
+        try await teardown.checkActive()
+        await teardown.invalidate()
+
+        do {
+            try await teardown.checkActive()
+            XCTFail("expected invalidated SFTP lease to reject follow-up work")
+        } catch let error as RemuxSFTPClientError {
+            XCTAssertEqual(error, .operationTimedOut)
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
+    func testSFTPTimeoutCancellationCleansLateSuccess() async throws {
+        let recorder = LateSFTPOpenCleanupRecorder()
+        let task = Task {
+            try await RemuxSFTPTimeout.run(
+                timeout: .seconds(5),
+                operation: {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    return 42
+                },
+                cleanupLateSuccess: { value in
+                    await recorder.record(value)
+                }
+            )
+        }
+
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("expected SFTP operation cancellation")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let cleanedValues = await recorder.values()
+        XCTAssertEqual(cleanedValues, [42])
+    }
+
+    func testDirectTCPIPTargetBuildsNIOSSHChannelType() throws {
+        let target = try RemuxSSHDirectTCPIPTarget(
+            host: "127.0.0.1",
+            port: 8_080
+        )
+        let originatorAddress = try SocketAddress(
+            ipAddress: "127.0.0.1",
+            port: 49_152
+        )
+
+        XCTAssertEqual(
+            target.channelType(originatorAddress: originatorAddress),
+            .directTCPIP(.init(
+                targetHost: "127.0.0.1",
+                targetPort: 8_080,
+                originatorAddress: originatorAddress
+            ))
+        )
+    }
+
+    func testDirectTCPIPTargetRejectsEmptyHost() {
+        XCTAssertThrowsError(
+            try RemuxSSHDirectTCPIPTarget(host: "", port: 80)
+        ) { error in
+            XCTAssertEqual(error as? RemuxSSHDirectTCPIPTargetError, .invalidHost)
+        }
+    }
+
+    func testDirectTCPIPTargetRejectsPortsOutsideUInt16Range() {
+        for port in [-1, 0, Int(UInt16.max) + 1] {
+            XCTAssertThrowsError(
+                try RemuxSSHDirectTCPIPTarget(host: "localhost", port: port)
+            ) { error in
+                XCTAssertEqual(
+                    error as? RemuxSSHDirectTCPIPTargetError,
+                    .invalidPort(port)
+                )
+            }
+        }
     }
 
     func testSSHRootServiceKeyIsServerAndCredentialScoped() {
@@ -1006,5 +1198,51 @@ private actor LateSFTPOpenCleanupRecorder {
 
     func values() -> [Int] {
         recordedValues
+    }
+}
+
+private actor SFTPTimeoutRecorder {
+    private(set) var didInvalidate = false
+
+    func recordInvalidation() {
+        didInvalidate = true
+    }
+}
+
+private actor SFTPLeaseTeardownRecorder {
+    private(set) var childCloseCount = 0
+    private(set) var isChildCloseFinished = false
+    private(set) var rootDispositions: [RemuxSSHRootLeaseDisposition] = []
+    private var childCloseContinuation: CheckedContinuation<Void, Never>?
+    private var childCloseStartWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func closeChild() async {
+        childCloseCount += 1
+        let waiters = childCloseStartWaiters
+        childCloseStartWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+
+        await withCheckedContinuation { continuation in
+            childCloseContinuation = continuation
+        }
+        isChildCloseFinished = true
+    }
+
+    func waitForChildCloseToStart() async {
+        guard childCloseCount == 0 else { return }
+        await withCheckedContinuation { continuation in
+            childCloseStartWaiters.append(continuation)
+        }
+    }
+
+    func releaseRoot(_ disposition: RemuxSSHRootLeaseDisposition) {
+        rootDispositions.append(disposition)
+    }
+
+    func finishChildClose() {
+        childCloseContinuation?.resume()
+        childCloseContinuation = nil
     }
 }

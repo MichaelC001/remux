@@ -238,6 +238,95 @@ final class GhosttyRemoteAttachmentPathBuilderTests: XCTestCase {
     }
 }
 
+final class RemuxSFTPReadableFileTests: XCTestCase {
+    func testReadChunkPreservesOffsetLengthAndEOF() async throws {
+        let source = Data("abcdefgh".utf8)
+        let recorder = RemuxSFTPReadRequestRecorder()
+        let file = RemuxSFTPReadableFile { offset, length in
+            await recorder.record(offset: offset, length: length)
+            guard offset < UInt64(source.count) else {
+                return Data()
+            }
+
+            let start = Int(offset)
+            let end = min(source.count, start + Int(length))
+            return source.subdata(in: start..<end)
+        }
+
+        let middle = try await file.readChunk(from: 2, length: 3)
+        let eof = try await file.readChunk(from: UInt64(source.count), length: 3)
+
+        XCTAssertEqual(middle, Data("cde".utf8))
+        XCTAssertEqual(eof, Data())
+        let requests = await recorder.requests
+        XCTAssertEqual(requests, [
+            .init(offset: 2, length: 3),
+            .init(offset: UInt64(source.count), length: 3),
+        ])
+    }
+
+    func testReadChunkRejectsLengthsOutsideBoundBeforeDispatch() async {
+        let recorder = RemuxSFTPReadRequestRecorder()
+        let file = RemuxSFTPReadableFile { offset, length in
+            await recorder.record(offset: offset, length: length)
+            return Data()
+        }
+
+        for invalidLength in [0, -1, RemuxSFTPReadableFile.maximumChunkLength + 1] {
+            do {
+                _ = try await file.readChunk(from: 0, length: invalidLength)
+                XCTFail("expected invalid read length \(invalidLength)")
+            } catch let error as RemuxSFTPClientError {
+                XCTAssertEqual(error, .invalidReadLength(invalidLength))
+            } catch {
+                XCTFail("unexpected error: \(error)")
+            }
+        }
+
+        let requests = await recorder.requests
+        XCTAssertEqual(requests, [])
+    }
+
+    func testReadChunkAcceptsMaximumLength() async throws {
+        let recorder = RemuxSFTPReadRequestRecorder()
+        let file = RemuxSFTPReadableFile { offset, length in
+            await recorder.record(offset: offset, length: length)
+            return Data()
+        }
+
+        _ = try await file.readChunk(
+            from: 12,
+            length: RemuxSFTPReadableFile.maximumChunkLength
+        )
+
+        let requests = await recorder.requests
+        XCTAssertEqual(requests, [
+            .init(
+                offset: 12,
+                length: UInt32(RemuxSFTPReadableFile.maximumChunkLength)
+            ),
+        ])
+    }
+
+    func testReadChunkRejectsOversizedResult() async {
+        let file = RemuxSFTPReadableFile { _, _ in
+            Data("too large".utf8)
+        }
+
+        do {
+            _ = try await file.readChunk(from: 0, length: 3)
+            XCTFail("expected oversized read result")
+        } catch let error as RemuxSFTPClientError {
+            XCTAssertEqual(
+                error,
+                .oversizedReadResult(requested: 3, actual: 9)
+            )
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+}
+
 final class GhosttyAttachmentTransferSourceTests: XCTestCase {
     func testFileAttachmentCreatesTransferSourceWithFilename() {
         let url = URL(fileURLWithPath: "/tmp/remux/report.txt")
@@ -855,9 +944,9 @@ final class GhosttyAttachmentSFTPTransferServiceTests: XCTestCase {
     func testShortLivedProviderClosesLeaseAfterSuccessfulOperation() async throws {
         let client = FakeGhosttyAttachmentSFTPClient()
         let leaseState = FakeGhosttyAttachmentSFTPLeaseState()
-        let provider = GhosttyAttachmentShortLivedSFTPClientProvider(
+        let provider = RemuxShortLivedSFTPClientProvider(
             openLease: {
-                GhosttyAttachmentSFTPClientLease(
+                RemuxSFTPClientLease(
                     client: client,
                     close: { try await leaseState.close() }
                 )
@@ -879,9 +968,9 @@ final class GhosttyAttachmentSFTPTransferServiceTests: XCTestCase {
     func testShortLivedProviderClosesLeaseAfterOperationFailure() async {
         let client = FakeGhosttyAttachmentSFTPClient()
         let leaseState = FakeGhosttyAttachmentSFTPLeaseState()
-        let provider = GhosttyAttachmentShortLivedSFTPClientProvider(
+        let provider = RemuxShortLivedSFTPClientProvider(
             openLease: {
-                GhosttyAttachmentSFTPClientLease(
+                RemuxSFTPClientLease(
                     client: client,
                     close: { try await leaseState.close() }
                 )
@@ -906,9 +995,9 @@ final class GhosttyAttachmentSFTPTransferServiceTests: XCTestCase {
     func testShortLivedProviderDoesNotFailSuccessfulOperationWhenCloseFails() async throws {
         let client = FakeGhosttyAttachmentSFTPClient()
         let leaseState = FakeGhosttyAttachmentSFTPLeaseState(closeFailure: .close)
-        let provider = GhosttyAttachmentShortLivedSFTPClientProvider(
+        let provider = RemuxShortLivedSFTPClientProvider(
             openLease: {
-                GhosttyAttachmentSFTPClientLease(
+                RemuxSFTPClientLease(
                     client: client,
                     close: { try await leaseState.close() }
                 )
@@ -1264,6 +1353,19 @@ private actor AsyncGate {
     }
 }
 
+private actor RemuxSFTPReadRequestRecorder {
+    struct Request: Equatable, Sendable {
+        let offset: UInt64
+        let length: UInt32
+    }
+
+    private(set) var requests: [Request] = []
+
+    func record(offset: UInt64, length: UInt32) {
+        requests.append(Request(offset: offset, length: length))
+    }
+}
+
 private actor GhosttyAttachmentProgressRecorder {
     private(set) var progresses: [GhosttyAttachmentTransferProgress] = []
 
@@ -1320,7 +1422,7 @@ private actor FakeGhosttyAttachmentSFTPLeaseState {
     }
 }
 
-private actor FakeGhosttyAttachmentSFTPClient: GhosttyAttachmentSFTPClient {
+private actor FakeGhosttyAttachmentSFTPClient: RemuxSFTPUploadClient {
     enum Event: Equatable, Sendable {
         case realPath(String)
         case ensureDirectory(String)
@@ -1357,11 +1459,11 @@ private actor FakeGhosttyAttachmentSFTPClient: GhosttyAttachmentSFTPClient {
     func uploadFile(
         from localURL: URL,
         to remotePath: String,
-        progress: @escaping GhosttyAttachmentFileUploadProgressHandler
+        progress: @escaping RemuxSFTPFileUploadProgressHandler
     ) async throws {
         events.append(.upload(localPath: localURL.path, remotePath: remotePath))
         if failure == .uploadTimeout {
-            throw GhosttyAttachmentSFTPClientError.operationTimedOut
+            throw RemuxSFTPClientError.operationTimedOut
         }
         if failure == .upload || failure == .uploadAndRemove {
             throw FakeGhosttyAttachmentSFTPFailure.upload
@@ -1389,7 +1491,7 @@ private actor FakeGhosttyAttachmentSFTPClient: GhosttyAttachmentSFTPClient {
     }
 }
 
-private actor FakeGhosttyAttachmentSFTPClientProvider: GhosttyAttachmentSFTPClientProvider {
+private actor FakeGhosttyAttachmentSFTPClientProvider: RemuxSFTPClientProvider {
     private let client: FakeGhosttyAttachmentSFTPClient
     private(set) var leaseCount = 0
 

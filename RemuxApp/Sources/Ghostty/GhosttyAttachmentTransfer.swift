@@ -91,7 +91,6 @@ struct GhosttyAttachmentTransferProgress: Equatable, Sendable {
 }
 
 typealias GhosttyAttachmentTransferProgressHandler = @Sendable (GhosttyAttachmentTransferProgress) async -> Void
-typealias GhosttyAttachmentFileUploadProgressHandler = @Sendable (Int64) async -> Void
 
 enum GhosttyAttachmentTerminalInsertionFormatter {
     static func insertionText(for result: GhosttyAttachmentTransferResult) -> String {
@@ -155,10 +154,6 @@ enum GhosttyAttachmentTransferError: Error, Equatable, Sendable {
     case terminalInsertionFailed
 }
 
-enum GhosttyAttachmentSFTPClientError: Error, Equatable, Sendable {
-    case operationTimedOut
-}
-
 protocol GhosttyAttachmentTransferService: Sendable {
     func transfer(
         _ job: GhosttyAttachmentTransferJob,
@@ -166,81 +161,8 @@ protocol GhosttyAttachmentTransferService: Sendable {
     ) async throws -> GhosttyAttachmentTransferResult
 }
 
-protocol GhosttyAttachmentSFTPClient: Sendable {
-    func realPath(atPath path: String) async throws -> String
-    func ensureDirectoryExists(atPath path: String) async throws
-    func uploadFile(
-        from localURL: URL,
-        to remotePath: String,
-        progress: @escaping GhosttyAttachmentFileUploadProgressHandler
-    ) async throws
-    func renameFile(from temporaryPath: String, to finalPath: String) async throws
-    func removeFileIfExists(atPath path: String) async throws
-}
-
-protocol GhosttyAttachmentSFTPClientProvider: Sendable {
-    associatedtype Client: GhosttyAttachmentSFTPClient
-
-    func withClient<ReturnValue: Sendable>(
-        _ operation: @Sendable (Client) async throws -> ReturnValue
-    ) async throws -> ReturnValue
-}
-
-struct GhosttyAttachmentSFTPClientLease<Client: GhosttyAttachmentSFTPClient>: Sendable {
-    let client: Client
-    private let closeHandler: @Sendable () async throws -> Void
-
-    init(
-        client: Client,
-        close: @escaping @Sendable () async throws -> Void
-    ) {
-        self.client = client
-        self.closeHandler = close
-    }
-
-    func close() async throws {
-        try await closeHandler()
-    }
-}
-
-struct GhosttyAttachmentShortLivedSFTPClientProvider<Client: GhosttyAttachmentSFTPClient>: GhosttyAttachmentSFTPClientProvider {
-    let openLease: @Sendable () async throws -> GhosttyAttachmentSFTPClientLease<Client>
-    let closeFailureHandler: @Sendable (Error) -> Void
-
-    init(
-        openLease: @escaping @Sendable () async throws -> GhosttyAttachmentSFTPClientLease<Client>,
-        closeFailureHandler: @escaping @Sendable (Error) -> Void = { error in
-            NSLog("Remux attachment SFTP close failed: %@", String(describing: error))
-        }
-    ) {
-        self.openLease = openLease
-        self.closeFailureHandler = closeFailureHandler
-    }
-
-    func withClient<ReturnValue: Sendable>(
-        _ operation: @Sendable (Client) async throws -> ReturnValue
-    ) async throws -> ReturnValue {
-        let lease = try await openLease()
-        do {
-            let result = try await operation(lease.client)
-            await close(lease)
-            return result
-        } catch {
-            await close(lease)
-            throw error
-        }
-    }
-
-    private func close(_ lease: GhosttyAttachmentSFTPClientLease<Client>) async {
-        do {
-            try await lease.close()
-        } catch {
-            closeFailureHandler(error)
-        }
-    }
-}
-
-struct GhosttyAttachmentSFTPClientProviderTransferService<Provider: GhosttyAttachmentSFTPClientProvider>: GhosttyAttachmentTransferService {
+struct GhosttyAttachmentSFTPClientProviderTransferService<Provider: RemuxSFTPClientProvider>: GhosttyAttachmentTransferService
+where Provider.Client: RemuxSFTPUploadClient {
     let provider: Provider
     let pathBuilder: GhosttyRemoteAttachmentPathBuilder
 
@@ -310,7 +232,7 @@ private extension GhosttyAttachmentTransferSource.Payload {
     }
 }
 
-struct GhosttyAttachmentSFTPTransferService<Client: GhosttyAttachmentSFTPClient>: GhosttyAttachmentTransferService {
+struct GhosttyAttachmentSFTPTransferService<Client: RemuxSFTPUploadClient>: GhosttyAttachmentTransferService {
     let client: Client
     let pathBuilder: GhosttyRemoteAttachmentPathBuilder
 
@@ -479,7 +401,7 @@ struct GhosttyAttachmentSFTPTransferService<Client: GhosttyAttachmentSFTPClient>
                 }
             } catch is CancellationError {
                 throw GhosttyAttachmentTransferError.cancelled
-            } catch let error as GhosttyAttachmentSFTPClientError where error == .operationTimedOut {
+            } catch let error as RemuxSFTPClientError where error == .operationTimedOut {
                 throw GhosttyAttachmentTransferError.remoteOperationTimedOut
             } catch {
                 throw GhosttyAttachmentTransferError.remoteDirectoryCreationFailed(directory)
@@ -531,7 +453,7 @@ struct GhosttyAttachmentSFTPTransferService<Client: GhosttyAttachmentSFTPClient>
         } catch is CancellationError {
             await cleanupTemporaryFileIfPossible(at: remotePath.remoteTemporaryPath)
             throw GhosttyAttachmentTransferError.cancelled
-        } catch let error as GhosttyAttachmentSFTPClientError where error == .operationTimedOut {
+        } catch let error as RemuxSFTPClientError where error == .operationTimedOut {
             throw GhosttyAttachmentTransferError.remoteOperationTimedOut
         } catch {
             await cleanupTemporaryFileIfPossible(at: remotePath.remoteTemporaryPath)
@@ -557,7 +479,7 @@ struct GhosttyAttachmentSFTPTransferService<Client: GhosttyAttachmentSFTPClient>
         } catch is CancellationError {
             await cleanupTemporaryFileIfPossible(at: remotePath.remoteTemporaryPath)
             throw GhosttyAttachmentTransferError.cancelled
-        } catch let error as GhosttyAttachmentSFTPClientError where error == .operationTimedOut {
+        } catch let error as RemuxSFTPClientError where error == .operationTimedOut {
             throw GhosttyAttachmentTransferError.remoteOperationTimedOut
         } catch {
             await cleanupTemporaryFileIfPossible(at: remotePath.remoteTemporaryPath)
@@ -577,7 +499,7 @@ struct GhosttyAttachmentSFTPTransferService<Client: GhosttyAttachmentSFTPClient>
                 )
             }
             return remotePath.withTerminalPath(terminalPath)
-        } catch let error as GhosttyAttachmentSFTPClientError where error == .operationTimedOut {
+        } catch let error as RemuxSFTPClientError where error == .operationTimedOut {
             throw GhosttyAttachmentTransferError.remoteOperationTimedOut
         } catch {
             return remotePath
