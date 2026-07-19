@@ -282,19 +282,70 @@ private struct ActiveTerminalSessionView: View {
     let onTrustHostKey: () -> Void
     let onShowLibrary: () -> Void
 
-    var body: some View {
-        GhosttySurfaceScreen(
-            model: entry.model.terminalScreenAdapter,
-            presentation: entry.presentation,
-            isSelected: isSelected,
-            shortcutStore: shortcutStore,
-            attachmentTransferServiceFactory: entry.attachmentTransferServiceFactory,
-            onReconnect: onReconnect,
-            onEditConnection: onShowLibrary,
-            onUpdateCredentials: onUpdateCredentials,
-            onEditServer: onEditServer,
-            onTrustHostKey: onTrustHostKey
+    @StateObject private var previewSession: TerminalPreviewSession
+
+    init(
+        entry: ActiveTerminalScreenEntry,
+        isSelected: Bool,
+        shortcutStore: ShortcutStore,
+        onReconnect: @escaping () -> Void,
+        onUpdateCredentials: @escaping () -> Void,
+        onEditServer: @escaping () -> Void,
+        onTrustHostKey: @escaping () -> Void,
+        onShowLibrary: @escaping () -> Void
+    ) {
+        self.entry = entry
+        self.isSelected = isSelected
+        self.shortcutStore = shortcutStore
+        self.onReconnect = onReconnect
+        self.onUpdateCredentials = onUpdateCredentials
+        self.onEditServer = onEditServer
+        self.onTrustHostKey = onTrustHostKey
+        self.onShowLibrary = onShowLibrary
+        _previewSession = StateObject(
+            wrappedValue: TerminalPreviewSession(
+                client: entry.model.terminalPreviewFileClient,
+                serverDisplayName: entry.model.target.server.displayName
+            )
         )
+    }
+
+    var body: some View {
+        ZStack {
+            GhosttySurfaceScreen(
+                model: entry.model.terminalScreenAdapter,
+                presentation: entry.presentation,
+                isSelected: isSelected,
+                isTerminalCovered: previewSession.isPresented,
+                shortcutStore: shortcutStore,
+                attachmentTransferServiceFactory: entry.attachmentTransferServiceFactory,
+                onPreviewSelection: previewSelectionHandler,
+                onReconnect: onReconnect,
+                onEditConnection: onShowLibrary,
+                onUpdateCredentials: onUpdateCredentials,
+                onEditServer: onEditServer,
+                onTrustHostKey: onTrustHostKey
+            )
+
+            if previewSession.isPresented {
+                TerminalPreviewView(
+                    session: previewSession,
+                    terminalTheme: entry.presentation.terminalTheme
+                )
+                .zIndex(1)
+            }
+        }
+    }
+
+    private func openPreview(_ candidate: TerminalPreviewCandidate) {
+        previewSession.open(candidate)
+    }
+
+    private var previewSelectionHandler: ((TerminalPreviewCandidate) -> Void)? {
+        guard previewSession.canOpenPreview else { return nil }
+        return { candidate in
+            openPreview(candidate)
+        }
     }
 }
 

@@ -574,6 +574,42 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
     }
 
     @MainActor
+    func testResponderReportsActualFirstResponderTransitions() async {
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+        window.rootViewController = UIViewController()
+        window.rootViewController?.view.addSubview(view)
+        window.makeKeyAndVisible()
+        defer {
+            _ = view.resignFirstResponder()
+            view.removeFromSuperview()
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        var reportedStates: [Bool] = []
+        view.update(
+            isEnabled: true,
+            wantsFirstResponder: true,
+            activationToken: 9,
+            sendText: { _ in true },
+            sendPaste: { _ in true },
+            sendKeyEvent: { _ in true },
+            onTrackpadStateChange: { _ in },
+            onFirstResponderChange: { reportedStates.append($0) }
+        )
+
+        let becameFirstResponder = await waitUntil { view.isFirstResponder }
+        XCTAssertTrue(becameFirstResponder)
+        XCTAssertEqual(reportedStates.last, true)
+
+        XCTAssertTrue(view.resignFirstResponder())
+        let resignedFirstResponder = await waitUntil { !view.isFirstResponder }
+        XCTAssertTrue(resignedFirstResponder)
+        XCTAssertEqual(reportedStates.suffix(2), [true, false])
+    }
+
+    @MainActor
     func testResponderRecoversFirstResponderWhenStillEnabledWithSameActivationToken() async {
         let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 100, height: 100))

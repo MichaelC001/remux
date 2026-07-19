@@ -10,6 +10,7 @@ struct GhosttySingleViewportView: View {
     let terminalTheme: TerminalTheme
     let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     let onSurfaceTap: ((UUID) -> Void)?
+    let onPreviewSelection: ((TerminalPreviewCandidate) -> Void)?
     let onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?
     let sendKeyEvent: (GhosttySurfaceKeyEvent) -> Bool
     let onTrackpadStateChange: (GhosttyKeyboardCursorTrackpad.HUDState) -> Void
@@ -25,6 +26,7 @@ struct GhosttySingleViewportView: View {
             terminalTheme: terminalTheme,
             trackpadDriver: trackpadDriver,
             onSurfaceTap: onSurfaceTap,
+            onPreviewSelection: onPreviewSelection,
             onWindowSwipe: onWindowSwipe,
             sendKeyEvent: sendKeyEvent,
             onTrackpadStateChange: onTrackpadStateChange,
@@ -43,6 +45,7 @@ private struct GhosttySingleViewportRepresentable: UIViewRepresentable {
     let terminalTheme: TerminalTheme
     let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     let onSurfaceTap: ((UUID) -> Void)?
+    let onPreviewSelection: ((TerminalPreviewCandidate) -> Void)?
     let onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?
     let sendKeyEvent: (GhosttySurfaceKeyEvent) -> Bool
     let onTrackpadStateChange: (GhosttyKeyboardCursorTrackpad.HUDState) -> Void
@@ -66,6 +69,7 @@ private struct GhosttySingleViewportRepresentable: UIViewRepresentable {
             surfaceLookup: surfaceLookup,
             trackpadDriver: trackpadDriver,
             onSurfaceTap: onSurfaceTap,
+            onPreviewSelection: onPreviewSelection,
             onWindowSwipe: onWindowSwipe,
             sendKeyEvent: sendKeyEvent,
             onTrackpadStateChange: onTrackpadStateChange,
@@ -95,6 +99,7 @@ private final class GhosttySingleViewportContainerView: UIView,
     private var trackpadDriver: GhosttyKeyboardCursorTrackpadDriver?
 
     private var onSurfaceTap: ((UUID) -> Void)?
+    private var onPreviewSelection: ((TerminalPreviewCandidate) -> Void)?
     private var onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?
     private var sendKeyEvent: ((GhosttySurfaceKeyEvent) -> Bool)?
     private var onTrackpadStateChange: ((GhosttyKeyboardCursorTrackpad.HUDState) -> Void)?
@@ -104,12 +109,12 @@ private final class GhosttySingleViewportContainerView: UIView,
     private var submitMouseScroll: ((UUID, GhosttySurfaceMouseScrollEvent) -> GhosttyMouseInputSubmissionOutcome)?
 
     private var activePanAxis: GhosttySurfacePanGesture.Axis?
-    private var isPanGestureActive = false
     private var didNavigateForActivePan = false
     private weak var localSelectionSurface: GhosttyManagedSurface?
     private weak var localSelectionControlSurface: GhosttyKitControlSurface?
     private var longPressOriginalPoint: CGPoint?
     private var selectionSnapshot = GhosttyLocalSelectionSnapshot.inactive
+    private var previewSelectionContext = TerminalPreviewSelectionContext()
 
     private lazy var startSelectionHandle = makeSelectionHandle(
         endpoint: GHOSTTY_TERMINAL_SURFACE_SELECTION_ENDPOINT_START
@@ -199,6 +204,7 @@ private final class GhosttySingleViewportContainerView: UIView,
         surfaceLookup: GhosttyManagedSurfaceLookup,
         trackpadDriver: GhosttyKeyboardCursorTrackpadDriver,
         onSurfaceTap: ((UUID) -> Void)?,
+        onPreviewSelection: ((TerminalPreviewCandidate) -> Void)?,
         onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?,
         sendKeyEvent: @escaping (GhosttySurfaceKeyEvent) -> Bool,
         onTrackpadStateChange: @escaping (GhosttyKeyboardCursorTrackpad.HUDState) -> Void,
@@ -211,6 +217,7 @@ private final class GhosttySingleViewportContainerView: UIView,
         self.surfaceLookup = surfaceLookup
         self.trackpadDriver = trackpadDriver
         self.onSurfaceTap = onSurfaceTap
+        self.onPreviewSelection = onPreviewSelection
         self.onWindowSwipe = onWindowSwipe
         self.sendKeyEvent = sendKeyEvent
         self.onTrackpadStateChange = onTrackpadStateChange
@@ -255,6 +262,7 @@ private final class GhosttySingleViewportContainerView: UIView,
     private func disableInteractions() {
         cancelLocalSelectionInteraction()
         onSurfaceTap = nil
+        onPreviewSelection = nil
         onWindowSwipe = nil
         sendKeyEvent = nil
         onTrackpadStateChange = nil
@@ -401,8 +409,7 @@ private final class GhosttySingleViewportContainerView: UIView,
     }
 
     private func beginTerminalLongPress(_ recognizer: UILongPressGestureRecognizer) {
-        guard !isPanGestureActive,
-              let driver = trackpadDriver,
+        guard let driver = trackpadDriver,
               let surfaceID = projection.surfaceID,
               let surface = surfaceLookup.managedSurface(for: surfaceID),
               surface.view.isDescendant(of: self)
@@ -457,11 +464,16 @@ private final class GhosttySingleViewportContainerView: UIView,
         }
 
         switch control.selectLink(at: point) {
-        case .match(let snapshot, _):
+        case .match(let snapshot, let explicitTarget):
             longPressOriginalPoint = nil
+            previewSelectionContext.setAutomaticSelection(
+                visibleText: control.readSelection(),
+                explicitTarget: explicitTarget
+            )
             applySelectionOutcome(.snapshot(snapshot), presentMenu: true)
         case .noMatch:
             longPressOriginalPoint = nil
+            previewSelectionContext.selectionDidChange()
             applySelectionOutcome(control.selectWord(at: point), presentMenu: true)
         case .unavailable:
             reconcileLocalSelectionAfterLongPress()
@@ -522,17 +534,18 @@ private final class GhosttySingleViewportContainerView: UIView,
 
     @objc
     private func handleSurfacePan(_ recognizer: UIPanGestureRecognizer) {
-        guard let surfaceID = projection.surfaceID,
-              surfaceLookup.managedSurface(for: surfaceID) != nil,
-              let phase = GhosttySurfacePanGesture.Phase(recognizer.state)
-        else { return }
+        guard let phase = GhosttySurfacePanGesture.Phase(recognizer.state) else { return }
 
         if phase == .began {
             resetActivePanState()
-            isPanGestureActive = true
         }
+        defer { resetActivePanStateIfEnded(phase) }
+
+        guard let surfaceID = projection.surfaceID,
+              surfaceLookup.managedSurface(for: surfaceID) != nil
+        else { return }
+
         if longPressOriginalPoint != nil {
-            resetActivePanStateIfEnded(phase)
             return
         }
 
@@ -547,7 +560,6 @@ private final class GhosttySingleViewportContainerView: UIView,
                 velocity: recognizer.velocity(in: self)
             )
         }
-        resetActivePanStateIfEnded(phase)
     }
 
     private func routeHorizontalNavigation(translation: CGPoint, velocity: CGPoint) {
@@ -572,7 +584,6 @@ private final class GhosttySingleViewportContainerView: UIView,
 
     private func resetActivePanState() {
         activePanAxis = nil
-        isPanGestureActive = false
         didNavigateForActivePan = false
     }
 
@@ -632,6 +643,7 @@ private final class GhosttySingleViewportContainerView: UIView,
 
         localSelectionSurface = surface
         localSelectionControlSurface = surface.controlSurface
+        previewSelectionContext.selectionDidChange()
         surface.onLocalSelectionGeometryChange = { [weak self] in
             self?.refreshLocalSelectionGeometry()
         }
@@ -664,6 +676,7 @@ private final class GhosttySingleViewportContainerView: UIView,
         localSelectionControlSurface = nil
         longPressOriginalPoint = nil
         selectionSnapshot = .inactive
+        previewSelectionContext.selectionDidChange()
         startSelectionHandle.isHidden = true
         endSelectionHandle.isHidden = true
     }
@@ -689,6 +702,7 @@ private final class GhosttySingleViewportContainerView: UIView,
             return
         }
         if recognizer.state == .began {
+            previewSelectionContext.selectionDidChange()
             selectionEditMenuInteraction.dismissMenu()
         }
         if recognizer.state == .changed {
@@ -760,9 +774,6 @@ private final class GhosttySingleViewportContainerView: UIView,
     }
 
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        if gestureRecognizer is UILongPressGestureRecognizer {
-            return !isPanGestureActive
-        }
         guard gestureRecognizer === panRecognizer else { return true }
         return GhosttySurfacePanGesture.surfaceContainerPanShouldBegin(
             topLevelCount: projection.windowCount,
@@ -787,15 +798,38 @@ private final class GhosttySingleViewportContainerView: UIView,
               selectionMenuAnchorHandle != nil
         else { return nil }
 
-        return UIMenu(children: [
+        guard let (_, control) = exactLocalSelectionSurface(),
+              let selectedText = control.readSelection(),
+              !selectedText.isEmpty
+        else { return nil }
+
+        var actions: [UIMenuElement] = []
+        if onPreviewSelection != nil,
+           previewSelectionContext.candidate(for: selectedText) != nil {
+            actions.append(UIAction(
+                title: "Preview",
+                image: UIImage(systemName: "eye")
+            ) { [weak self] _ in
+                guard let self,
+                      let (_, control) = self.exactLocalSelectionSurface(),
+                      let selectedText = control.readSelection(),
+                      let candidate = self.previewSelectionContext.candidate(
+                          for: selectedText
+                      )
+                else { return }
+                self.onPreviewSelection?(candidate)
+            })
+        }
+        actions.append(
             UIAction(title: "Copy", image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in
                 guard let (_, control) = self?.exactLocalSelectionSurface(),
                       let text = control.readSelection(),
                       !text.isEmpty
                 else { return }
                 UIPasteboard.general.string = text
-            },
-        ])
+            }
+        )
+        return UIMenu(children: actions)
     }
 
     func editMenuInteraction(

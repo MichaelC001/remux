@@ -287,6 +287,10 @@ for target in "${only_testing[@]}"; do
       fixture_name="dense-mixed"
       fixture_session="remux-latency-dense-mixed-${stamp}"
       ;;
+    *testLiveTerminalAbsoluteFilePreviewWhenConfigured)
+      fixture_name="absolute-file-preview"
+      fixture_session="remux-latency-pv-${stamp}"
+      ;;
   esac
 done
 
@@ -357,8 +361,71 @@ fi
 REMOTE
 }
 
+prepare_absolute_file_preview_fixture() {
+  local session="$1"
+
+  if [[ ! "$session" =~ $session_allowlist ]]; then
+    printf 'refusing non-allowlisted absolute file preview fixture session: %s\n' "$session" >&2
+    return 1
+  fi
+
+  printf 'Preparing absolute file preview tmux fixture: %s\n' "$session"
+  REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
+    SSH_ASKPASS="$askpass" \
+    SSH_ASKPASS_REQUIRE=force \
+    DISPLAY=remux \
+    ssh \
+      -p "$port" \
+      -o BatchMode=no \
+      -o NumberOfPasswordPrompts=1 \
+      -o ConnectTimeout=10 \
+      "${ssh_auth_args[@]}" \
+      "$username@$host" \
+      sh -s -- "$session" <<'REMOTE'
+set -eu
+session="$1"
+fixture_suffix="${session#remux-latency-pv-}"
+fixture_path="/tmp/rpv-$fixture_suffix"
+tmux_bin="$(command -v tmux 2>/dev/null || true)"
+if [ -z "$tmux_bin" ] && [ -x /opt/homebrew/bin/tmux ]; then
+  tmux_bin=/opt/homebrew/bin/tmux
+fi
+if [ -z "$tmux_bin" ]; then
+  echo 'tmux not found on remote host' >&2
+  exit 127
+fi
+
+cleanup_failed_fixture() {
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    "$tmux_bin" kill-session -t "$session" 2>/dev/null || true
+    rm -f -- "$fixture_path"
+  fi
+  exit "$status"
+}
+trap cleanup_failed_fixture EXIT
+
+"$tmux_bin" kill-session -t "$session" 2>/dev/null || true
+rm -f -- "$fixture_path"
+cat >"$fixture_path" <<'PREVIEW_FILE'
+REMUX_PREVIEW_FILE_CONTENT_ALPHA
+REMUX_PREVIEW_FILE_CONTENT_BETA
+REMUX_PREVIEW_FILE_CONTENT_GAMMA
+PREVIEW_FILE
+
+# The pane contains only the absolute path at a stable top-row position. `cat`
+# keeps the pane alive without printing a prompt or any additional output.
+"$tmux_bin" new-session -d -s "$session" -n preview \
+  "printf '%s\\n' '$fixture_path'; exec cat"
+REMOTE
+}
+
 if [[ "$fixture_name" == "dense-mixed" ]]; then
   prepare_dense_mixed_fixture "$fixture_session"
+  printf '%s\n' "$fixture_name" >"$fixture_name_file"
+fi
+if [[ "$fixture_name" == "absolute-file-preview" ]]; then
+  prepare_absolute_file_preview_fixture "$fixture_session"
   printf '%s\n' "$fixture_name" >"$fixture_name_file"
 fi
 
@@ -379,6 +446,9 @@ cleanup_generated_sessions() {
     printf 'Cleaning generated tmux session: %s\n' "$session"
     local remote_command
     remote_command="session=$session; tmux_bin=\$(command -v tmux 2>/dev/null || true); if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; \"\$tmux_bin\" kill-session -t \"\$session\" 2>/dev/null || true"
+    if [[ "$fixture_name" == "absolute-file-preview" && "$session" == "$fixture_session" ]]; then
+      remote_command+="; fixture_suffix=\${session#remux-latency-pv-}; fixture_path=/tmp/rpv-\$fixture_suffix; rm -f -- \"\$fixture_path\""
+    fi
 
     if ! REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
       SSH_ASKPASS="$askpass" \

@@ -309,6 +309,81 @@ final class GhosttyTerminalViewportCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.effectiveSize(liveSize: full), full)
     }
 
+    func testCoveredPresentationKeepsKeyboardViewportWhileLiveLayoutExpands() {
+        var coordinator = GhosttyTerminalViewportCoordinator()
+        let keyboard = CGSize(width: 402, height: 452)
+        let full = CGSize(width: 402, height: 726)
+
+        XCTAssertTrue(coordinator.observeLiveSize(keyboard).didApplyStableSize)
+        XCTAssertEqual(
+            coordinator.setCoveredPresentation(true, liveSize: keyboard),
+            .hold(effectiveSize: keyboard)
+        )
+
+        XCTAssertFalse(coordinator.observeLiveSize(full).didApplyStableSize)
+        XCTAssertEqual(coordinator.effectiveSize(liveSize: full), keyboard)
+
+        XCTAssertEqual(
+            coordinator.setCoveredPresentation(false, liveSize: keyboard),
+            .release(previousEffectiveSize: keyboard)
+        )
+        XCTAssertEqual(coordinator.effectiveSize(liveSize: keyboard), keyboard)
+    }
+
+    func testCoveredPresentationWithoutKeyboardReleasesAtUnchangedFullViewport() {
+        var coordinator = GhosttyTerminalViewportCoordinator()
+        let full = CGSize(width: 402, height: 726)
+
+        XCTAssertTrue(coordinator.observeLiveSize(full).didApplyStableSize)
+        coordinator.setCoveredPresentation(true, liveSize: full)
+
+        XCTAssertEqual(
+            coordinator.setCoveredPresentation(false, liveSize: full),
+            .release(previousEffectiveSize: full)
+        )
+        XCTAssertFalse(coordinator.isFrozen)
+        XCTAssertEqual(coordinator.effectiveSize(liveSize: full), full)
+    }
+
+    func testCoveredPresentationReleasesAtFinalRotatedViewport() {
+        var coordinator = GhosttyTerminalViewportCoordinator()
+        let portrait = CGSize(width: 402, height: 452)
+        let coveredLandscape = CGSize(width: 852, height: 360)
+        let finalLandscape = CGSize(width: 852, height: 248)
+
+        XCTAssertTrue(coordinator.observeLiveSize(portrait).didApplyStableSize)
+        coordinator.setCoveredPresentation(true, liveSize: portrait)
+        XCTAssertFalse(coordinator.observeLiveSize(coveredLandscape).didApplyStableSize)
+        XCTAssertFalse(coordinator.reconcileLiveSize(finalLandscape).didApplyStableSize)
+
+        coordinator.setCoveredPresentation(false, liveSize: finalLandscape)
+
+        XCTAssertFalse(coordinator.isFrozen)
+        XCTAssertEqual(coordinator.latestLiveSize, finalLandscape)
+        XCTAssertEqual(coordinator.effectiveSize(liveSize: finalLandscape), finalLandscape)
+    }
+
+    func testCoveredPresentationComposesWithSheetAndTopologyHolds() {
+        var coordinator = GhosttyTerminalViewportCoordinator()
+        let keyboard = CGSize(width: 402, height: 452)
+        let full = CGSize(width: 402, height: 726)
+
+        XCTAssertTrue(coordinator.observeLiveSize(keyboard).didApplyStableSize)
+        coordinator.setSheetPresented(true, liveSize: keyboard)
+        coordinator.setCoveredPresentation(true, liveSize: keyboard)
+        coordinator.requestTopologyRefocus(liveSize: keyboard)
+        XCTAssertFalse(coordinator.observeLiveSize(full).didApplyStableSize)
+
+        coordinator.setCoveredPresentation(false, liveSize: full)
+        XCTAssertTrue(coordinator.isFrozen)
+        coordinator.setSheetPresented(false, liveSize: full)
+        XCTAssertTrue(coordinator.isFrozen)
+        coordinator.completeTopologyRefocus(liveSize: full, releasePolicy: .adoptLatestLive)
+
+        XCTAssertFalse(coordinator.isFrozen)
+        XCTAssertEqual(coordinator.effectiveSize(liveSize: full), full)
+    }
+
     func testTopologyRefocusCompleteReportsReleaseAndPreservesCurrentEffectiveViewport() {
         var coordinator = GhosttyTerminalViewportCoordinator()
         let keyboard = CGSize(width: 402, height: 452)

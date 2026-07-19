@@ -11,6 +11,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
     let sendPaste: (String) -> Bool
     let sendKeyEvent: (GhosttySurfaceKeyEvent) -> Bool
     let onTrackpadStateChange: (GhosttyKeyboardCursorTrackpad.HUDState) -> Void
+    let onFirstResponderChange: (Bool) -> Void
 
     init(
         isEnabled: Bool,
@@ -21,7 +22,8 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
         sendText: @escaping (String) -> Bool,
         sendPaste: @escaping (String) -> Bool,
         sendKeyEvent: @escaping (GhosttySurfaceKeyEvent) -> Bool,
-        onTrackpadStateChange: @escaping (GhosttyKeyboardCursorTrackpad.HUDState) -> Void
+        onTrackpadStateChange: @escaping (GhosttyKeyboardCursorTrackpad.HUDState) -> Void,
+        onFirstResponderChange: @escaping (Bool) -> Void = { _ in }
     ) {
         self.isEnabled = isEnabled
         self.wantsFirstResponder = wantsFirstResponder
@@ -32,6 +34,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
         self.sendPaste = sendPaste
         self.sendKeyEvent = sendKeyEvent
         self.onTrackpadStateChange = onTrackpadStateChange
+        self.onFirstResponderChange = onFirstResponderChange
     }
 
     func makeUIView(context: Context) -> GhosttyTerminalResponderUIView {
@@ -50,7 +53,8 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
             sendText: { sendText(GhosttyTerminalInputNormalizer.normalize($0)) },
             sendPaste: sendPaste,
             sendKeyEvent: sendKeyEvent,
-            onTrackpadStateChange: onTrackpadStateChange
+            onTrackpadStateChange: onTrackpadStateChange,
+            onFirstResponderChange: onFirstResponderChange
         )
     }
 
@@ -93,6 +97,8 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     private var sendTextHandler: ((String) -> Bool)?
     private var sendPasteHandler: ((String) -> Bool)?
     private var sendKeyEventHandler: ((GhosttySurfaceKeyEvent) -> Bool)?
+    private var firstResponderStateHandler: ((Bool) -> Void)?
+    private var lastReportedFirstResponderState: Bool?
     var trackpadStateHandler: ((GhosttyKeyboardCursorTrackpad.HUDState) -> Void)?
     private let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     lazy var floatingCursorTokenizer: UITextInputTokenizer =
@@ -117,7 +123,8 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         sendText: @escaping (String) -> Bool,
         sendPaste: @escaping (String) -> Bool,
         sendKeyEvent: @escaping (GhosttySurfaceKeyEvent) -> Bool,
-        onTrackpadStateChange: @escaping (GhosttyKeyboardCursorTrackpad.HUDState) -> Void
+        onTrackpadStateChange: @escaping (GhosttyKeyboardCursorTrackpad.HUDState) -> Void,
+        onFirstResponderChange: @escaping (Bool) -> Void = { _ in }
     ) {
         let wasInputEnabled = self.isInputEnabled
         let previouslyWantedFirstResponder = self.wantsFirstResponder
@@ -146,6 +153,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         self.sendPasteHandler = sendPaste
         self.sendKeyEventHandler = sendKeyEvent
         self.trackpadStateHandler = onTrackpadStateChange
+        self.firstResponderStateHandler = onFirstResponderChange
 
         if isFirstResponder, previousKeyboardAppearance != keyboardAppearance {
             reloadInputViews()
@@ -215,6 +223,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
 
     override func becomeFirstResponder() -> Bool {
         let didBecomeFirstResponder = super.becomeFirstResponder()
+        reportFirstResponderStateIfChanged()
         GhosttyRuntimeTrace.flowEventIfActive(
             "terminal.input",
             event: "responder.becomeFirstResponder.result",
@@ -230,6 +239,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     override func resignFirstResponder() -> Bool {
         cancelTrackpadGestureIfActive(reason: "resignFirstResponder")
         let didResignFirstResponder = super.resignFirstResponder()
+        reportFirstResponderStateIfChanged()
         GhosttyRuntimeTrace.flowEventIfActive(
             "terminal.input",
             event: "responder.resignFirstResponder.result",
@@ -240,6 +250,13 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
             ]
         )
         return didResignFirstResponder
+    }
+
+    private func reportFirstResponderStateIfChanged() {
+        let currentState = isFirstResponder
+        guard currentState != lastReportedFirstResponderState else { return }
+        lastReportedFirstResponderState = currentState
+        firstResponderStateHandler?(currentState)
     }
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {

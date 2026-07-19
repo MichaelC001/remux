@@ -927,6 +927,212 @@ final class RemuxAppUITests: XCTestCase {
         )
     }
 
+    func testLiveTerminalAbsoluteFilePreviewWhenConfigured() throws {
+        try requireLivePreparedFixture("absolute-file-preview")
+        let sessionName = try generatedLiveLatencySessionName("absolute-preview")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 90)
+
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        guard waitForStableLiveTerminalScreenshot(
+            minDistinctColors: 1,
+            minNonBackgroundPixels: 350,
+            attachmentName: "live-terminal-absolute-preview-ready"
+        ) != nil else {
+            return
+        }
+
+        let terminal = app.otherElements["terminal.screen"].firstMatch
+        XCTAssertTrue(terminal.waitForExistence(timeout: 10))
+        terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.60)).tap()
+        let softwareKeyboard = app.keyboards.firstMatch
+        XCTAssertTrue(
+            softwareKeyboard.waitForExistence(timeout: 5),
+            "The Preview regression run must begin from a visible software keyboard."
+        )
+        XCTAssertTrue(
+            waitForSoftwareKeyboardOnScreen(timeout: 10),
+            "The Preview regression run must use an on-screen keyboard, not only an off-screen accessibility keyboard element."
+        )
+        terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.28, dy: 0.02))
+            .press(forDuration: 0.70)
+
+        let preview = waitForSelectionMenuItem("Preview", timeout: 5)
+        let copy = waitForCopyMenuItem(timeout: 5)
+        let itemsShareRow = abs(preview.frame.midY - copy.frame.midY)
+            <= min(preview.frame.height, copy.frame.height) * 0.25
+        if itemsShareRow {
+            XCTAssertLessThan(
+                preview.frame.minX,
+                copy.frame.minX,
+                "Preview should precede Copy in the terminal selection menu."
+            )
+        } else {
+            XCTAssertLessThan(
+                preview.frame.minY,
+                copy.frame.minY,
+                "Preview should precede Copy in the terminal selection menu."
+            )
+        }
+
+        print("REMUX_PREVIEW_E2E_BEGIN")
+        fflush(stdout)
+        defer {
+            print("REMUX_PREVIEW_E2E_END")
+            fflush(stdout)
+        }
+        let previewOpenStarted = ProcessInfo.processInfo.systemUptime
+        preview.tap()
+
+        let previewContent = elementWithIdentifier("terminal.preview.content")
+        let previewFailure = elementWithIdentifier("terminal.preview.failure")
+
+        let previewDeadline = Date().addingTimeInterval(20)
+        while Date() < previewDeadline,
+              !previewContent.exists,
+              !previewFailure.exists {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        XCTAssertFalse(
+            previewFailure.exists,
+            "The absolute text fixture should not enter the preview failure state."
+        )
+        XCTAssertTrue(
+            previewContent.exists,
+            "The absolute text fixture should become previewable."
+        )
+        XCTAssertGreaterThan(previewContent.frame.width, 100)
+        XCTAssertGreaterThan(previewContent.frame.height, 100)
+        guard waitForRenderedPreviewContent(
+            previewContent,
+            attachmentName: "live-terminal-absolute-file-preview"
+        ) != nil else {
+            return
+        }
+        print(String(
+            format: "REMUX_PREVIEW_OPEN_MS %.1f",
+            (ProcessInfo.processInfo.systemUptime - previewOpenStarted) * 1_000
+        ))
+        fflush(stdout)
+
+        let back = app.buttons["terminal.preview.back"].firstMatch
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        let previewCloseStarted = ProcessInfo.processInfo.systemUptime
+        back.tap()
+        XCTAssertTrue(
+            waitForElementToDisappear(back, timeout: 5),
+            "Back should return directly to the retained terminal."
+        )
+        print(String(
+            format: "REMUX_PREVIEW_CLOSE_MS %.1f",
+            (ProcessInfo.processInfo.systemUptime - previewCloseStarted) * 1_000
+        ))
+        fflush(stdout)
+        waitForLiveTerminalInputReady(timeout: 10)
+        XCTAssertTrue(terminal.exists)
+        XCTAssertTrue(
+            softwareKeyboard.waitForExistence(timeout: 5),
+            "Returning from Preview should restore the visible software keyboard."
+        )
+        XCTAssertTrue(
+            waitForSoftwareKeyboardOnScreen(timeout: 10),
+            "Returning from Preview should restore the on-screen keyboard geometry."
+        )
+        attach(name: "live-terminal-absolute-preview-returned")
+
+        terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.28, dy: 0.02))
+            .press(forDuration: 0.70)
+        let copyAfterReturn = waitForCopyMenuItem(timeout: 5)
+        XCTAssertTrue(
+            waitForSelectionMenuItem("Preview", timeout: 5).exists,
+            "Returning from Preview must preserve terminal long-press selection."
+        )
+        copyAfterReturn.tap()
+
+        terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.28, dy: 0.02))
+            .press(forDuration: 0.70)
+        let rapidPreview = waitForSelectionMenuItem("Preview", timeout: 5)
+        print("REMUX_PREVIEW_RAPID_DISMISS_BEGIN")
+        fflush(stdout)
+        rapidPreview.tap()
+        let rapidBack = app.buttons["terminal.preview.back"].firstMatch
+        XCTAssertTrue(
+            rapidBack.waitForExistence(timeout: 2),
+            "Preview chrome should appear immediately while the file is loading."
+        )
+        rapidBack.tap()
+        XCTAssertTrue(
+            waitForElementToDisappear(rapidBack, timeout: 5),
+            "Immediate Back should return to the retained terminal."
+        )
+        waitForLiveTerminalInputReady(timeout: 10)
+        XCTAssertTrue(
+            waitForSoftwareKeyboardOnScreen(timeout: 10),
+            "Immediate Preview dismissal must leave the keyboard and terminal geometry usable."
+        )
+        print("REMUX_PREVIEW_RAPID_DISMISS_END")
+        fflush(stdout)
+
+        terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.28, dy: 0.02))
+            .press(forDuration: 0.70)
+        let copyAfterRapidDismiss = waitForCopyMenuItem(timeout: 5)
+        XCTAssertTrue(
+            copyAfterRapidDismiss.exists,
+            "Immediate Preview dismissal must not wedge terminal interaction."
+        )
+        copyAfterRapidDismiss.tap()
+
+        openWindowsSheet()
+        tapPickerButton(identifier: "terminal.window.new", fallbackLabel: "New Window")
+        waitForLiveTerminalReady(timeout: 30)
+
+        openWindowsSheet()
+        XCTAssertTrue(app.buttons["terminal.window.tile.1"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["terminal.window.tile.2"].waitForExistence(timeout: 10))
+        tapPickerButton(identifier: "terminal.window.tile.1", fallbackLabel: "Window 1 of 2")
+        waitForLiveTerminalReady(timeout: 30)
+
+        terminal.swipeLeft(velocity: .slow)
+        waitForLiveTerminalReady(timeout: 30)
+        terminal.swipeRight(velocity: .slow)
+        waitForLiveTerminalReady(timeout: 30)
+
+        if !softwareKeyboard.exists {
+            terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.60)).tap()
+        }
+        XCTAssertTrue(
+            waitForSoftwareKeyboardOnScreen(timeout: 10),
+            "Window navigation after Preview should leave terminal input available."
+        )
+        terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.28, dy: 0.02))
+            .press(forDuration: 0.70)
+        let copyAfterWindowNavigation = waitForCopyMenuItem(timeout: 5)
+        XCTAssertTrue(
+            copyAfterWindowNavigation.exists,
+            "Window navigation after Preview must not disable terminal long-press selection."
+        )
+        copyAfterWindowNavigation.tap()
+
+        hideKeyboardIfPresent()
+        terminal.coordinate(withNormalizedOffset: CGVector(dx: 0.28, dy: 0.02))
+            .press(forDuration: 0.70)
+        XCTAssertTrue(
+            waitForCopyMenuItem(timeout: 5).exists,
+            "Window navigation after Preview must preserve selection after hiding the keyboard."
+        )
+
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: "rpv-"
+        )
+    }
+
     func testLiveTerminalLongPressSteeringWhenConfigured() throws {
         let sessionName = try generatedLiveLatencySessionName("steering")
         defer {
@@ -1701,6 +1907,70 @@ final class RemuxAppUITests: XCTestCase {
         screenshot: XCUIScreenshot
     ) -> (distinctColors: Int, nonBackgroundPixels: Int)? {
         guard let snapshot = liveTerminalContentPixels(screenshot: screenshot) else { return nil }
+        return pixelStats(snapshot)
+    }
+
+    private func waitForRenderedPreviewContent(
+        _ element: XCUIElement,
+        timeout: TimeInterval = 8,
+        attachmentName: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> XCUIScreenshot? {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastScreenshot: XCUIScreenshot?
+        var lastStats: (distinctColors: Int, nonBackgroundPixels: Int)?
+
+        while Date() < deadline {
+            let screenshot = XCUIScreen.main.screenshot()
+            lastScreenshot = screenshot
+            lastStats = renderedPixelStats(screenshot: screenshot, element: element)
+            if let lastStats,
+               lastStats.distinctColors > 2,
+               lastStats.nonBackgroundPixels > 500 {
+                let attachment = XCTAttachment(screenshot: screenshot)
+                attachment.name = attachmentName
+                attachment.lifetime = .keepAlways
+                add(attachment)
+                return screenshot
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+
+        if let lastScreenshot {
+            let attachment = XCTAttachment(screenshot: lastScreenshot)
+            attachment.name = attachmentName
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        let stats = lastStats.map {
+            " distinctColors=\($0.distinctColors) nonBackgroundPixels=\($0.nonBackgroundPixels)"
+        } ?? ""
+        XCTFail("Preview content did not render before timeout.\(stats)", file: file, line: line)
+        return nil
+    }
+
+    private func renderedPixelStats(
+        screenshot: XCUIScreenshot,
+        element: XCUIElement
+    ) -> (distinctColors: Int, nonBackgroundPixels: Int)? {
+        guard let cgImage = screenshot.image.cgImage,
+              app.frame.width > 0,
+              app.frame.height > 0
+        else {
+            return nil
+        }
+        let frame = element.frame.intersection(app.frame)
+        guard !frame.isNull, frame.width > 1, frame.height > 1 else { return nil }
+        let scaleX = CGFloat(cgImage.width) / app.frame.width
+        let scaleY = CGFloat(cgImage.height) / app.frame.height
+        let crop = CGRect(
+            x: frame.minX * scaleX,
+            y: frame.minY * scaleY,
+            width: frame.width * scaleX,
+            height: frame.height * scaleY
+        )
+        guard let snapshot = renderedPixels(cgImage: cgImage, crop: crop) else { return nil }
         return pixelStats(snapshot)
     }
 
@@ -2525,12 +2795,38 @@ final class RemuxAppUITests: XCTestCase {
         _ = waitForKeyboardPresence(false, label: "selection copy hide", timeout: 5)
     }
 
-    private func waitForCopyMenuItem(timeout: TimeInterval) -> XCUIElement {
+    private func waitForSoftwareKeyboardOnScreen(timeout: TimeInterval) -> Bool {
+        let keyboard = app.keyboards.firstMatch
         let deadline = Date().addingTimeInterval(timeout)
-        let menuItem = app.menuItems["Copy"].firstMatch
-        let button = app.buttons["Copy"].firstMatch
+        while Date() < deadline {
+            let frame = keyboard.frame
+            if keyboard.exists,
+               frame.height > 100,
+               frame.intersects(app.frame) {
+                return true
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+
+        let frame = keyboard.frame
+        return keyboard.exists
+            && frame.height > 100
+            && frame.intersects(app.frame)
+    }
+
+    private func waitForCopyMenuItem(timeout: TimeInterval) -> XCUIElement {
+        waitForSelectionMenuItem("Copy", timeout: timeout)
+    }
+
+    private func waitForSelectionMenuItem(
+        _ title: String,
+        timeout: TimeInterval
+    ) -> XCUIElement {
+        let deadline = Date().addingTimeInterval(timeout)
+        let menuItem = app.menuItems[title].firstMatch
+        let button = app.buttons[title].firstMatch
         let labeledElement = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "label == %@", "Copy"))
+            .matching(NSPredicate(format: "label == %@", title))
             .firstMatch
 
         repeat {
@@ -2540,7 +2836,7 @@ final class RemuxAppUITests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         } while Date() < deadline
 
-        XCTFail("Terminal selection should expose the Copy menu.")
+        XCTFail("Terminal selection should expose the \(title) menu item.")
         return menuItem
     }
 

@@ -96,4 +96,21 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
         XCTAssertTrue(policy.isResponderEnabled)
         XCTAssertFalse(policy.wantsFirstResponder)
     }
+
+    func testCoveredPresentationOwnsInputOnlyUntilKeyboardRestorationBegins() {
+        XCTAssertFalse(GhosttyTerminalCoverPhase.visible.ownsTerminalInput)
+        XCTAssertTrue(
+            GhosttyTerminalCoverPhase.covered(
+                restoreKeyboard: true
+            ).ownsTerminalInput
+        )
+        XCTAssertTrue(
+            GhosttyTerminalCoverPhase.covered(
+                restoreKeyboard: false
+            ).ownsTerminalInput
+        )
+        XCTAssertFalse(GhosttyTerminalCoverPhase.restoringKeyboard.ownsTerminalInput)
+        XCTAssertTrue(GhosttyTerminalCoverPhase.restoringKeyboard.isRestoringKeyboard)
+        XCTAssertFalse(GhosttyTerminalCoverPhase.visible.isRestoringKeyboard)
+    }
 }

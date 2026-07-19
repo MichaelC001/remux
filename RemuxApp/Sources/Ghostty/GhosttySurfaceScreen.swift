@@ -34,12 +34,28 @@ struct GhosttyPendingAttachmentInteractionProjection: Equatable {
     }
 }
 
+enum GhosttyTerminalCoverPhase: Equatable {
+    case visible
+    case covered(restoreKeyboard: Bool)
+    case restoringKeyboard
+
+    var ownsTerminalInput: Bool {
+        if case .covered = self { return true }
+        return false
+    }
+
+    var isRestoringKeyboard: Bool {
+        self == .restoringKeyboard
+    }
+}
+
 struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
     @ObservedObject private var model: Model
     private let presentation: GhosttySurfaceScreenPresentation
     private let isSelected: Bool
+    private let isTerminalCovered: Bool
     private let shortcutStore: ShortcutStore
     @State private var inputCoordinator = GhosttyTerminalInputCoordinator()
     @State private var terminalInputController = GhosttyTerminalInputController()
@@ -49,6 +65,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var softwareKeyboardOverlapHeight: CGFloat = 0
     @State private var lastSoftwareKeyboardOverlapHeight: CGFloat = 0
     @State private var terminalViewportCoordinator = GhosttyTerminalViewportCoordinator()
+    @State private var terminalCoverPhase = GhosttyTerminalCoverPhase.visible
+    @State private var isTerminalResponderFirstResponder = false
     @State private var keyboardViewportTransitionCoordinator = GhosttyKeyboardViewportTransitionCoordinator()
     @State private var topologyActionInputRefocusCoordinator = GhosttyTopologyActionInputRefocusCoordinator()
     @State private var trackpadDriver = GhosttyKeyboardCursorTrackpadDriver()
@@ -74,6 +92,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private let onEditServer: () -> Void
     private let onTrustHostKey: () -> Void
     private let attachmentTransferServiceFactory: @Sendable () -> any GhosttyAttachmentTransferService
+    private let onPreviewSelection: ((TerminalPreviewCandidate) -> Void)?
     private static var maxAttachmentPhotoSelectionCount: Int { 10 }
     private static var tmuxPrefixFlushDelay: Duration { .milliseconds(750) }
 
@@ -81,8 +100,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         model: Model,
         presentation: GhosttySurfaceScreenPresentation,
         isSelected: Bool,
+        isTerminalCovered: Bool = false,
         shortcutStore: ShortcutStore,
         attachmentTransferServiceFactory: @escaping @Sendable () -> any GhosttyAttachmentTransferService,
+        onPreviewSelection: ((TerminalPreviewCandidate) -> Void)? = nil,
         onReconnect: @escaping () -> Void,
         onEditConnection: @escaping () -> Void,
         onUpdateCredentials: @escaping () -> Void,
@@ -92,8 +113,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         self.model = model
         self.presentation = presentation
         self.isSelected = isSelected
+        self.isTerminalCovered = isTerminalCovered
         self.shortcutStore = shortcutStore
         self.attachmentTransferServiceFactory = attachmentTransferServiceFactory
+        self.onPreviewSelection = onPreviewSelection
         self.onReconnect = onReconnect
         self.onEditConnection = onEditConnection
         self.onUpdateCredentials = onUpdateCredentials
@@ -125,7 +148,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 isSelected: isSelected,
                 keyboardMode: inputCoordinator.keyboardMode,
                 isInputAvailable: interactionProjection.isInputAvailable,
-                isTransientInputOwnerPresented: isAttachmentInputOwnerPresented
+                isTransientInputOwnerPresented: isTransientInputOwnerPresented
             )
             let paneSelectionSheetTopologyProjection = model.paneSelectionSheetTopologyProjection(
                 topLevelID: selectionSheet?.paneTopLevelIDForTopologyValidation
@@ -162,6 +185,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             terminalTheme: presentation.terminalTheme,
                             trackpadDriver: trackpadDriver,
                             onSurfaceTap: handleSurfaceTap,
+                            onPreviewSelection: onPreviewSelection,
                             onWindowSwipe: handleWindowSwipe,
                             sendKeyEvent: sendTerminalKeyEvent,
                             onTrackpadStateChange: { trackpadHUDState = $0 },
@@ -194,7 +218,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             sendText: sendTerminalText,
                             sendPaste: sendTerminalPaste,
                             sendKeyEvent: sendTerminalKeyEvent,
-                            onTrackpadStateChange: { trackpadHUDState = $0 }
+                            onTrackpadStateChange: { trackpadHUDState = $0 },
+                            onFirstResponderChange: { isTerminalResponderFirstResponder = $0 }
                         )
                         .frame(
                             width: terminalViewportSize.width,
@@ -242,6 +267,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             effectiveSize: terminalViewportSize,
                             context: viewportTraceContext
                         )
+                        if isTerminalCovered {
+                            updateTerminalCoverPresentation(
+                                isCovered: true,
+                                liveSize: liveTerminalViewportSize
+                            )
+                        }
                         updateTerminalViewportLiveSize(
                             liveTerminalViewportSize,
                             context: viewportTraceContext
@@ -251,6 +282,23 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         updateTerminalViewportLiveSize(
                             newValue,
                             context: viewportTraceContext
+                        )
+                        finishTerminalCoverRestorationIfSettled(liveSize: newValue)
+                    }
+                    .onChange(of: isTerminalCovered) { _, isCovered in
+                        updateTerminalCoverPresentation(
+                            isCovered: isCovered,
+                            liveSize: liveTerminalViewportSize
+                        )
+                    }
+                    .onChange(of: isTerminalResponderFirstResponder) { _, _ in
+                        finishTerminalCoverRestorationIfSettled(
+                            liveSize: liveTerminalViewportSize
+                        )
+                    }
+                    .onChange(of: inputCoordinator.isSoftwareKeyboardVisible) { _, _ in
+                        finishTerminalCoverRestorationIfSettled(
+                            liveSize: liveTerminalViewportSize
                         )
                     }
                     .onChange(of: scenePhase) { _, newPhase in
@@ -436,12 +484,18 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             .onChange(of: interactionProjection.selectedActiveLeafID) { _, activeLeafID in
                 handleActiveLeafChange(activeLeafID)
             }
+            .onChange(of: interactionProjection.isInputAvailable) { _, isInputAvailable in
+                handleTerminalCoverInputAvailabilityChange(isInputAvailable)
+            }
             .onChange(of: inputCoordinator.keyboardMode) { _, mode in
                 // Sizes reported while the software keyboard is up are
                 // transient; flag them so reconnects carry the settled
                 // viewport (the mode flips before the layout changes,
                 // so the hint always precedes the affected report).
                 model.setViewportStabilityHint(stable: mode == .hidden)
+                if mode == .hidden, terminalCoverPhase.isRestoringKeyboard {
+                    cancelTerminalCoverKeyboardRestoration(reason: "keyboardHidden")
+                }
             }
             .onChange(of: model.commandFailureEvent) { _, event in
                 handleTmuxCommandFailureEvent(event)
@@ -477,6 +531,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         .onChange(of: scenePhase) { _, newPhase in
             handleScenePhaseChange(newPhase)
         }
+        .onChange(of: isSelected) { _, selected in
+            handleTerminalCoverSelectionChange(selected)
+        }
     }
 
     private var shouldHandleTerminalKeyboardNotification: Bool {
@@ -493,6 +550,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             isFileImporterPresented: isAttachmentFileImporterPresented,
             isPreviewPresented: isAttachmentPreviewPresented
         ).isTransientInputOwnerPresented
+    }
+
+    private var isTransientInputOwnerPresented: Bool {
+        isAttachmentInputOwnerPresented || terminalCoverPhase.ownsTerminalInput
     }
 
     private var selectionSheetBinding: Binding<GhosttySurfaceSelectionSheet?> {
@@ -629,6 +690,13 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func handleScenePhaseChange(_ phase: ScenePhase) {
+        if terminalCoverPhase.isRestoringKeyboard {
+            guard phase == .active else { return }
+            resumeTerminalCoverKeyboardRestorationIfPossible()
+            return
+        }
+
+        guard !terminalCoverPhase.ownsTerminalInput else { return }
         let projection = GhosttySurfaceScreenLifecycleProjection(
             scenePhase: phase,
             isSelected: isSelected
@@ -636,6 +704,111 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
         guard projection.shouldRefocusSystemKeyboard else { return }
         refocusSystemKeyboardIfActive()
+    }
+
+    private func updateTerminalCoverPresentation(
+        isCovered: Bool,
+        liveSize: CGSize
+    ) {
+        if isCovered {
+            guard !terminalCoverPhase.ownsTerminalInput else { return }
+            let effect = terminalViewportCoordinator.setCoveredPresentation(
+                true,
+                liveSize: liveSize
+            )
+            let restoreKeyboard = inputCoordinator.keyboardMode == .system
+                && inputCoordinator.isSoftwareKeyboardVisible
+            terminalCoverPhase = .covered(restoreKeyboard: restoreKeyboard)
+            if case .hold(let effectiveSize) = effect {
+                GhosttyRuntimeTrace.perf(
+                    "viewport.freeze begin reason=coveredPresentation effective=\(effectiveSize.traceLabel) live=\(liveSize.traceLabel) holdReasons=\(terminalViewportCoordinator.holdReasonTraceLabel)"
+                )
+            }
+            return
+        }
+
+        guard case .covered(let restoreKeyboard) = terminalCoverPhase else { return }
+        guard restoreKeyboard else {
+            finishTerminalCoverPresentation(
+                liveSize: liveSize,
+                releaseKind: "coveredPresentationHiddenKeyboard"
+            )
+            return
+        }
+        guard isSelected, isTerminalInputAvailable else {
+            finishTerminalCoverPresentation(
+                liveSize: liveSize,
+                releaseKind: "coveredPresentationCancelled"
+            )
+            return
+        }
+
+        terminalCoverPhase = .restoringKeyboard
+        if finishTerminalCoverRestorationIfSettled(liveSize: liveSize) {
+            return
+        }
+        resumeTerminalCoverKeyboardRestorationIfPossible()
+    }
+
+    @discardableResult
+    private func finishTerminalCoverRestorationIfSettled(liveSize: CGSize) -> Bool {
+        guard terminalCoverPhase.isRestoringKeyboard,
+              !isTerminalCovered,
+              scenePhase == .active,
+              isSelected,
+              isTerminalInputAvailable,
+              inputCoordinator.keyboardMode == .system,
+              isTerminalResponderFirstResponder,
+              inputCoordinator.isSoftwareKeyboardVisible else {
+            return false
+        }
+
+        let normalizedLiveSize = GhosttyTerminalViewportCoordinator.normalized(liveSize)
+        let heldSize = terminalViewportCoordinator.effectiveSize(liveSize: liveSize)
+        guard normalizedLiveSize == heldSize else { return false }
+
+        finishTerminalCoverPresentation(
+            liveSize: liveSize,
+            releaseKind: "coveredPresentationAlreadySettled"
+        )
+        return true
+    }
+
+    private func resumeTerminalCoverKeyboardRestorationIfPossible() {
+        guard terminalCoverPhase.isRestoringKeyboard,
+              !isTerminalCovered,
+              scenePhase == .active,
+              isSelected,
+              isTerminalInputAvailable else {
+            return
+        }
+
+        refocusSystemKeyboardIfActive()
+    }
+
+    private func handleTerminalCoverSelectionChange(_ selected: Bool) {
+        guard terminalCoverPhase.isRestoringKeyboard else { return }
+        guard selected else {
+            cancelTerminalCoverKeyboardRestoration(reason: "selection")
+            return
+        }
+        resumeTerminalCoverKeyboardRestorationIfPossible()
+    }
+
+    private func handleTerminalCoverInputAvailabilityChange(_ isInputAvailable: Bool) {
+        guard terminalCoverPhase.isRestoringKeyboard else { return }
+        guard isInputAvailable else {
+            cancelTerminalCoverKeyboardRestoration(reason: "inputUnavailable")
+            return
+        }
+        resumeTerminalCoverKeyboardRestorationIfPossible()
+    }
+
+    private func cancelTerminalCoverKeyboardRestoration(reason: String) {
+        finishTerminalCoverPresentation(
+            liveSize: terminalViewportCoordinator.latestLiveSize,
+            releaseKind: "coveredPresentationCancel.\(reason)"
+        )
     }
 
     private func applyTopologyInputRefocusEffect(
@@ -678,12 +851,11 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         guard case .release(let previousEffectiveSize) = effect else { return }
         if ownsKeyboardTransition, terminalViewportCoordinator.isKeyboardTransitionActive {
             completeKeyboardViewportTransition()
-        } else {
-            traceViewportFreezeRelease(
-                previousEffectiveSize: previousEffectiveSize,
-                releaseKind: "topologyCancel"
-            )
         }
+        completeTerminalViewportHoldRelease(
+            previousEffectiveSize: previousEffectiveSize,
+            releaseKind: "topologyCancel"
+        )
     }
 
     @discardableResult
@@ -720,7 +892,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             releasePolicy: .preserveCurrentEffective
         )
         guard case .release(let previousEffectiveSize) = effect else { return }
-        traceViewportFreezeRelease(
+        completeTerminalViewportHoldRelease(
             previousEffectiveSize: previousEffectiveSize,
             releaseKind: "topologyRefocus"
         )
@@ -1356,7 +1528,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 "viewport.freeze begin reason=sheet effective=\(effectiveSize.traceLabel) live=\(liveSize.traceLabel) holdReasons=\(terminalViewportCoordinator.holdReasonTraceLabel)"
             )
         case .release(let previousEffectiveSize):
-            traceViewportFreezeRelease(
+            completeTerminalViewportHoldRelease(
                 previousEffectiveSize: previousEffectiveSize,
                 releaseKind: "sheet"
             )
@@ -1570,6 +1742,19 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         )
     }
 
+    private func finishTerminalCoverPresentation(
+        liveSize: CGSize,
+        releaseKind: String
+    ) {
+        let effect = terminalViewportCoordinator.setCoveredPresentation(false, liveSize: liveSize)
+        terminalCoverPhase = .visible
+        guard case .release(let previousEffectiveSize) = effect else { return }
+        completeTerminalViewportHoldRelease(
+            previousEffectiveSize: previousEffectiveSize,
+            releaseKind: releaseKind
+        )
+    }
+
     private func traceTerminalViewportSnapshot(
         event: String,
         liveSize: CGSize,
@@ -1628,6 +1813,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             case .complete:
                 keyboardViewportTransitionCoordinator.clearAwaitingSystemKeyboardPresentation()
                 completeKeyboardViewportTransition()
+                finishTerminalCoverRestorationIfSettled(
+                    liveSize: terminalViewportCoordinator.latestLiveSize
+                )
 
             case .ignoreTargetMismatch:
                 GhosttyRuntimeTrace.perf(
@@ -1727,7 +1915,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             isDismissSystemKeyboardRequested: inputCoordinator.isDismissSystemKeyboardRequested,
             isInputAvailable: isTerminalInputAvailable,
             isSelectionSheetPresented: selectionSheet != nil,
-            isTransientInputOwnerPresented: isAttachmentInputOwnerPresented,
+            isTransientInputOwnerPresented: isTransientInputOwnerPresented,
             isAwaitingSystemKeyboardPresentation: isAwaitingSystemKeyboardPresentation,
             isSceneActive: scenePhase == .active
         )
@@ -1749,7 +1937,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         )
     }
 
-    private func traceViewportFreezeRelease(
+    private func completeTerminalViewportHoldRelease(
         previousEffectiveSize: CGSize,
         releaseKind: String
     ) {
@@ -1761,6 +1949,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         let nextEffectiveSize = terminalViewportCoordinator.effectiveSize(
             liveSize: terminalViewportCoordinator.latestLiveSize
         )
+        if nextEffectiveSize != previousEffectiveSize {
+            model.prepareInitialViewport(size: nextEffectiveSize, scale: displayScale)
+        }
         GhosttyRuntimeTrace.perf(
             "viewport.freeze release kind=\(releaseKind) live=\(terminalViewportCoordinator.latestLiveSize.traceLabel) previousEffective=\(previousEffectiveSize.traceLabel) nextEffective=\(nextEffectiveSize.traceLabel)"
         )

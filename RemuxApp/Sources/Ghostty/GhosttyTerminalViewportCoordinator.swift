@@ -3,6 +3,7 @@ import Foundation
 
 enum GhosttyTerminalViewportHoldReason: Hashable {
     case sheet
+    case coveredPresentation
     case keyboardTransition
     case topologyRefocus
     case unsizedInitialLayout
@@ -11,6 +12,8 @@ enum GhosttyTerminalViewportHoldReason: Hashable {
         switch self {
         case .sheet:
             return "sheet"
+        case .coveredPresentation:
+            return "coveredPresentation"
         case .keyboardTransition:
             return "keyboardTransition"
         case .topologyRefocus:
@@ -21,7 +24,7 @@ enum GhosttyTerminalViewportHoldReason: Hashable {
     }
 }
 
-enum GhosttyTerminalViewportSheetHoldEffect: Equatable {
+enum GhosttyTerminalViewportGeometryHoldEffect: Equatable {
     case hold(effectiveSize: CGSize)
     case release(previousEffectiveSize: CGSize)
 }
@@ -182,14 +185,30 @@ struct GhosttyTerminalViewportCoordinator: Equatable {
     mutating func setSheetPresented(
         _ isPresented: Bool,
         liveSize: CGSize
-    ) -> GhosttyTerminalViewportSheetHoldEffect {
+    ) -> GhosttyTerminalViewportGeometryHoldEffect {
+        setGeometryHold(.sheet, isActive: isPresented, liveSize: liveSize)
+    }
+
+    @discardableResult
+    mutating func setCoveredPresentation(
+        _ isCovered: Bool,
+        liveSize: CGSize
+    ) -> GhosttyTerminalViewportGeometryHoldEffect {
+        setGeometryHold(.coveredPresentation, isActive: isCovered, liveSize: liveSize)
+    }
+
+    private mutating func setGeometryHold(
+        _ reason: GhosttyTerminalViewportHoldReason,
+        isActive: Bool,
+        liveSize: CGSize
+    ) -> GhosttyTerminalViewportGeometryHoldEffect {
         let previousEffectiveSize = effectiveSize(liveSize: liveSize)
-        if isPresented {
-            holdReasons.insert(.sheet)
+        if isActive {
+            holdReasons.insert(reason)
             freeze(using: liveSize)
             return .hold(effectiveSize: effectiveSize(liveSize: liveSize))
         } else {
-            removeHold(.sheet, liveSize: liveSize, releasePolicy: .adoptLatestLive)
+            removeHold(reason, liveSize: liveSize, releasePolicy: .adoptLatestLive)
             return .release(previousEffectiveSize: previousEffectiveSize)
         }
     }
@@ -258,7 +277,7 @@ struct GhosttyTerminalViewportCoordinator: Equatable {
 
     private static func isGeometryHold(_ reason: GhosttyTerminalViewportHoldReason) -> Bool {
         switch reason {
-        case .sheet, .topologyRefocus, .unsizedInitialLayout:
+        case .sheet, .coveredPresentation, .topologyRefocus, .unsizedInitialLayout:
             return true
         case .keyboardTransition:
             return false
