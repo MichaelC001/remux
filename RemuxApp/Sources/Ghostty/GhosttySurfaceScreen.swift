@@ -2132,7 +2132,7 @@ struct GhosttySoftwareKeyboardVisibility {
     }
 }
 
-private extension TerminalTheme {
+extension TerminalTheme {
     var terminalSurfaceBackground: Color {
         Color(uiColor: terminalBackgroundUIColor)
     }

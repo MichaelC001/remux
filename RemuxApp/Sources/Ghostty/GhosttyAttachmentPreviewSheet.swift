@@ -234,14 +234,14 @@ struct GhosttyAttachmentPreviewSheet: View {
     }
 
     private func filePreview(_ url: URL) -> some View {
-        GhosttyAttachmentQuickLookPreview(url: url)
+        GhosttyQuickLookPreview(url: url)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ghosttyAttachmentPreviewContentSurface()
             .accessibilityIdentifier("terminal.attachments.file-preview")
     }
 
     private func filePreview(_ file: GhosttySecurityScopedAttachmentFile) -> some View {
-        GhosttyAttachmentQuickLookPreview(file: file)
+        GhosttyQuickLookPreview(file: file)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ghosttyAttachmentPreviewContentSurface()
             .accessibilityIdentifier("terminal.attachments.file-preview")

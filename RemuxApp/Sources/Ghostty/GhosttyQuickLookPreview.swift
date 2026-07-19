@@ -1,10 +1,11 @@
 import QuickLook
 import SwiftUI
 
-struct GhosttyAttachmentQuickLookPreview: UIViewControllerRepresentable {
+struct GhosttyQuickLookPreview: UIViewControllerRepresentable {
     enum Source: Equatable {
         case url(URL)
         case securityScopedFile(GhosttySecurityScopedAttachmentFile)
+        case terminalPreviewFile(TerminalPreviewFileResource)
     }
 
     let source: Source
@@ -15,6 +16,10 @@ struct GhosttyAttachmentQuickLookPreview: UIViewControllerRepresentable {
 
     init(file: GhosttySecurityScopedAttachmentFile) {
         self.source = .securityScopedFile(file)
+    }
+
+    init(resource: TerminalPreviewFileResource) {
+        self.source = .terminalPreviewFile(resource)
     }
 
     func makeCoordinator() -> Coordinator {
@@ -85,6 +90,8 @@ struct GhosttyAttachmentQuickLookPreview: UIViewControllerRepresentable {
                     previewURL = nil
                     return
                 }
+            case .terminalPreviewFile(let resource):
+                url = resource.url
             }
 
             previewURL = url
