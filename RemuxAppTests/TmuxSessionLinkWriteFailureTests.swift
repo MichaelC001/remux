@@ -65,6 +65,38 @@ final class TmuxSessionLinkWriteFailureTests: XCTestCase {
         withExtendedLifetime(runtime) {}
     }
 
+    func testUnexpectedReadEndInvalidatesTransportBeforeDisconnectingController() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let stateRecorder = SessionStateRecorder()
+        let transport = LinkTestTransport(failWrites: false)
+        let controller = TmuxSessionController(
+            callbacks: TmuxSessionController.Callbacks(
+                onState: { state in
+                    stateRecorder.append(state)
+                }
+            )
+        )
+        let link = TmuxSessionLink(controller: controller, transport: transport)
+
+        try await link.start(viewport: .default)
+        await transport.finishInput()
+
+        try await waitUntil("transport was not invalidated after read end") {
+            await transport.closeDispositions().first == .invalidated
+        }
+        try await waitUntil("controller did not publish transportClosed after read end") {
+            stateRecorder.contains(.detached(.transportClosed))
+        }
+
+        await link.stop()
+        let closeDispositions = await transport.closeDispositions()
+        XCTAssertEqual(closeDispositions, [.invalidated])
+        await withCheckedContinuation { continuation in
+            controller.shutdown { continuation.resume() }
+        }
+        withExtendedLifetime(runtime) {}
+    }
+
     private func waitUntil(
         _ failureMessage: String,
         timeout: Duration = .seconds(2),
@@ -146,5 +178,9 @@ private actor LinkTestTransport: TmuxControlTransport {
 
     func sendCount() -> Int {
         recordedSendCount
+    }
+
+    func finishInput() {
+        continuation.finish()
     }
 }

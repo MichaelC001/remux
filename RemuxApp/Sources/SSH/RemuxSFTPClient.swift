@@ -1,10 +1,24 @@
 import Foundation
 import NIO
 
-enum RemuxSFTPClientError: Error, Equatable, Sendable {
+enum RemuxSFTPClientError: LocalizedError, Equatable, Sendable {
     case operationTimedOut
+    case sessionUnavailable
     case invalidReadLength(Int)
     case oversizedReadResult(requested: Int, actual: Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .operationTimedOut:
+            return "The remote file operation timed out."
+        case .sessionUnavailable:
+            return "The terminal session is no longer available."
+        case .invalidReadLength:
+            return "The remote file read length is invalid."
+        case .oversizedReadResult:
+            return "The remote server returned more file data than requested."
+        }
+    }
 }
 
 struct RemuxSFTPFileMetadata: Equatable, Sendable {
@@ -90,8 +104,8 @@ struct RemuxSFTPClientLease<Client: Sendable>: Sendable {
 
 actor RemuxSFTPLeaseTeardown {
     private let closeChild: @Sendable () async throws -> Void
-    private let releaseRoot: @Sendable (RemuxSSHRootLeaseDisposition) async -> Void
-    private var isInvalidated = false
+    private let releaseRoot: (@Sendable (RemuxSSHRootLeaseDisposition) async -> Void)?
+    private var invalidationError: RemuxSFTPClientError?
     private var childCloseTask: Task<Result<Void, Error>, Never>?
     private var rootReleaseTask: Task<Void, Never>?
     private var isBestEffortCloseObserved = false
@@ -104,45 +118,65 @@ actor RemuxSFTPLeaseTeardown {
         self.releaseRoot = releaseRoot
     }
 
+    init(
+        closeBorrowedChild: @escaping @Sendable () async throws -> Void
+    ) {
+        self.closeChild = closeBorrowedChild
+        self.releaseRoot = nil
+    }
+
     func checkActive() throws {
-        if isInvalidated {
-            throw RemuxSFTPClientError.operationTimedOut
+        if let invalidationError {
+            throw invalidationError
         }
     }
 
-    func invalidate() async {
-        isInvalidated = true
+    func invalidate(
+        reason: RemuxSFTPClientError = .operationTimedOut
+    ) async {
+        if invalidationError == nil {
+            invalidationError = reason
+        }
         let childCloseTask = childCloseTaskIfNeeded()
         observeBestEffortCloseIfNeeded(childCloseTask)
-        let rootReleaseTask = rootReleaseTaskIfNeeded(disposition: .invalidated)
-        await rootReleaseTask.value
+        if let rootReleaseTask = rootReleaseTaskIfNeeded(disposition: .invalidated) {
+            await rootReleaseTask.value
+        }
     }
 
     func close() async throws {
-        if isInvalidated {
-            let task = rootReleaseTaskIfNeeded(disposition: .invalidated)
-            await task.value
+        if invalidationError != nil {
+            if let task = rootReleaseTaskIfNeeded(disposition: .invalidated) {
+                await task.value
+            }
             return
         }
 
         let childCloseResult = await childCloseTaskIfNeeded().value
         isBestEffortCloseObserved = true
-        if isInvalidated {
-            let task = rootReleaseTaskIfNeeded(disposition: .invalidated)
-            await task.value
+        if invalidationError != nil {
+            if let task = rootReleaseTaskIfNeeded(disposition: .invalidated) {
+                await task.value
+            }
             return
         }
 
         switch childCloseResult {
         case .success:
-            let task = rootReleaseTaskIfNeeded(disposition: .reusable)
-            await task.value
+            if let task = rootReleaseTaskIfNeeded(disposition: .reusable) {
+                await task.value
+            }
         case .failure(let error):
-            isInvalidated = true
-            let task = rootReleaseTaskIfNeeded(disposition: .invalidated)
-            await task.value
+            invalidationError = .operationTimedOut
+            if let task = rootReleaseTaskIfNeeded(disposition: .invalidated) {
+                await task.value
+            }
             throw error
         }
+    }
+
+    func childCloseResult() async -> Result<Void, Error> {
+        await childCloseTaskIfNeeded().value
     }
 
     private func childCloseTaskIfNeeded() -> Task<Result<Void, Error>, Never> {
@@ -181,12 +215,12 @@ actor RemuxSFTPLeaseTeardown {
 
     private func rootReleaseTaskIfNeeded(
         disposition: RemuxSSHRootLeaseDisposition
-    ) -> Task<Void, Never> {
+    ) -> Task<Void, Never>? {
         if let rootReleaseTask {
             return rootReleaseTask
         }
 
-        let releaseRoot = releaseRoot
+        guard let releaseRoot else { return nil }
         let task = Task {
             await releaseRoot(disposition)
         }

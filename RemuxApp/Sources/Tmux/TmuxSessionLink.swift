@@ -78,7 +78,7 @@ actor TmuxSessionLink {
         }
         guard !stopped else { throw LinkError.stopped }
 
-        readTask = Task { [transport, controller] in
+        readTask = Task { [weak self, transport, controller] in
             do {
                 for try await data in transport.receivedBytes {
                     controller.pump(data)
@@ -87,7 +87,7 @@ actor TmuxSessionLink {
                 // Fall through: any stream end is a transport loss.
             }
             guard !Task.isCancelled else { return }
-            controller.transportClosed()
+            await self?.invalidateTransportAfterReadEnd()
         }
     }
 
@@ -124,6 +124,11 @@ actor TmuxSessionLink {
     }
 
     private func invalidateTransportAfterWriteFailure() async {
+        await closeTransport(disposition: .invalidated)
+        controller.transportClosed()
+    }
+
+    private func invalidateTransportAfterReadEnd() async {
         await closeTransport(disposition: .invalidated)
         controller.transportClosed()
     }

@@ -259,6 +259,7 @@ fileprivate final class RemuxSSHRootLease: @unchecked Sendable {
     private let generation: UUID
     private let lock = NIOLock()
     private var isReleased = false
+    private var didInvalidateForReuse = false
 
     init(
         connection: RemuxSSHRoot,
@@ -285,6 +286,20 @@ fileprivate final class RemuxSSHRootLease: @unchecked Sendable {
             for: key,
             generation: generation,
             disposition: disposition
+        )
+    }
+
+    func invalidateForReuse() async {
+        let shouldInvalidate = lock.withLock {
+            guard !isReleased, !didInvalidateForReuse else { return false }
+            didInvalidateForReuse = true
+            return true
+        }
+        guard shouldInvalidate else { return }
+
+        await pool.invalidateForReuse(
+            for: key,
+            generation: generation
         )
     }
 }
@@ -419,6 +434,10 @@ struct RemuxSSHClaimedRoot: Sendable {
         } else {
             await sshRoot.close()
         }
+    }
+
+    func invalidateForReuse() async {
+        await lease?.invalidateForReuse()
     }
 }
 
@@ -618,6 +637,24 @@ actor RemuxSSHRootService {
         case .close:
             await connection.close()
         }
+    }
+
+    fileprivate func invalidateForReuse(
+        for key: RemuxSSHRootKey,
+        generation: UUID
+    ) {
+        guard let entry = entries[key], entry.generation == generation else { return }
+        entry.idleCloseTask?.cancel()
+        entries.removeValue(forKey: key)
+
+        guard entry.activeLeaseCount > 0 else {
+            closeEntryTask(entry.task, reason: "child_channel_close_failed")
+            return
+        }
+        retiredEntries[generation] = RetiredEntry(
+            task: entry.task,
+            activeLeaseCount: entry.activeLeaseCount
+        )
     }
 
     @discardableResult
@@ -1009,6 +1046,13 @@ actor RemuxSSHRootService {
             generation: generation,
             disposition: disposition
         )
+    }
+
+    func invalidateForReuseForTesting(
+        for key: RemuxSSHRootKey,
+        generation: UUID
+    ) {
+        invalidateForReuse(for: key, generation: generation)
     }
 
     func markAuthenticationSucceededForTesting(

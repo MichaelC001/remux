@@ -17,6 +17,10 @@ protocol TmuxControlTransportLivenessChecking: Sendable {
     func isControlChannelActive() async -> Bool
 }
 
+protocol TmuxControlTransportSFTPProviding: Sendable {
+    var sessionSFTPClientProvider: RemuxSessionCitadelSFTPClientProvider { get }
+}
+
 enum TmuxControlTransportCloseDisposition: Equatable, Sendable {
     case reusable
     case invalidated

@@ -11,6 +11,7 @@ struct SSHTmuxControlConfiguration: Sendable {
     let hostKeyValidator: SSHHostKeyValidator
     let connectTimeout: TimeAmount
     let controlNoResponseTimeout: TimeAmount
+    let sftpOperationTimeout: TimeAmount
     let tmuxExecutable: String
     let sessionName: String
     let initialViewport: TmuxControlViewport
@@ -24,6 +25,7 @@ struct SSHTmuxControlConfiguration: Sendable {
         hostKeyValidator: SSHHostKeyValidator,
         connectTimeout: TimeAmount = .seconds(30),
         controlNoResponseTimeout: TimeAmount = .seconds(15),
+        sftpOperationTimeout: TimeAmount = .seconds(15),
         tmuxExecutable: String = "tmux",
         sessionName: String,
         initialViewport: TmuxControlViewport = .default,
@@ -36,6 +38,7 @@ struct SSHTmuxControlConfiguration: Sendable {
         self.hostKeyValidator = hostKeyValidator
         self.connectTimeout = connectTimeout
         self.controlNoResponseTimeout = controlNoResponseTimeout
+        self.sftpOperationTimeout = sftpOperationTimeout
         self.tmuxExecutable = tmuxExecutable
         self.sessionName = sessionName
         self.initialViewport = initialViewport
@@ -192,16 +195,20 @@ private extension TmuxControlTransportCloseDisposition {
     }
 }
 
-actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenessChecking {
+actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenessChecking,
+    TmuxControlTransportSFTPProviding {
     nonisolated let receivedBytes: AsyncThrowingStream<Data, Error>
+    nonisolated let sessionSFTPClientProvider: RemuxSessionCitadelSFTPClientProvider
 
     private let configuration: SSHTmuxControlConfiguration
     private let inboundStream: SSHTmuxControlInboundStream
     private let sshRootService: RemuxSSHRootService?
+    private let sessionSFTPScope: RemuxSessionSFTPChildScope
 
     private var pendingWrites: [Data] = []
     private var preparedRoot: RemuxSSHPreparedRoot?
     private var connection: SSHTmuxControlConnection?
+    private var sessionSFTPDrainTask: Task<RemuxSFTPChildDrain, Never>?
     private var hasStarted = false
     private var isClosed = false
 
@@ -211,6 +218,13 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
     ) {
         self.configuration = configuration
         self.sshRootService = sshRootService
+        let sessionSFTPScope = RemuxSessionSFTPChildScope()
+        self.sessionSFTPScope = sessionSFTPScope
+        self.sessionSFTPClientProvider = RemuxSessionCitadelSFTPClientProvider(
+            scope: sessionSFTPScope,
+            hostDescription: "\(configuration.host):\(configuration.port)",
+            operationTimeout: configuration.sftpOperationTimeout
+        )
         let inboundStream = SSHTmuxControlInboundStream()
         self.inboundStream = inboundStream
         self.receivedBytes = inboundStream.receivedBytes
@@ -274,13 +288,32 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
             )
             startedConnection = establishedConnection
             guard !isClosed else { throw SSHTmuxControlTransportError.closed }
+            try await sessionSFTPScope.activate(
+                rootChannel: claimedConnection.sshRoot.rootChannel,
+                invalidateRootForReuse: {
+                    await claimedConnection.invalidateForReuse()
+                }
+            )
+            guard !isClosed else { throw SSHTmuxControlTransportError.closed }
             connection = establishedConnection
             startedConnection = nil
         } catch {
-            let transportError = translateSSHRootError(error)
+            let transportError: any Error
+            if Self.startWasInterruptedByClose(
+                error,
+                transportWasClosed: isClosed
+            ) {
+                transportError = SSHTmuxControlTransportError.closed
+            } else {
+                transportError = translateSSHRootError(error)
+            }
             self.preparedRoot = nil
             self.connection = nil
-            await startedConnection?.close(disposition: closeDispositionAfterStartFailure(transportError))
+            let childDrain = await drainSessionSFTPChildren()
+            await startedConnection?.close(
+                disposition: closeDispositionAfterStartFailure(transportError),
+                childDrain: childDrain
+            )
             throw transportError
         }
 
@@ -296,7 +329,11 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
             }
         } catch {
             connection = nil
-            await establishedConnection.close(disposition: .invalidated)
+            let childDrain = await drainSessionSFTPChildren()
+            await establishedConnection.close(
+                disposition: .invalidated,
+                childDrain: childDrain
+            )
             throw error
         }
         startupTrace.event(
@@ -345,13 +382,40 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
         connection = nil
         preparedRoot = nil
         isClosed = true
-        await activeConnection?.close(disposition: disposition)
+        let childDrain = await drainSessionSFTPChildren()
+        if let activeConnection {
+            await activeConnection.close(
+                disposition: disposition,
+                childDrain: childDrain
+            )
+        }
         if let pendingPreparedRoot {
             Task {
                 await pendingPreparedRoot.cancelAndCleanup()
             }
         }
         inboundStream.finish(nil)
+    }
+
+    private func drainSessionSFTPChildren() async -> RemuxSFTPChildDrain {
+        if let sessionSFTPDrainTask {
+            return await sessionSFTPDrainTask.value
+        }
+
+        let scope = sessionSFTPScope
+        let task = Task { await scope.close() }
+        sessionSFTPDrainTask = task
+        return await task.value
+    }
+
+    nonisolated static func startWasInterruptedByClose(
+        _ error: any Error,
+        transportWasClosed: Bool
+    ) -> Bool {
+        guard transportWasClosed,
+              let sftpError = error as? RemuxSFTPClientError
+        else { return false }
+        return sftpError == .sessionUnavailable
     }
 
     private func closeDispositionAfterStartFailure(_ error: any Error) -> TmuxControlTransportCloseDisposition {
@@ -516,7 +580,10 @@ private final class SSHTmuxControlConnection: @unchecked Sendable {
         )
     }
 
-    func close(disposition: TmuxControlTransportCloseDisposition) async {
+    func close(
+        disposition: TmuxControlTransportCloseDisposition,
+        childDrain: RemuxSFTPChildDrain
+    ) async {
         let shouldClose = closeLock.withLock {
             guard !didClose else { return false }
             didClose = true
@@ -524,8 +591,22 @@ private final class SSHTmuxControlConnection: @unchecked Sendable {
         }
         guard shouldClose else { return }
 
-        try? await sessionChannel.close()
-        await claimedConnection.release(disposition.sshRootLeaseDisposition)
+        let sessionChannelClosedCleanly: Bool
+        do {
+            try await sessionChannel.close()
+            sessionChannelClosedCleanly = true
+        } catch {
+            sessionChannelClosedCleanly = false
+            NSLog("Remux tmux control channel close failed: %@", String(describing: error))
+        }
+
+        let rootDisposition: RemuxSSHRootLeaseDisposition
+        if childDrain == .dirty || !sessionChannelClosedCleanly {
+            rootDisposition = .invalidated
+        } else {
+            rootDisposition = disposition.sshRootLeaseDisposition
+        }
+        await claimedConnection.release(rootDisposition)
     }
 }
 
@@ -552,8 +633,15 @@ private final class SSHTmuxPreparedControlSession: @unchecked Sendable {
         }
         guard shouldClose else { return }
 
-        try? await sessionChannel.close()
-        await claimedConnection.release(disposition)
+        let rootDisposition: RemuxSSHRootLeaseDisposition
+        do {
+            try await sessionChannel.close()
+            rootDisposition = disposition
+        } catch {
+            NSLog("Remux prepared tmux channel close failed: %@", String(describing: error))
+            rootDisposition = .invalidated
+        }
+        await claimedConnection.release(rootDisposition)
     }
 }
 
