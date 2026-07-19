@@ -9,10 +9,14 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
     func testInitialConnectWaitsForMeasuredViewport() async throws {
         let target = makeTarget()
         let transport = ForegroundInactiveTransport(isActive: true)
+        var transportFactoryCallCount = 0
         let model = TmuxScreenModel(
             target: target,
             sessionInstanceID: UUID(),
-            transportFactory: { _ in transport },
+            transportFactory: { _ in
+                transportFactoryCallCount += 1
+                return transport
+            },
             onRuntimeStateChange: { _ in }
         )
         defer {
@@ -21,6 +25,7 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
             }
         }
 
+        XCTAssertEqual(transportFactoryCallCount, 1)
         try await Task.sleep(for: .milliseconds(80))
         let didStartBeforeViewport = await transport.didStart()
         XCTAssertFalse(didStartBeforeViewport)
@@ -49,6 +54,30 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
             "the measured pre-connect grid must seed the screen-model authority"
         )
         await model.stop()
+    }
+
+    func testStopBeforeViewportClosesClaimedTransportExactlyOnce() async throws {
+        let transport = ForegroundInactiveTransport(isActive: true)
+        var transportFactoryCallCount = 0
+        let model = TmuxScreenModel(
+            target: makeTarget(),
+            sessionInstanceID: UUID(),
+            transportFactory: { _ in
+                transportFactoryCallCount += 1
+                return transport
+            },
+            onRuntimeStateChange: { _ in }
+        )
+
+        XCTAssertEqual(transportFactoryCallCount, 1)
+        let didStart = await transport.didStart()
+        XCTAssertFalse(didStart)
+
+        await model.stop()
+        await model.stop()
+
+        let closeDispositions = await transport.closeDispositions()
+        XCTAssertEqual(closeDispositions, [.reusable])
     }
 
     func testScreenModelRejectsRepeatedGridBeforeControllerSubmission() async throws {
@@ -140,6 +169,15 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
         try await waitUntil("transport did not start") {
             await transport.didStart()
         }
+        try await waitUntil("session did not enter a connecting state") {
+            guard let state = model.session?.state else { return false }
+            switch state {
+            case .attaching, .syncing:
+                return true
+            case .detached, .ready, .closed:
+                return false
+            }
+        }
         updates.removeAll()
 
         model.handleAppLifecyclePhase(.active)
@@ -153,16 +191,12 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
         await model.stop()
     }
 
-    func testStaleForegroundProbeDoesNotInvalidateReplacementLink() async throws {
+    func testStaleForegroundProbeDoesNotInvalidateStoppedLink() async throws {
         let runtime = try GhosttyKitRuntime()
-        let firstTransport = ForegroundSuspendingTransport(isActiveAfterResume: false)
-        let secondTransport = ForegroundInactiveTransport(isActive: true)
-        var transports: [any TmuxControlTransport] = [firstTransport, secondTransport]
+        let transport = ForegroundSuspendingTransport(isActiveAfterResume: false)
         let session = TmuxTerminalSession(
             app: runtime.appHandleForTesting,
-            makeTransport: {
-                transports.removeFirst()
-            },
+            transport: transport,
             baseSurfaceConfig: { runtime.makeTmuxBaseSurfaceConfig() },
             paneViewTheme: { .remuxDark },
             createPaneSurface: { _, _, _, _, _, _, _, completion in
@@ -178,8 +212,8 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
         }
 
         session.connect(viewport: .default)
-        try await waitUntil("first transport did not start") {
-            await firstTransport.didStart()
+        try await waitUntil("transport did not start") {
+            await transport.didStart()
         }
         session.handleStateForTesting(.ready)
 
@@ -189,26 +223,18 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
                 invalidatedReasons.append(reason)
             }
         }
-        try await waitUntil("first transport was not probed") {
-            await firstTransport.activeCheckCount() == 1
+        try await waitUntil("transport was not probed") {
+            await transport.activeCheckCount() == 1
         }
 
         await session.disconnect()
-        session.connect(viewport: .default)
-        try await waitUntil("second transport did not start") {
-            await secondTransport.didStart()
-        }
-        session.handleStateForTesting(.ready)
-
-        await firstTransport.resumeActiveCheck()
+        await transport.resumeActiveCheck()
         let reason = await probe.value
-        let firstCloseDispositions = await firstTransport.closeDispositions()
-        let secondCloseDispositions = await secondTransport.closeDispositions()
+        let closeDispositions = await transport.closeDispositions()
 
         XCTAssertNil(reason)
         XCTAssertTrue(invalidatedReasons.isEmpty)
-        XCTAssertEqual(firstCloseDispositions, [.reusable])
-        XCTAssertFalse(secondCloseDispositions.contains(.invalidated))
+        XCTAssertEqual(closeDispositions, [.reusable])
     }
 
     private func waitUntil(

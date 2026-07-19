@@ -146,7 +146,7 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
     private func makeSession(runtime: GhosttyKitRuntime) -> TmuxTerminalSession {
         TmuxTerminalSession(
             app: runtime.appHandleForTesting,
-            makeTransport: { DeterministicTmuxControlTransport(chunks: []) },
+            transport: DeterministicTmuxControlTransport(chunks: []),
             baseSurfaceConfig: { runtime.makeTmuxBaseSurfaceConfig() },
             paneViewTheme: { .remuxDark },
             createPaneSurface: { _, _, _, _, _, _, _, _ in

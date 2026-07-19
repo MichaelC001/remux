@@ -18,6 +18,7 @@ final class TmuxScreenModel: ObservableObject {
     /// GhosttyTerminalScreenModeling boundary for GhosttySurfaceScreen.
     /// Stable screen-facing adapter for this model's session.
     let terminalScreenAdapter = TmuxTerminalScreenAdapter()
+    let terminalPreviewFileClient: TerminalPreviewFileClient?
 
     @Published private(set) var session: TmuxTerminalSession?
     @Published private(set) var startupFailure: String?
@@ -45,7 +46,6 @@ final class TmuxScreenModel: ObservableObject {
         }
     }
 
-    private let transportFactory: TransportFactory
     private let onRuntimeStateChange: (TerminalRuntimeStateUpdate) -> Void
     private var runtime: GhosttyKitRuntime?
     private var currentTerminalSettings: TerminalSettings
@@ -70,20 +70,16 @@ final class TmuxScreenModel: ObservableObject {
     ) {
         self.target = target
         self.sessionInstanceID = sessionInstanceID
-        self.transportFactory = transportFactory
         self.onRuntimeStateChange = onRuntimeStateChange
         self.currentTerminalSettings = target.terminalSettings
         self.initialClientSize = initialClientSize
-        start()
-    }
-
-    private func start() {
         let flow = "session.open.\(target.workspace.id.uuidString)"
         let runtimeInitStart = GhosttyRuntimeTrace.nowNanos()
         let runtime: GhosttyKitRuntime
         do {
             runtime = try GhosttyKitRuntime(terminalSettings: target.terminalSettings)
         } catch {
+            self.terminalPreviewFileClient = nil
             startupFailure = String(describing: error)
             report(.disconnected(Self.runtimeStartFailureReason))
             return
@@ -95,11 +91,18 @@ final class TmuxScreenModel: ObservableObject {
             fields: ["elapsed_ms": GhosttyRuntimeTrace.elapsedMilliseconds(from: runtimeInitStart)]
         )
 
+        let transport = transportFactory(target)
+        if let provider = (transport as? any TmuxControlTransportSFTPProviding)?
+            .sessionSFTPClientProvider {
+            self.terminalPreviewFileClient = TerminalPreviewFileClient(
+                provider: provider
+            )
+        } else {
+            self.terminalPreviewFileClient = nil
+        }
         let session = TmuxTerminalSession(
             app: runtime.appHandle,
-            makeTransport: { [transportFactory, target] in
-                transportFactory(target)
-            },
+            transport: transport,
             baseSurfaceConfig: { [runtime] in
                 runtime.makeTmuxBaseSurfaceConfig()
             },
