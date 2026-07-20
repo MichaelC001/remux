@@ -103,10 +103,16 @@ final class TerminalPreviewSession: ObservableObject {
             var resolvedRemotePath: String?
             let result: Result<TerminalPreviewResource, Error>
             do {
-                let remotePath = try await resolver()
-                resolvedRemotePath = remotePath
-                try Task.checkCancellation()
-                let resource = try await client.load(remotePath: remotePath)
+                let resource: TerminalPreviewResource
+                switch candidate.target {
+                case .localhost(let target):
+                    resource = try await client.openLiveWeb(target)
+                case .file:
+                    let remotePath = try await resolver()
+                    resolvedRemotePath = remotePath
+                    try Task.checkCancellation()
+                    resource = try await client.load(remotePath: remotePath)
+                }
                 try Task.checkCancellation()
                 result = .success(resource)
             } catch is CancellationError {

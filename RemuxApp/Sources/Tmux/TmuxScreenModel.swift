@@ -95,7 +95,10 @@ final class TmuxScreenModel: ObservableObject {
         if let provider = (transport as? any TmuxControlTransportSFTPProviding)?
             .sessionSFTPClientProvider {
             self.terminalPreviewClient = TerminalPreviewClient(
-                provider: provider
+                provider: provider,
+                liveForwardProvider:
+                    (transport as? any TmuxControlTransportLiveForwardProviding)?
+                        .sessionLiveForwardProvider
             )
         } else {
             self.terminalPreviewClient = nil
@@ -153,10 +156,14 @@ final class TmuxScreenModel: ObservableObject {
         for candidate: TerminalPreviewCandidate,
         from surfaceID: UUID
     ) -> TerminalPreviewSession.PathResolver {
-        switch candidate.path {
-        case .absolute(let remotePath):
+        switch candidate.target {
+        case .localhost:
+            // Live targets carry their destination; the session never
+            // invokes this resolver for them.
+            return { "" }
+        case .file(.absolute(let remotePath)):
             return { remotePath }
-        case .relative:
+        case .file(.relative(let path)):
             guard let controller = session?.controller,
                   let paneID = terminalScreenAdapter.tmuxPaneID(for: surfaceID)
             else {
@@ -165,11 +172,11 @@ final class TmuxScreenModel: ObservableObject {
                         .paneUnavailable
                 }
             }
-            let path = candidate.path
+            let relativePath = TerminalPreviewPath.relative(path)
             return {
                 let currentDirectory = try await controller
                     .paneCurrentDirectory(for: paneID)
-                return try path.resolved(relativeTo: currentDirectory)
+                return try relativePath.resolved(relativeTo: currentDirectory)
             }
         }
     }

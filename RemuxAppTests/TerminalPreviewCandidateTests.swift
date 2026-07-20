@@ -21,9 +21,43 @@ final class TerminalPreviewCandidateTests: XCTestCase {
             "README",
             "~/README.md",
             "https://example.com/readme.pdf",
-            "http://localhost:3000",
             "file://server/srv/app/readme.md",
             "/srv/app/bad\0name.txt",
+        ] {
+            XCTAssertNil(TerminalPreviewCandidate(selection: value), value)
+        }
+    }
+
+    func testAcceptsLoopbackURLTargets() {
+        let cases: [(String, String, Int, String, String)] = [
+            ("http://localhost:3000", "localhost", 3000, "http", ""),
+            (
+                "http://127.0.0.1:8000/docs/index.html?x=1",
+                "127.0.0.1", 8000, "http", "/docs/index.html?x=1"
+            ),
+            ("https://localhost:8443/", "localhost", 8443, "https", "/"),
+            ("http://0.0.0.0:5173/", "127.0.0.1", 5173, "http", "/"),
+            ("http://[::1]:9000", "::1", 9000, "http", ""),
+            ("localhost:3000", "localhost", 3000, "http", ""),
+            ("127.0.0.1:8000/health", "127.0.0.1", 8000, "http", "/health"),
+        ]
+        for (value, host, port, scheme, pathQuery) in cases {
+            let target = TerminalPreviewCandidate(selection: value)?.localhostTarget
+            XCTAssertEqual(target?.host, host, value)
+            XCTAssertEqual(target?.port, port, value)
+            XCTAssertEqual(target?.scheme, scheme, value)
+            XCTAssertEqual(target?.pathQuery, pathQuery, value)
+        }
+    }
+
+    func testRejectsNonLoopbackHosts() {
+        for value in [
+            "http://example.com",
+            "http://192.168.1.10:3000",
+            "http://localhost.evil.com:3000",
+            "http://127.evil.com:3000",
+            "localhost",
+            "ftp://localhost:21",
         ] {
             XCTAssertNil(TerminalPreviewCandidate(selection: value), value)
         }
@@ -71,7 +105,7 @@ final class TerminalPreviewCandidateTests: XCTestCase {
         ))
 
         XCTAssertEqual(
-            try candidate.path.resolved(relativeTo: "/srv/app/src"),
+            try XCTUnwrap(candidate.path).resolved(relativeTo: "/srv/app/src"),
             "/srv/app/docs/README.md"
         )
     }
@@ -87,7 +121,8 @@ final class TerminalPreviewCandidateTests: XCTestCase {
         let candidate = try XCTUnwrap(TerminalPreviewCandidate(
             selection: "README.md"
         ))
-        XCTAssertThrowsError(try candidate.path.resolved(relativeTo: "relative/cwd")) {
+        let path = try XCTUnwrap(candidate.path)
+        XCTAssertThrowsError(try path.resolved(relativeTo: "relative/cwd")) {
             XCTAssertEqual($0 as? TerminalPreviewPathError, .invalidCurrentDirectory)
         }
     }

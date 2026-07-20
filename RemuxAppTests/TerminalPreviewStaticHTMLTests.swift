@@ -82,7 +82,7 @@ final class TerminalPreviewStaticHTMLTests: XCTestCase {
             TerminalPreviewCandidate(selection: "/srv/app/index.html")
         )
 
-        session.open(candidate, resolvingPathWith: { candidate.remotePath })
+        session.open(candidate, resolvingPathWith: { "/srv/app/index.html" })
         try await waitUntil("HTML resource did not become ready") {
             if case .ready = session.state { return true }
             return false

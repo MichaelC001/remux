@@ -7,6 +7,7 @@ import WebKit
 enum TerminalPreviewResource: Equatable, Sendable {
     case file(TerminalPreviewFileResource)
     case staticHTML(TerminalPreviewStaticHTMLResource)
+    case liveWeb(TerminalPreviewLiveWebResource)
 
     var shareURL: URL? {
         guard case .file(let resource) = self else { return nil }
@@ -14,26 +15,43 @@ enum TerminalPreviewResource: Equatable, Sendable {
     }
 
     func close() {
-        guard case .staticHTML(let resource) = self else { return }
-        resource.close()
+        switch self {
+        case .file:
+            break
+        case .staticHTML(let resource):
+            resource.close()
+        case .liveWeb(let resource):
+            resource.close()
+        }
     }
 }
 
 struct TerminalPreviewClient: Sendable {
     private let fileClient: TerminalPreviewFileClient
     private let staticHTMLClient: TerminalPreviewStaticHTMLClient
+    private let liveWebClient: TerminalPreviewLiveWebClient?
 
-    init(provider: RemuxSessionCitadelSFTPClientProvider) {
+    init(
+        provider: RemuxSessionCitadelSFTPClientProvider,
+        liveForwardProvider: RemuxSessionLiveForwardProvider?
+    ) {
         self.fileClient = TerminalPreviewFileClient(provider: provider)
         self.staticHTMLClient = TerminalPreviewStaticHTMLClient(provider: provider)
+        self.liveWebClient = liveForwardProvider.map {
+            TerminalPreviewLiveWebClient(provider: $0)
+        }
     }
 
     init(
         loadFile: @escaping @Sendable (String) async throws -> TerminalPreviewFileResource,
-        openStaticHTML: @escaping @Sendable (String) async throws -> TerminalPreviewStaticHTMLResource
+        openStaticHTML: @escaping @Sendable (String) async throws -> TerminalPreviewStaticHTMLResource,
+        openLiveWeb: (@Sendable (
+            TerminalPreviewLocalhostTarget
+        ) async throws -> TerminalPreviewLiveWebResource)? = nil
     ) {
         self.fileClient = TerminalPreviewFileClient(load: loadFile)
         self.staticHTMLClient = TerminalPreviewStaticHTMLClient(open: openStaticHTML)
+        self.liveWebClient = openLiveWeb.map { TerminalPreviewLiveWebClient(open: $0) }
     }
 
     func load(remotePath: String) async throws -> TerminalPreviewResource {
@@ -43,6 +61,15 @@ struct TerminalPreviewClient: Sendable {
         default:
             return .file(try await fileClient.load(remotePath: remotePath))
         }
+    }
+
+    func openLiveWeb(
+        _ target: TerminalPreviewLocalhostTarget
+    ) async throws -> TerminalPreviewResource {
+        guard let liveWebClient else {
+            throw RemuxSFTPClientError.sessionUnavailable
+        }
+        return .liveWeb(try await liveWebClient.open(target))
     }
 }
 
@@ -534,7 +561,7 @@ struct TerminalPreviewStaticHTMLView: UIViewRepresentable {
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         let schemeHandler: TerminalPreviewStaticHTMLSchemeHandler
-        private let openExternalURL: @MainActor (URL) -> Void
+        private let policy: TerminalPreviewWebLinkPolicy
 
         init(
             resource: TerminalPreviewStaticHTMLResource,
@@ -543,7 +570,12 @@ struct TerminalPreviewStaticHTMLView: UIViewRepresentable {
             }
         ) {
             self.schemeHandler = resource.makeSchemeHandler()
-            self.openExternalURL = openExternalURL
+            self.policy = TerminalPreviewWebLinkPolicy(
+                allowsNavigation: { url in
+                    url.scheme == TerminalPreviewStaticHTMLResource.scheme
+                },
+                openExternalURL: openExternalURL
+            )
         }
 
         func webView(
@@ -553,13 +585,7 @@ struct TerminalPreviewStaticHTMLView: UIViewRepresentable {
                 WKNavigationActionPolicy
             ) -> Void
         ) {
-            if navigationAction.request.url?.scheme
-                == TerminalPreviewStaticHTMLResource.scheme {
-                decisionHandler(.allow)
-                return
-            }
-            decisionHandler(.cancel)
-            routeExternally(navigationAction)
+            decisionHandler(policy.decidePolicy(for: navigationAction))
         }
 
         func webView(
@@ -568,24 +594,8 @@ struct TerminalPreviewStaticHTMLView: UIViewRepresentable {
             for navigationAction: WKNavigationAction,
             windowFeatures: WKWindowFeatures
         ) -> WKWebView? {
-            if navigationAction.request.url?.scheme
-                == TerminalPreviewStaticHTMLResource.scheme {
-                webView.load(navigationAction.request)
-            } else {
-                routeExternally(navigationAction)
-            }
+            policy.handleCreateWebView(webView, for: navigationAction)
             return nil
-        }
-
-        // Only deliberate link taps may leave the preview; programmatic
-        // redirects and auto-loading frames stay cancelled.
-        private func routeExternally(_ navigationAction: WKNavigationAction) {
-            guard navigationAction.navigationType == .linkActivated,
-                  let url = navigationAction.request.url,
-                  let scheme = url.scheme?.lowercased(),
-                  scheme == "http" || scheme == "https"
-            else { return }
-            openExternalURL(url)
         }
     }
 }

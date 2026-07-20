@@ -74,6 +74,8 @@ struct TerminalPreviewView: View {
                     GhosttyQuickLookPreview(resource: file)
                 case .staticHTML(let html):
                     TerminalPreviewStaticHTMLView(resource: html)
+                case .liveWeb(let liveWeb):
+                    TerminalPreviewLiveWebView(resource: liveWeb)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -404,7 +404,10 @@ cleanup_failed_fixture() {
   status=$?
   if [ "$status" -ne 0 ]; then
     "$tmux_bin" kill-session -t "$session" 2>/dev/null || true
-    rm -f -- "$fixture_path" "$html_path" "$css_path" "$image_path" "$script_path"
+    if [ -f "$fixture_dir/server.pid" ]; then
+      kill "$(cat "$fixture_dir/server.pid")" 2>/dev/null || true
+    fi
+    rm -f -- "$fixture_path" "$html_path" "$css_path" "$image_path" "$script_path" "$fixture_dir/server.pid"
     rmdir -- "$fixture_dir" 2>/dev/null || true
   fi
   exit "$status"
@@ -438,6 +441,22 @@ document.addEventListener('DOMContentLoaded', function () {
   document.body.appendChild(banner);
 });
 PREVIEW_JS
+
+# Serve the same fixture over loopback HTTP so the live-localhost preview
+# scenario exercises the direct-TCPIP forward end to end. The port is fixed
+# because the UI test types the URL token verbatim.
+live_server_port=18923
+live_server_pid_path="$fixture_dir/server.pid"
+if [ -f "$live_server_pid_path" ]; then
+  kill "$(cat "$live_server_pid_path")" 2>/dev/null || true
+  rm -f -- "$live_server_pid_path"
+fi
+(
+  cd "$fixture_dir"
+  nohup python3 -m http.server "$live_server_port" --bind 127.0.0.1 \
+    >/dev/null 2>&1 &
+  echo $! >"$live_server_pid_path"
+)
 cat >"$css_path" <<'PREVIEW_CSS'
 html, body { margin: 0; min-height: 100%; background: #123047; }
 body { display: grid; place-items: center; }
@@ -487,7 +506,7 @@ cleanup_generated_sessions() {
     local remote_command
     remote_command="session=$session; tmux_bin=\$(command -v tmux 2>/dev/null || true); if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; \"\$tmux_bin\" kill-session -t \"\$session\" 2>/dev/null || true"
     if [[ "$fixture_name" == "relative-file-preview" && "$session" == "$fixture_session" ]]; then
-      remote_command+="; fixture_suffix=\${session#remux-latency-pv-}; fixture_dir=/tmp/rpv-\$fixture_suffix; rm -f -- \"\$fixture_dir/README.md\" \"\$fixture_dir/index.html\" \"\$fixture_dir/preview.css\" \"\$fixture_dir/preview.svg\" \"\$fixture_dir/preview.js\"; rmdir -- \"\$fixture_dir\" 2>/dev/null || true"
+      remote_command+="; fixture_suffix=\${session#remux-latency-pv-}; fixture_dir=/tmp/rpv-\$fixture_suffix; if [ -f \"\$fixture_dir/server.pid\" ]; then kill \"\$(cat \"\$fixture_dir/server.pid\")\" 2>/dev/null || true; fi; rm -f -- \"\$fixture_dir/README.md\" \"\$fixture_dir/index.html\" \"\$fixture_dir/preview.css\" \"\$fixture_dir/preview.svg\" \"\$fixture_dir/preview.js\" \"\$fixture_dir/server.pid\"; rmdir -- \"\$fixture_dir\" 2>/dev/null || true"
     fi
 
     if ! REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
