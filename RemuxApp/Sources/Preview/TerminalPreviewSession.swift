@@ -3,6 +3,8 @@ import QuickLook
 
 @MainActor
 final class TerminalPreviewSession: ObservableObject {
+    typealias PathResolver = @Sendable () async throws -> String
+
     enum State {
         case idle
         case loading(TerminalPreviewCandidate)
@@ -17,6 +19,8 @@ final class TerminalPreviewSession: ObservableObject {
     private let canPreview: @MainActor @Sendable (URL) -> Bool
     private var requestGeneration: UInt = 0
     private var task: Task<Void, Never>?
+    private var pathResolver: PathResolver?
+    private var resolvedRemotePath: String?
 
     init(
         client: TerminalPreviewFileClient?,
@@ -54,16 +58,52 @@ final class TerminalPreviewSession: ObservableObject {
         }
     }
 
-    func open(_ candidate: TerminalPreviewCandidate) {
+    func open(
+        _ candidate: TerminalPreviewCandidate,
+        resolvingPathWith resolver: @escaping PathResolver
+    ) {
         guard let client else { return }
         task?.cancel()
         requestGeneration &+= 1
+        pathResolver = resolver
+        resolvedRemotePath = nil
+        startLoading(candidate, resolvingPathWith: resolver, client: client)
+    }
+
+    func refresh() {
+        guard let client, let currentCandidate, let pathResolver else { return }
+        task?.cancel()
+        requestGeneration &+= 1
+        let resolver = resolvedRemotePath.map { remotePath in
+            { @Sendable in remotePath }
+        } ?? pathResolver
+        startLoading(currentCandidate, resolvingPathWith: resolver, client: client)
+    }
+
+    func close() {
+        task?.cancel()
+        task = nil
+        pathResolver = nil
+        resolvedRemotePath = nil
+        requestGeneration &+= 1
+        state = .idle
+    }
+
+    private func startLoading(
+        _ candidate: TerminalPreviewCandidate,
+        resolvingPathWith resolver: @escaping PathResolver,
+        client: TerminalPreviewFileClient
+    ) {
         let activeGeneration = requestGeneration
         state = .loading(candidate)
         task = Task.detached(priority: .userInitiated) { [weak self] in
+            var resolvedRemotePath: String?
             let result: Result<TerminalPreviewFileResource, Error>
             do {
-                let resource = try await client.load(candidate)
+                let remotePath = try await resolver()
+                resolvedRemotePath = remotePath
+                try Task.checkCancellation()
+                let resource = try await client.load(remotePath: remotePath)
                 try Task.checkCancellation()
                 result = .success(resource)
             } catch is CancellationError {
@@ -74,30 +114,23 @@ final class TerminalPreviewSession: ObservableObject {
             await self?.finish(
                 result,
                 candidate: candidate,
-                generation: activeGeneration
+                generation: activeGeneration,
+                resolvedRemotePath: resolvedRemotePath
             )
         }
-    }
-
-    func refresh() {
-        guard let currentCandidate else { return }
-        open(currentCandidate)
-    }
-
-    func close() {
-        task?.cancel()
-        task = nil
-        requestGeneration &+= 1
-        state = .idle
     }
 
     private func finish(
         _ result: Result<TerminalPreviewFileResource, Error>,
         candidate: TerminalPreviewCandidate,
-        generation: UInt
+        generation: UInt,
+        resolvedRemotePath: String?
     ) {
         guard requestGeneration == generation else { return }
         task = nil
+        if let resolvedRemotePath {
+            self.resolvedRemotePath = resolvedRemotePath
+        }
         switch result {
         case .success(let resource) where canPreview(resource.url):
             state = .ready(candidate, resource)

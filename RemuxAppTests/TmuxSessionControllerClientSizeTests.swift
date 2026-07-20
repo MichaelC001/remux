@@ -48,6 +48,94 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         )
     }
 
+    func testPaneCurrentDirectoryUsesOneTargetedCommandAndReturnsItsBody() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.threePaneZoomedWindow,
+            expectedPaneCount: 3
+        )
+        var nextCommandNumber = harness.nextCommandNumber
+
+        let query = Task {
+            try await harness.controller.paneCurrentDirectory(for: 1)
+        }
+        try await waitUntil("current-directory query was not written") {
+            harness.recorder.hasWrites
+        }
+        XCTAssertEqual(
+            harness.recorder.takeStrings(),
+            ["display-message -p -t %1 '#{pane_current_path}'\n"]
+        )
+
+        harness.controller.pump(Data(responseBlock(
+            commandNumber: &nextCommandNumber,
+            body: "/Users/macbook/scratchpad\n"
+        ).utf8))
+        let currentDirectory = try await query.value
+        XCTAssertEqual(currentDirectory, "/Users/macbook/scratchpad")
+        await shutDown(harness.controller)
+    }
+
+    func testPaneCurrentDirectoryReturnsCommandFailureWithoutRequestFailureUI() async throws {
+        let requestFailure = expectation(description: "no request failure callback")
+        requestFailure.isInverted = true
+        let harness = try await readyController(
+            listWindowsBody: Self.threePaneZoomedWindow,
+            expectedPaneCount: 3,
+            callbacks: .init(onRequestFailed: { _ in requestFailure.fulfill() })
+        )
+        var nextCommandNumber = harness.nextCommandNumber
+
+        let query = Task {
+            try await harness.controller.paneCurrentDirectory(for: 1)
+        }
+        try await waitUntil("current-directory query was not written") {
+            harness.recorder.hasWrites
+        }
+        _ = harness.recorder.takeStrings()
+        harness.controller.pump(Data(errorBlock(
+            commandNumber: &nextCommandNumber,
+            body: "can't find pane: %1"
+        ).utf8))
+
+        do {
+            _ = try await query.value
+            XCTFail("expected the query to fail")
+        } catch {
+            XCTAssertEqual(
+                error as? TmuxSessionController.PaneCurrentDirectoryError,
+                .commandFailed("can't find pane: %1")
+            )
+        }
+        await fulfillment(of: [requestFailure], timeout: 0.05)
+        await shutDown(harness.controller)
+    }
+
+    func testShutdownResumesOutstandingPaneCurrentDirectoryQuery() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.threePaneZoomedWindow,
+            expectedPaneCount: 3
+        )
+        let query = Task {
+            try await harness.controller.paneCurrentDirectory(for: 1)
+        }
+        try await waitUntil("current-directory query was not written") {
+            harness.recorder.hasWrites
+        }
+        _ = harness.recorder.takeStrings()
+
+        await shutDown(harness.controller)
+
+        do {
+            _ = try await query.value
+            XCTFail("expected shutdown to fail the query")
+        } catch {
+            XCTAssertEqual(
+                error as? TmuxSessionController.PaneCurrentDirectoryError,
+                .sessionUnavailable
+            )
+        }
+    }
+
     func testSideBySideNavigationCoalescesAndRefreshesOnEachRevisit() async throws {
         let harness = try await readyController(
             listWindowsBody: Self.threePaneZoomedWindow,
@@ -852,7 +940,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
     ) -> String {
         let cursorY = rows - 1
         let state = "%\(paneID.rawValue);\(columns);\(rows);0;0;1;;;;0;"
-            + "4294967295;4294967295;0;1;0;0;0;0;0;0;0;0;0;;;0;0;\(cursorY);8,16\n"
+            + "4294967295;4294967295;0;1;0;0;0;0;0;0;0;0;;;0;0;\(cursorY);8,16\n"
         return responseBlock(commandNumber: &commandNumber, body: state)
             + responseBlock(commandNumber: &commandNumber)
             + responseBlock(commandNumber: &commandNumber)
@@ -970,6 +1058,10 @@ private final class ControllerOutboundRecorder: @unchecked Sendable {
 
     func append(_ data: Data) {
         lock.withLock { writes.append(data) }
+    }
+
+    var hasWrites: Bool {
+        lock.withLock { !writes.isEmpty }
     }
 
     func takeStrings() -> [String] {

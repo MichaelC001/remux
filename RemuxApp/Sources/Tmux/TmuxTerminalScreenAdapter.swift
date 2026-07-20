@@ -120,6 +120,16 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         }
     }
 
+    func tmuxPaneID(for surfaceID: UUID) -> TmuxPaneID? {
+        let paneID = activeManagedSurface?.id == surfaceID
+            ? activeManagedPaneID
+            : identities.paneID(for: surfaceID)
+        guard let paneID,
+              latestTopology?.panes.contains(where: { $0.id == paneID }) == true
+        else { return nil }
+        return paneID
+    }
+
     // MARK: Topology synthesis
 
     private static var emptyTopologySnapshot: GhosttyRuntimeSurfaceTopologySnapshot {

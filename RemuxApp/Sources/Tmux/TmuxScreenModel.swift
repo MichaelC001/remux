@@ -149,6 +149,31 @@ final class TmuxScreenModel: ObservableObject {
         }
     }
 
+    func terminalPreviewPathResolver(
+        for candidate: TerminalPreviewCandidate,
+        from surfaceID: UUID
+    ) -> TerminalPreviewSession.PathResolver {
+        switch candidate.path {
+        case .absolute(let remotePath):
+            return { remotePath }
+        case .relative:
+            guard let controller = session?.controller,
+                  let paneID = terminalScreenAdapter.tmuxPaneID(for: surfaceID)
+            else {
+                return {
+                    throw TmuxSessionController.PaneCurrentDirectoryError
+                        .paneUnavailable
+                }
+            }
+            let path = candidate.path
+            return {
+                let currentDirectory = try await controller
+                    .paneCurrentDirectory(for: paneID)
+                return try path.resolved(relativeTo: currentDirectory)
+            }
+        }
+    }
+
     private func connect(viewport: TmuxControlViewport) {
         initialViewport = viewport
         let initialSize = TmuxSessionController.ClientSize(

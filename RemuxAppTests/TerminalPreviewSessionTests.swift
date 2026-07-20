@@ -20,9 +20,9 @@ final class TerminalPreviewSessionTests: XCTestCase {
             canPreview: { _ in true }
         )
 
-        session.open(request(path: "/tmp/first.txt"))
+        open(path: "/tmp/first.txt", in: session)
         try await Task.sleep(for: .milliseconds(10))
-        session.open(request(path: "/tmp/second.txt"))
+        open(path: "/tmp/second.txt", in: session)
 
         try await waitUntil("replacement did not become ready") {
             guard case .ready(let candidate, _) = session.state else { return false }
@@ -48,10 +48,50 @@ final class TerminalPreviewSessionTests: XCTestCase {
             canPreview: { _ in true }
         )
 
-        session.open(request(path: "/tmp/slow.txt"))
+        open(path: "/tmp/slow.txt", in: session)
         session.close()
         try await Task.sleep(for: .milliseconds(120))
 
+        if case .idle = session.state {
+            XCTAssertFalse(session.isPresented)
+        } else {
+            XCTFail("a closed preview must remain idle")
+        }
+    }
+
+    func testCloseWhileResolvingDoesNotStartFileLoad() async throws {
+        let resolutions = PreviewAttemptCounter()
+        let loads = PreviewAttemptCounter()
+        let client = TerminalPreviewFileClient { _ in
+            _ = await loads.next()
+            throw PreviewTestError.failed
+        }
+        let session = TerminalPreviewSession(
+            client: client,
+            serverDisplayName: "Server",
+            canPreview: { _ in true }
+        )
+
+        session.open(
+            request(path: "README.md"),
+            resolvingPathWith: {
+                _ = await resolutions.next()
+                try? await Task.sleep(for: .seconds(1))
+                return "/tmp/README.md"
+            }
+        )
+        for _ in 0..<100 {
+            if await resolutions.value() != 0 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let resolutionCount = await resolutions.value()
+        XCTAssertEqual(resolutionCount, 1)
+
+        session.close()
+        try await Task.sleep(for: .milliseconds(50))
+
+        let loadCount = await loads.value()
+        XCTAssertEqual(loadCount, 0)
         if case .idle = session.state {
             XCTAssertFalse(session.isPresented)
         } else {
@@ -75,7 +115,7 @@ final class TerminalPreviewSessionTests: XCTestCase {
             canPreview: { _ in true }
         )
 
-        session.open(request(path: "/tmp/retry.txt"))
+        open(path: "/tmp/retry.txt", in: session)
         try await waitUntil("request did not fail") {
             if case .failed = session.state { return true }
             return false
@@ -94,6 +134,44 @@ final class TerminalPreviewSessionTests: XCTestCase {
         XCTAssertEqual(attemptCount, 2)
     }
 
+    func testRetryReusesResolvedPathWithoutResolvingAgain() async throws {
+        let tempRoot = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        let resolutions = PreviewAttemptCounter()
+        let attempts = PreviewAttemptCounter()
+        let client = TerminalPreviewFileClient { path in
+            if await attempts.next() == 1 {
+                throw PreviewTestError.failed
+            }
+            return try Self.makeResource(path: path, in: tempRoot)
+        }
+        let session = TerminalPreviewSession(
+            client: client,
+            serverDisplayName: "Server",
+            canPreview: { _ in true }
+        )
+
+        session.open(
+            request(path: "/tmp/retry.txt"),
+            resolvingPathWith: {
+                _ = await resolutions.next()
+                return "/tmp/retry-origin.txt"
+            }
+        )
+        try await waitUntil("request did not fail") {
+            if case .failed = session.state { return true }
+            return false
+        }
+        session.refresh()
+        try await waitUntil("retry did not become ready") {
+            if case .ready = session.state { return true }
+            return false
+        }
+
+        let resolutionCount = await resolutions.value()
+        XCTAssertEqual(resolutionCount, 1)
+    }
+
     func testUnsupportedLocalArtifactProducesTruthfulFailure() async throws {
         let tempRoot = try makeTempRoot()
         defer { try? FileManager.default.removeItem(at: tempRoot) }
@@ -106,7 +184,7 @@ final class TerminalPreviewSessionTests: XCTestCase {
             canPreview: { _ in false }
         )
 
-        session.open(request(path: "/tmp/unknown.bin"))
+        open(path: "/tmp/unknown.bin", in: session)
         try await waitUntil("unsupported result did not fail") {
             if case .failed = session.state { return true }
             return false
@@ -121,6 +199,11 @@ final class TerminalPreviewSessionTests: XCTestCase {
 
     private func request(path: String) -> TerminalPreviewCandidate {
         TerminalPreviewCandidate(selection: path)!
+    }
+
+    private func open(path: String, in session: TerminalPreviewSession) {
+        let candidate = request(path: path)
+        session.open(candidate, resolvingPathWith: { path })
     }
 
     private func makeTempRoot() throws -> URL {

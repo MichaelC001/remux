@@ -254,7 +254,7 @@ struct TerminalPreviewFileClient: Sendable {
         }
     }
 
-    func load(_ candidate: TerminalPreviewCandidate) async throws -> TerminalPreviewFileResource {
-        try await loadHandler(candidate.remotePath)
+    func load(remotePath: String) async throws -> TerminalPreviewFileResource {
+        try await loadHandler(remotePath)
     }
 }

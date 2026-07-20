@@ -109,6 +109,31 @@ final class TmuxSessionController: @unchecked Sendable {
         case alreadyRegistered
     }
 
+    enum PaneCurrentDirectoryError: LocalizedError, Equatable, Sendable {
+        case sessionUnavailable
+        case paneUnavailable
+        case commandSkipped
+        case commandFailed(String)
+        case invalidResponse
+
+        var errorDescription: String? {
+            switch self {
+            case .sessionUnavailable:
+                return "The terminal session is no longer available."
+            case .paneUnavailable:
+                return "The originating terminal pane is no longer available."
+            case .commandSkipped:
+                return "tmux did not execute the current-directory query."
+            case .commandFailed(let detail):
+                return detail.isEmpty
+                    ? "tmux could not resolve the terminal's current directory."
+                    : detail
+            case .invalidResponse:
+                return "tmux returned an invalid current directory."
+            }
+        }
+    }
+
     /// One retained reference to ControlClient's canonical pane terminal.
     /// Ownership transfers from the writer queue to MainActor exactly once.
     final class RetainedPaneTerminal: @unchecked Sendable {
@@ -151,9 +176,11 @@ final class TmuxSessionController: @unchecked Sendable {
         case zoom(TmuxPaneID)
     }
 
-    private struct OutstandingRequest {
-        let request: Request
-        let topologyRevisionAtSubmission: UInt64
+    private enum OutstandingRequest {
+        case action(Request, topologyRevisionAtSubmission: UInt64)
+        case paneCurrentDirectory(
+            @Sendable (Result<String, PaneCurrentDirectoryError>) -> Void
+        )
     }
 
     private struct DesiredPaneRefresh {
@@ -254,6 +281,7 @@ final class TmuxSessionController: @unchecked Sendable {
     func transportClosed() {
         queue.async { [self] in
             guard !shuttingDown else { return }
+            failOutstandingPaneDirectoryQueries(with: .sessionUnavailable)
             deferredNavigationIntent = nil
             successfulMutationRequiredAfterRevision = nil
             guard case .closed = state else {
@@ -269,6 +297,7 @@ final class TmuxSessionController: @unchecked Sendable {
     func attachmentStopped() {
         queue.async { [self] in
             guard !shuttingDown else { return }
+            failOutstandingPaneDirectoryQueries(with: .sessionUnavailable)
             deferredNavigationIntent = nil
             successfulMutationRequiredAfterRevision = nil
             guard case .closed = state else {
@@ -282,7 +311,9 @@ final class TmuxSessionController: @unchecked Sendable {
         queue.async { [self] in
             shuttingDown = true
             outboundSink = nil
+            let directoryQueries = outstandingPaneDirectoryQueries()
             requestsByToken.removeAll()
+            directoryQueries.forEach { $0(.failure(.sessionUnavailable)) }
             deferredNavigationIntent = nil
             successfulMutationRequiredAfterRevision = nil
             topology = nil
@@ -359,6 +390,7 @@ final class TmuxSessionController: @unchecked Sendable {
         preconditionOnWriterQueue()
         switch action.tag {
         case GHOSTTY_TMUX_ACTION_EXIT:
+            failOutstandingPaneDirectoryQueries(with: .sessionUnavailable)
             deferredNavigationIntent = nil
             successfulMutationRequiredAfterRevision = nil
             let exit = action.value.exit
@@ -519,13 +551,31 @@ final class TmuxSessionController: @unchecked Sendable {
     private func handleCommandCompletion(_ completion: ghostty_tmux_command_completion_s) {
         preconditionOnWriterQueue()
         guard let outstanding = requestsByToken.removeValue(forKey: completion.token) else { return }
-        let request = outstanding.request
+        switch outstanding {
+        case .paneCurrentDirectory(let completionHandler):
+            completionHandler(paneCurrentDirectoryResult(for: completion))
+            return
+        case .action(let request, let topologyRevisionAtSubmission):
+            handleActionCompletion(
+                completion,
+                request: request,
+                topologyRevisionAtSubmission: topologyRevisionAtSubmission
+            )
+        }
+    }
+
+    private func handleActionCompletion(
+        _ completion: ghostty_tmux_command_completion_s,
+        request: Request,
+        topologyRevisionAtSubmission: UInt64
+    ) {
+        preconditionOnWriterQueue()
         switch completion.status {
         case GHOSTTY_TMUX_COMMAND_SUCCESS:
             if requestMutatesTopology(request) {
                 successfulMutationRequiredAfterRevision = max(
                     successfulMutationRequiredAfterRevision ?? 0,
-                    outstanding.topologyRevisionAtSubmission
+                    topologyRevisionAtSubmission
                 )
             }
         case GHOSTTY_TMUX_COMMAND_SKIPPED:
@@ -682,6 +732,17 @@ final class TmuxSessionController: @unchecked Sendable {
 
     func requestCopyMode(paneID: TmuxPaneID) {
         enqueue(command: "copy-mode -t %\(paneID.rawValue)", request: .copyMode)
+    }
+
+    func paneCurrentDirectory(for paneID: TmuxPaneID) async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async { [self] in
+                submitPaneCurrentDirectoryQueryOnWriter(
+                    paneID: paneID,
+                    completion: { continuation.resume(with: $0) }
+                )
+            }
+        }
     }
 
     private func submitNavigation(_ intent: NavigationIntent) {
@@ -887,7 +948,10 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     private var hasOutstandingTopologyMutation: Bool {
-        requestsByToken.values.contains { requestMutatesTopology($0.request) }
+        requestsByToken.values.contains {
+            guard case .action(let request, _) = $0 else { return false }
+            return requestMutatesTopology(request)
+        }
     }
 
     private var navigationAdmissionBlocked: Bool {
@@ -970,6 +1034,53 @@ final class TmuxSessionController: @unchecked Sendable {
             reportRequestFailure(request)
             return false
         }
+        let (result, token) = enqueueCommandTokenOnWriter(command, client: client)
+        guard result == GHOSTTY_TMUX_RESULT_OK else {
+            reportImmediateFailure(result, request: request)
+            return false
+        }
+        requestsByToken[token] = .action(
+            request,
+            topologyRevisionAtSubmission: topologyRevision
+        )
+        return true
+    }
+
+    private func submitPaneCurrentDirectoryQueryOnWriter(
+        paneID: TmuxPaneID,
+        completion: @escaping @Sendable (
+            Result<String, PaneCurrentDirectoryError>
+        ) -> Void
+    ) {
+        preconditionOnWriterQueue()
+        guard let client, !shuttingDown else {
+            completion(.failure(.sessionUnavailable))
+            return
+        }
+        guard retainedPaneIDs.contains(paneID) else {
+            completion(.failure(.paneUnavailable))
+            return
+        }
+
+        let command = "display-message -p -t %\(paneID.rawValue) '#{pane_current_path}'"
+        let (result, token) = enqueueCommandTokenOnWriter(command, client: client)
+        guard result == GHOSTTY_TMUX_RESULT_OK else {
+            completion(.failure(.commandFailed(String(describing: result))))
+            if result == GHOSTTY_TMUX_RESULT_CLIENT_FAILED
+                || result == GHOSTTY_TMUX_RESULT_CLOSED {
+                handleClientFailure(result)
+            }
+            return
+        }
+        requestsByToken[token] = .paneCurrentDirectory(completion)
+        _ = drainOutbound()
+    }
+
+    private func enqueueCommandTokenOnWriter(
+        _ command: String,
+        client: ghostty_tmux_client_t
+    ) -> (ghostty_tmux_result_e, UInt64) {
+        preconditionOnWriterQueue()
         var token: UInt64 = 0
         let result = command.utf8.withContiguousStorageIfAvailable { buffer in
             ghostty_tmux_client_enqueue_command(
@@ -984,15 +1095,7 @@ final class TmuxSessionController: @unchecked Sendable {
                 &token
             )
         }
-        guard result == GHOSTTY_TMUX_RESULT_OK else {
-            reportImmediateFailure(result, request: request)
-            return false
-        }
-        requestsByToken[token] = OutstandingRequest(
-            request: request,
-            topologyRevisionAtSubmission: topologyRevision
-        )
-        return true
+        return (result, token)
     }
 
     private func enqueueGroupOnWriter(commands: [String], request: Request) {
@@ -1052,8 +1155,8 @@ final class TmuxSessionController: @unchecked Sendable {
             return false
         }
         for token in tokens {
-            requestsByToken[token] = OutstandingRequest(
-                request: request,
+            requestsByToken[token] = .action(
+                request,
                 topologyRevisionAtSubmission: topologyRevision
             )
         }
@@ -1181,6 +1284,7 @@ final class TmuxSessionController: @unchecked Sendable {
     private func handleClientFailure(_ result: ghostty_tmux_result_e) {
         preconditionOnWriterQueue()
         guard !shuttingDown else { return }
+        failOutstandingPaneDirectoryQueries(with: .sessionUnavailable)
         deferredNavigationIntent = nil
         successfulMutationRequiredAfterRevision = nil
         switch result {
@@ -1206,6 +1310,51 @@ final class TmuxSessionController: @unchecked Sendable {
 
     private func reportRequestFailure(_ request: Request) {
         DispatchQueue.main.async { self.callbacks.onRequestFailed(request) }
+    }
+
+    private func paneCurrentDirectoryResult(
+        for completion: ghostty_tmux_command_completion_s
+    ) -> Result<String, PaneCurrentDirectoryError> {
+        switch completion.status {
+        case GHOSTTY_TMUX_COMMAND_SUCCESS:
+            let path = Self.copyString(completion.body)
+                .trimmingCharacters(in: .newlines)
+            guard path.hasPrefix("/"),
+                  !path.contains("\0"),
+                  !path.contains("\n"),
+                  !path.contains("\r")
+            else { return .failure(.invalidResponse) }
+            return .success(path)
+        case GHOSTTY_TMUX_COMMAND_SKIPPED:
+            return .failure(.commandSkipped)
+        case GHOSTTY_TMUX_COMMAND_ERROR_BLOCK:
+            let detail = Self.copyString(completion.body)
+                .trimmingCharacters(in: .newlines)
+            return .failure(.commandFailed(detail))
+        default:
+            return .failure(.invalidResponse)
+        }
+    }
+
+    private func outstandingPaneDirectoryQueries() -> [
+        @Sendable (Result<String, PaneCurrentDirectoryError>) -> Void
+    ] {
+        requestsByToken.values.compactMap {
+            guard case .paneCurrentDirectory(let completion) = $0 else { return nil }
+            return completion
+        }
+    }
+
+    private func failOutstandingPaneDirectoryQueries(
+        with error: PaneCurrentDirectoryError
+    ) {
+        preconditionOnWriterQueue()
+        let completions = outstandingPaneDirectoryQueries()
+        requestsByToken = requestsByToken.filter {
+            guard case .paneCurrentDirectory = $0.value else { return true }
+            return false
+        }
+        completions.forEach { $0(.failure(error)) }
     }
 
     private func preconditionOnWriterQueue() {

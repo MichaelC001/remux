@@ -99,6 +99,8 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
             first.windows.count, 2,
             "the first emitted topology must project immediately, not lag one update behind"
         )
+        let firstPaneSurfaceID = try XCTUnwrap(first.previewLeafIDs.first)
+        XCTAssertEqual(adapter.tmuxPaneID(for: firstPaneSurfaceID), 10)
 
         let oneWindow = TmuxSessionController.TopologySnapshot(
             sessionName: "fresh-test",

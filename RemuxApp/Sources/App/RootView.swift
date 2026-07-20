@@ -337,14 +337,23 @@ private struct ActiveTerminalSessionView: View {
         }
     }
 
-    private func openPreview(_ candidate: TerminalPreviewCandidate) {
-        previewSession.open(candidate)
+    private func openPreview(
+        _ candidate: TerminalPreviewCandidate,
+        from surfaceID: UUID
+    ) {
+        previewSession.open(
+            candidate,
+            resolvingPathWith: entry.model.terminalPreviewPathResolver(
+                for: candidate,
+                from: surfaceID
+            )
+        )
     }
 
-    private var previewSelectionHandler: ((TerminalPreviewCandidate) -> Void)? {
+    private var previewSelectionHandler: ((UUID, TerminalPreviewCandidate) -> Void)? {
         guard previewSession.canOpenPreview else { return nil }
-        return { candidate in
-            openPreview(candidate)
+        return { surfaceID, candidate in
+            openPreview(candidate, from: surfaceID)
         }
     }
 }

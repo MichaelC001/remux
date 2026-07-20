@@ -287,8 +287,8 @@ for target in "${only_testing[@]}"; do
       fixture_name="dense-mixed"
       fixture_session="remux-latency-dense-mixed-${stamp}"
       ;;
-    *testLiveTerminalAbsoluteFilePreviewWhenConfigured)
-      fixture_name="absolute-file-preview"
+    *testLiveTerminalRelativeFilePreviewWhenConfigured)
+      fixture_name="relative-file-preview"
       fixture_session="remux-latency-pv-${stamp}"
       ;;
   esac
@@ -361,15 +361,15 @@ fi
 REMOTE
 }
 
-prepare_absolute_file_preview_fixture() {
+prepare_relative_file_preview_fixture() {
   local session="$1"
 
   if [[ ! "$session" =~ $session_allowlist ]]; then
-    printf 'refusing non-allowlisted absolute file preview fixture session: %s\n' "$session" >&2
+    printf 'refusing non-allowlisted relative file preview fixture session: %s\n' "$session" >&2
     return 1
   fi
 
-  printf 'Preparing absolute file preview tmux fixture: %s\n' "$session"
+  printf 'Preparing relative file preview tmux fixture: %s\n' "$session"
   REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
     SSH_ASKPASS="$askpass" \
     SSH_ASKPASS_REQUIRE=force \
@@ -385,7 +385,8 @@ prepare_absolute_file_preview_fixture() {
 set -eu
 session="$1"
 fixture_suffix="${session#remux-latency-pv-}"
-fixture_path="/tmp/rpv-$fixture_suffix"
+fixture_dir="/tmp/rpv-$fixture_suffix"
+fixture_path="$fixture_dir/README.md"
 tmux_bin="$(command -v tmux 2>/dev/null || true)"
 if [ -z "$tmux_bin" ] && [ -x /opt/homebrew/bin/tmux ]; then
   tmux_bin=/opt/homebrew/bin/tmux
@@ -400,6 +401,7 @@ cleanup_failed_fixture() {
   if [ "$status" -ne 0 ]; then
     "$tmux_bin" kill-session -t "$session" 2>/dev/null || true
     rm -f -- "$fixture_path"
+    rmdir -- "$fixture_dir" 2>/dev/null || true
   fi
   exit "$status"
 }
@@ -407,16 +409,19 @@ trap cleanup_failed_fixture EXIT
 
 "$tmux_bin" kill-session -t "$session" 2>/dev/null || true
 rm -f -- "$fixture_path"
+mkdir -p -- "$fixture_dir"
 cat >"$fixture_path" <<'PREVIEW_FILE'
 REMUX_PREVIEW_FILE_CONTENT_ALPHA
 REMUX_PREVIEW_FILE_CONTENT_BETA
 REMUX_PREVIEW_FILE_CONTENT_GAMMA
 PREVIEW_FILE
 
-# The pane contains only the absolute path at a stable top-row position. `cat`
-# keeps the pane alive without printing a prompt or any additional output.
-"$tmux_bin" new-session -d -s "$session" -n preview \
-  "printf '%s\\n' '$fixture_path'; exec cat"
+# Match normal shell output: the pane's current directory contains README.md,
+# and `ls` prints only that bare filename at a stable top-row position. Each
+# subsequent input line replaces it so the UI test can exercise other path
+# forms at the same terminal coordinate without shell prompts or extra output.
+"$tmux_bin" new-session -d -s "$session" -n preview -c "$fixture_dir" \
+  "ls -1 README.md; while IFS= read -r token; do printf '\\033[2J\\033[H%s\\n' \"\$token\"; done"
 REMOTE
 }
 
@@ -424,8 +429,8 @@ if [[ "$fixture_name" == "dense-mixed" ]]; then
   prepare_dense_mixed_fixture "$fixture_session"
   printf '%s\n' "$fixture_name" >"$fixture_name_file"
 fi
-if [[ "$fixture_name" == "absolute-file-preview" ]]; then
-  prepare_absolute_file_preview_fixture "$fixture_session"
+if [[ "$fixture_name" == "relative-file-preview" ]]; then
+  prepare_relative_file_preview_fixture "$fixture_session"
   printf '%s\n' "$fixture_name" >"$fixture_name_file"
 fi
 
@@ -446,8 +451,8 @@ cleanup_generated_sessions() {
     printf 'Cleaning generated tmux session: %s\n' "$session"
     local remote_command
     remote_command="session=$session; tmux_bin=\$(command -v tmux 2>/dev/null || true); if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; \"\$tmux_bin\" kill-session -t \"\$session\" 2>/dev/null || true"
-    if [[ "$fixture_name" == "absolute-file-preview" && "$session" == "$fixture_session" ]]; then
-      remote_command+="; fixture_suffix=\${session#remux-latency-pv-}; fixture_path=/tmp/rpv-\$fixture_suffix; rm -f -- \"\$fixture_path\""
+    if [[ "$fixture_name" == "relative-file-preview" && "$session" == "$fixture_session" ]]; then
+      remote_command+="; fixture_suffix=\${session#remux-latency-pv-}; fixture_dir=/tmp/rpv-\$fixture_suffix; fixture_path=\$fixture_dir/README.md; rm -f -- \"\$fixture_path\"; rmdir -- \"\$fixture_dir\" 2>/dev/null || true"
     fi
 
     if ! REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \

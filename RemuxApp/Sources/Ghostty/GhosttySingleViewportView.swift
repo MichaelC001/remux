@@ -10,7 +10,7 @@ struct GhosttySingleViewportView: View {
     let terminalTheme: TerminalTheme
     let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     let onSurfaceTap: ((UUID) -> Void)?
-    let onPreviewSelection: ((TerminalPreviewCandidate) -> Void)?
+    let onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)?
     let onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?
     let sendKeyEvent: (GhosttySurfaceKeyEvent) -> Bool
     let onTrackpadStateChange: (GhosttyKeyboardCursorTrackpad.HUDState) -> Void
@@ -45,7 +45,7 @@ private struct GhosttySingleViewportRepresentable: UIViewRepresentable {
     let terminalTheme: TerminalTheme
     let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     let onSurfaceTap: ((UUID) -> Void)?
-    let onPreviewSelection: ((TerminalPreviewCandidate) -> Void)?
+    let onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)?
     let onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?
     let sendKeyEvent: (GhosttySurfaceKeyEvent) -> Bool
     let onTrackpadStateChange: (GhosttyKeyboardCursorTrackpad.HUDState) -> Void
@@ -99,7 +99,7 @@ private final class GhosttySingleViewportContainerView: UIView,
     private var trackpadDriver: GhosttyKeyboardCursorTrackpadDriver?
 
     private var onSurfaceTap: ((UUID) -> Void)?
-    private var onPreviewSelection: ((TerminalPreviewCandidate) -> Void)?
+    private var onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)?
     private var onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?
     private var sendKeyEvent: ((GhosttySurfaceKeyEvent) -> Bool)?
     private var onTrackpadStateChange: ((GhosttyKeyboardCursorTrackpad.HUDState) -> Void)?
@@ -204,7 +204,7 @@ private final class GhosttySingleViewportContainerView: UIView,
         surfaceLookup: GhosttyManagedSurfaceLookup,
         trackpadDriver: GhosttyKeyboardCursorTrackpadDriver,
         onSurfaceTap: ((UUID) -> Void)?,
-        onPreviewSelection: ((TerminalPreviewCandidate) -> Void)?,
+        onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)?,
         onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?,
         sendKeyEvent: @escaping (GhosttySurfaceKeyEvent) -> Bool,
         onTrackpadStateChange: @escaping (GhosttyKeyboardCursorTrackpad.HUDState) -> Void,
@@ -811,13 +811,13 @@ private final class GhosttySingleViewportContainerView: UIView,
                 image: UIImage(systemName: "eye")
             ) { [weak self] _ in
                 guard let self,
-                      let (_, control) = self.exactLocalSelectionSurface(),
+                      let (surface, control) = self.exactLocalSelectionSurface(),
                       let selectedText = control.readSelection(),
                       let candidate = self.previewSelectionContext.candidate(
                           for: selectedText
                       )
                 else { return }
-                self.onPreviewSelection?(candidate)
+                self.onPreviewSelection?(surface.id, candidate)
             })
         }
         actions.append(

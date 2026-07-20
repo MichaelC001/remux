@@ -18,7 +18,7 @@ final class TerminalPreviewCandidateTests: XCTestCase {
 
     func testRejectsNonFilePreviewTargets() {
         for value in [
-            "README.md",
+            "README",
             "~/README.md",
             "https://example.com/readme.pdf",
             "http://localhost:3000",
@@ -29,6 +29,56 @@ final class TerminalPreviewCandidateTests: XCTestCase {
             "/srv/app/page.xhtml",
         ] {
             XCTAssertNil(TerminalPreviewCandidate(selection: value), value)
+        }
+    }
+
+    func testAcceptsRelativePathsFromAutomaticAndWordSelections() throws {
+        var context = TerminalPreviewSelectionContext()
+        context.setAutomaticSelection(
+            visibleText: "../docs/README.md",
+            explicitTarget: nil
+        )
+
+        let candidate = try XCTUnwrap(context.candidate(for: "../docs/README.md"))
+        XCTAssertEqual(candidate.path, .relative("../docs/README.md"))
+        XCTAssertEqual(candidate.remotePath, "../docs/README.md")
+
+        context.selectionDidChange()
+        XCTAssertEqual(
+            context.candidate(for: "README.md")?.path,
+            .relative("README.md")
+        )
+        XCTAssertEqual(
+            context.candidate(for: "docs/README.md")?.path,
+            .relative("docs/README.md")
+        )
+        XCTAssertNil(context.candidate(for: "README"))
+    }
+
+    func testResolvesRelativePathsLexicallyAgainstPaneDirectory() throws {
+        let candidate = try XCTUnwrap(TerminalPreviewCandidate(
+            selection: "../docs/./README.md"
+        ))
+
+        XCTAssertEqual(
+            try candidate.path.resolved(relativeTo: "/srv/app/src"),
+            "/srv/app/docs/README.md"
+        )
+    }
+
+    func testRejectsInvalidRelativePathInputsAndCurrentDirectories() throws {
+        for value in ["~/README.md", ".", "..", "https://example.com/file.txt"] {
+            XCTAssertNil(
+                TerminalPreviewCandidate(selection: value),
+                value
+            )
+        }
+
+        let candidate = try XCTUnwrap(TerminalPreviewCandidate(
+            selection: "README.md"
+        ))
+        XCTAssertThrowsError(try candidate.path.resolved(relativeTo: "relative/cwd")) {
+            XCTAssertEqual($0 as? TerminalPreviewPathError, .invalidCurrentDirectory)
         }
     }
 

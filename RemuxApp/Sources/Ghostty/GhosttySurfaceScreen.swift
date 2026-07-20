@@ -92,7 +92,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private let onEditServer: () -> Void
     private let onTrustHostKey: () -> Void
     private let attachmentTransferServiceFactory: @Sendable () -> any GhosttyAttachmentTransferService
-    private let onPreviewSelection: ((TerminalPreviewCandidate) -> Void)?
+    private let onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)?
     private static var maxAttachmentPhotoSelectionCount: Int { 10 }
     private static var tmuxPrefixFlushDelay: Duration { .milliseconds(750) }
 
@@ -103,7 +103,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         isTerminalCovered: Bool = false,
         shortcutStore: ShortcutStore,
         attachmentTransferServiceFactory: @escaping @Sendable () -> any GhosttyAttachmentTransferService,
-        onPreviewSelection: ((TerminalPreviewCandidate) -> Void)? = nil,
+        onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)? = nil,
         onReconnect: @escaping () -> Void,
         onEditConnection: @escaping () -> Void,
         onUpdateCredentials: @escaping () -> Void,
