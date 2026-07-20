@@ -193,6 +193,121 @@ final class TerminalPreviewStaticHTMLTests: XCTestCase {
         XCTAssertTrue(task.errors.isEmpty)
     }
 
+    @MainActor
+    func testJavaScriptFetchesSameOriginResourcesThroughTheSchemeHandler() async throws {
+        let site: [String: String] = [
+            "/srv/app/index.html": """
+            <!doctype html><html><head>\
+            <script src="app.js"></script>\
+            </head><body></body></html>
+            """,
+            "/srv/app/app.js": """
+            fetch('data.json')
+                .then(function (response) { return response.text(); })
+                .then(function (text) { document.title = text; })
+                .catch(function () { document.title = 'remux-static-fetch-failed'; });
+            """,
+            "/srv/app/data.json": "remux-static-fetch-ok",
+        ]
+        let resource = try TerminalPreviewStaticHTMLResource(
+            remotePath: "/srv/app/index.html",
+            entryMetadata: RemuxSFTPFileMetadata(
+                size: UInt64(site["/srv/app/index.html"]!.utf8.count),
+                permissions: nil,
+                modificationDate: nil
+            ),
+            readLease: TerminalPreviewStaticHTMLReadLease(
+                stream: { path, knownMetadata, onMetadata, onChunk in
+                    guard let content = site[path] else {
+                        throw TerminalPreviewStaticHTMLError.invalidResourceURL
+                    }
+                    let data = Data(content.utf8)
+                    try await onMetadata(
+                        knownMetadata ?? RemuxSFTPFileMetadata(
+                            size: UInt64(data.count),
+                            permissions: nil,
+                            modificationDate: nil
+                        )
+                    )
+                    try await onChunk(data)
+                },
+                close: {}
+            )
+        )
+        let webView = TerminalPreviewStaticHTMLView.makeWebView(
+            schemeHandler: resource.makeSchemeHandler()
+        )
+        webView.load(URLRequest(url: resource.entryURL))
+
+        try await waitUntil(
+            "javascript same-origin fetch did not complete",
+            timeout: .seconds(15)
+        ) {
+            webView.title == "remux-static-fetch-ok"
+        }
+    }
+
+    @MainActor
+    func testCoordinatorKeepsSchemeNavigationAndRoutesLinkTapsExternally() throws {
+        let resource = try Self.makeResource(
+            path: "/srv/app/index.html",
+            closes: StaticHTMLCloseCounter()
+        )
+        let recorder = NavigationRecorder()
+        let coordinator = TerminalPreviewStaticHTMLView.Coordinator(
+            resource: resource,
+            openExternalURL: { recorder.opened.append($0) }
+        )
+        let webView = WKWebView()
+        let externalLink = URL(string: "https://example.com/docs")!
+
+        coordinator.webView(
+            webView,
+            decidePolicyFor: NavigationActionStub(url: resource.entryURL, type: .other),
+            decisionHandler: { recorder.policies.append($0) }
+        )
+        coordinator.webView(
+            webView,
+            decidePolicyFor: NavigationActionStub(url: externalLink, type: .linkActivated),
+            decisionHandler: { recorder.policies.append($0) }
+        )
+        coordinator.webView(
+            webView,
+            decidePolicyFor: NavigationActionStub(
+                url: URL(string: "https://tracker.example.com/redirect")!,
+                type: .other
+            ),
+            decisionHandler: { recorder.policies.append($0) }
+        )
+
+        XCTAssertEqual(recorder.policies, [.allow, .cancel, .cancel])
+        XCTAssertEqual(recorder.opened, [externalLink])
+    }
+
+    @MainActor
+    func testCoordinatorRoutesBlankTargetLinkTapsExternallyWithoutPopup() throws {
+        let resource = try Self.makeResource(
+            path: "/srv/app/index.html",
+            closes: StaticHTMLCloseCounter()
+        )
+        let recorder = NavigationRecorder()
+        let coordinator = TerminalPreviewStaticHTMLView.Coordinator(
+            resource: resource,
+            openExternalURL: { recorder.opened.append($0) }
+        )
+        let externalLink = URL(string: "https://example.com/report")!
+
+        let popup = coordinator.webView(
+            WKWebView(),
+            createWebViewWith: WKWebViewConfiguration(),
+            for: NavigationActionStub(url: externalLink, type: .linkActivated),
+            windowFeatures: WKWindowFeatures()
+        )
+
+        XCTAssertNil(popup)
+        XCTAssertEqual(recorder.opened, [externalLink])
+    }
+
     nonisolated private static func makeResource(
         path: String,
         closes: StaticHTMLCloseCounter
@@ -250,6 +365,26 @@ private final class StaticHTMLSchemeTaskSpy: NSObject, WKURLSchemeTask, @uncheck
     func didFailWithError(_ error: Error) {
         lock.withLock { recordedErrors.append(error) }
     }
+}
+
+@MainActor
+private final class NavigationRecorder {
+    var policies: [WKNavigationActionPolicy] = []
+    var opened: [URL] = []
+}
+
+private final class NavigationActionStub: WKNavigationAction {
+    private let url: URL
+    private let type: WKNavigationType
+
+    init(url: URL, type: WKNavigationType) {
+        self.url = url
+        self.type = type
+        super.init()
+    }
+
+    override var request: URLRequest { URLRequest(url: url) }
+    override var navigationType: WKNavigationType { type }
 }
 
 private actor StaticHTMLTestGate {

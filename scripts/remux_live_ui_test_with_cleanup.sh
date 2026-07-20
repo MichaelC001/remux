@@ -390,6 +390,7 @@ fixture_path="$fixture_dir/README.md"
 html_path="$fixture_dir/index.html"
 css_path="$fixture_dir/preview.css"
 image_path="$fixture_dir/preview.svg"
+script_path="$fixture_dir/preview.js"
 tmux_bin="$(command -v tmux 2>/dev/null || true)"
 if [ -z "$tmux_bin" ] && [ -x /opt/homebrew/bin/tmux ]; then
   tmux_bin=/opt/homebrew/bin/tmux
@@ -403,7 +404,7 @@ cleanup_failed_fixture() {
   status=$?
   if [ "$status" -ne 0 ]; then
     "$tmux_bin" kill-session -t "$session" 2>/dev/null || true
-    rm -f -- "$fixture_path" "$html_path" "$css_path" "$image_path"
+    rm -f -- "$fixture_path" "$html_path" "$css_path" "$image_path" "$script_path"
     rmdir -- "$fixture_dir" 2>/dev/null || true
   fi
   exit "$status"
@@ -421,10 +422,22 @@ PREVIEW_FILE
 cat >"$html_path" <<'PREVIEW_HTML'
 <!doctype html>
 <html>
-<head><link rel="stylesheet" href="preview.css"></head>
+<head>
+<link rel="stylesheet" href="preview.css">
+<script defer src="preview.js"></script>
+</head>
 <body><img src="preview.svg" alt="Relative preview resource loaded"></body>
 </html>
 PREVIEW_HTML
+cat >"$script_path" <<'PREVIEW_JS'
+document.addEventListener('DOMContentLoaded', function () {
+  var banner = document.createElement('p');
+  banner.textContent = 'JavaScript executed';
+  banner.style.color = '#f8fafc';
+  banner.style.font = '600 20px -apple-system, sans-serif';
+  document.body.appendChild(banner);
+});
+PREVIEW_JS
 cat >"$css_path" <<'PREVIEW_CSS'
 html, body { margin: 0; min-height: 100%; background: #123047; }
 body { display: grid; place-items: center; }
@@ -474,7 +487,7 @@ cleanup_generated_sessions() {
     local remote_command
     remote_command="session=$session; tmux_bin=\$(command -v tmux 2>/dev/null || true); if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; \"\$tmux_bin\" kill-session -t \"\$session\" 2>/dev/null || true"
     if [[ "$fixture_name" == "relative-file-preview" && "$session" == "$fixture_session" ]]; then
-      remote_command+="; fixture_suffix=\${session#remux-latency-pv-}; fixture_dir=/tmp/rpv-\$fixture_suffix; rm -f -- \"\$fixture_dir/README.md\" \"\$fixture_dir/index.html\" \"\$fixture_dir/preview.css\" \"\$fixture_dir/preview.svg\"; rmdir -- \"\$fixture_dir\" 2>/dev/null || true"
+      remote_command+="; fixture_suffix=\${session#remux-latency-pv-}; fixture_dir=/tmp/rpv-\$fixture_suffix; rm -f -- \"\$fixture_dir/README.md\" \"\$fixture_dir/index.html\" \"\$fixture_dir/preview.css\" \"\$fixture_dir/preview.svg\" \"\$fixture_dir/preview.js\"; rmdir -- \"\$fixture_dir\" 2>/dev/null || true"
     fi
 
     if ! REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 import WebKit
 
@@ -504,29 +505,45 @@ struct TerminalPreviewStaticHTMLView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> WKWebView {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
-        configuration.defaultWebpagePreferences.allowsContentJavaScript = false
-        configuration.setURLSchemeHandler(
-            context.coordinator.schemeHandler,
-            forURLScheme: TerminalPreviewStaticHTMLResource.scheme
+        let webView = Self.makeWebView(
+            schemeHandler: context.coordinator.schemeHandler
         )
-        let webView = WKWebView(frame: .zero, configuration: configuration)
-        webView.isOpaque = false
-        webView.backgroundColor = .clear
-        webView.scrollView.backgroundColor = .clear
         webView.navigationDelegate = context.coordinator
+        webView.uiDelegate = context.coordinator
         webView.load(URLRequest(url: resource.entryURL))
         return webView
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {}
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
-        let schemeHandler: TerminalPreviewStaticHTMLSchemeHandler
+    static func makeWebView(
+        schemeHandler: TerminalPreviewStaticHTMLSchemeHandler
+    ) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.setURLSchemeHandler(
+            schemeHandler,
+            forURLScheme: TerminalPreviewStaticHTMLResource.scheme
+        )
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.isOpaque = false
+        webView.backgroundColor = .clear
+        webView.scrollView.backgroundColor = .clear
+        return webView
+    }
 
-        init(resource: TerminalPreviewStaticHTMLResource) {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+        let schemeHandler: TerminalPreviewStaticHTMLSchemeHandler
+        private let openExternalURL: @MainActor (URL) -> Void
+
+        init(
+            resource: TerminalPreviewStaticHTMLResource,
+            openExternalURL: @escaping @MainActor (URL) -> Void = {
+                UIApplication.shared.open($0)
+            }
+        ) {
             self.schemeHandler = resource.makeSchemeHandler()
+            self.openExternalURL = openExternalURL
         }
 
         func webView(
@@ -536,13 +553,39 @@ struct TerminalPreviewStaticHTMLView: UIViewRepresentable {
                 WKNavigationActionPolicy
             ) -> Void
         ) {
-            guard navigationAction.request.url?.scheme
-                    == TerminalPreviewStaticHTMLResource.scheme
-            else {
-                decisionHandler(.cancel)
+            if navigationAction.request.url?.scheme
+                == TerminalPreviewStaticHTMLResource.scheme {
+                decisionHandler(.allow)
                 return
             }
-            decisionHandler(.allow)
+            decisionHandler(.cancel)
+            routeExternally(navigationAction)
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            createWebViewWith configuration: WKWebViewConfiguration,
+            for navigationAction: WKNavigationAction,
+            windowFeatures: WKWindowFeatures
+        ) -> WKWebView? {
+            if navigationAction.request.url?.scheme
+                == TerminalPreviewStaticHTMLResource.scheme {
+                webView.load(navigationAction.request)
+            } else {
+                routeExternally(navigationAction)
+            }
+            return nil
+        }
+
+        // Only deliberate link taps may leave the preview; programmatic
+        // redirects and auto-loading frames stay cancelled.
+        private func routeExternally(_ navigationAction: WKNavigationAction) {
+            guard navigationAction.navigationType == .linkActivated,
+                  let url = navigationAction.request.url,
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https"
+            else { return }
+            openExternalURL(url)
         }
     }
 }
