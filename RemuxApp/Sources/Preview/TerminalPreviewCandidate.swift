@@ -78,11 +78,6 @@ struct TerminalPreviewCandidate: Equatable, Sendable {
             path = .relative(value)
         }
 
-        switch URL(fileURLWithPath: path.value).pathExtension.lowercased() {
-        case "htm", "html", "xhtml": return nil
-        default: break
-        }
-
         self.path = path
     }
 

@@ -18,7 +18,7 @@ final class TmuxScreenModel: ObservableObject {
     /// GhosttyTerminalScreenModeling boundary for GhosttySurfaceScreen.
     /// Stable screen-facing adapter for this model's session.
     let terminalScreenAdapter = TmuxTerminalScreenAdapter()
-    let terminalPreviewFileClient: TerminalPreviewFileClient?
+    let terminalPreviewClient: TerminalPreviewClient?
 
     @Published private(set) var session: TmuxTerminalSession?
     @Published private(set) var startupFailure: String?
@@ -79,7 +79,7 @@ final class TmuxScreenModel: ObservableObject {
         do {
             runtime = try GhosttyKitRuntime(terminalSettings: target.terminalSettings)
         } catch {
-            self.terminalPreviewFileClient = nil
+            self.terminalPreviewClient = nil
             startupFailure = String(describing: error)
             report(.disconnected(Self.runtimeStartFailureReason))
             return
@@ -94,11 +94,11 @@ final class TmuxScreenModel: ObservableObject {
         let transport = transportFactory(target)
         if let provider = (transport as? any TmuxControlTransportSFTPProviding)?
             .sessionSFTPClientProvider {
-            self.terminalPreviewFileClient = TerminalPreviewFileClient(
+            self.terminalPreviewClient = TerminalPreviewClient(
                 provider: provider
             )
         } else {
-            self.terminalPreviewFileClient = nil
+            self.terminalPreviewClient = nil
         }
         let session = TmuxTerminalSession(
             app: runtime.appHandle,

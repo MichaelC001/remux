@@ -304,7 +304,7 @@ private struct ActiveTerminalSessionView: View {
         self.onShowLibrary = onShowLibrary
         _previewSession = StateObject(
             wrappedValue: TerminalPreviewSession(
-                client: entry.model.terminalPreviewFileClient,
+                client: entry.model.terminalPreviewClient,
                 serverDisplayName: entry.model.target.server.displayName
             )
         )

@@ -8,13 +8,13 @@ final class TerminalPreviewSession: ObservableObject {
     enum State {
         case idle
         case loading(TerminalPreviewCandidate)
-        case ready(TerminalPreviewCandidate, TerminalPreviewFileResource)
+        case ready(TerminalPreviewCandidate, TerminalPreviewResource)
         case failed(TerminalPreviewCandidate, String)
     }
 
     @Published private(set) var state: State = .idle
 
-    private let client: TerminalPreviewFileClient?
+    private let client: TerminalPreviewClient?
     let serverDisplayName: String
     private let canPreview: @MainActor @Sendable (URL) -> Bool
     private var requestGeneration: UInt = 0
@@ -23,7 +23,7 @@ final class TerminalPreviewSession: ObservableObject {
     private var resolvedRemotePath: String?
 
     init(
-        client: TerminalPreviewFileClient?,
+        client: TerminalPreviewClient?,
         serverDisplayName: String,
         canPreview: @escaping @MainActor @Sendable (URL) -> Bool = {
             QLPreviewController.canPreview($0 as NSURL)
@@ -64,6 +64,7 @@ final class TerminalPreviewSession: ObservableObject {
     ) {
         guard let client else { return }
         task?.cancel()
+        releaseReadyResource()
         requestGeneration &+= 1
         pathResolver = resolver
         resolvedRemotePath = nil
@@ -73,6 +74,7 @@ final class TerminalPreviewSession: ObservableObject {
     func refresh() {
         guard let client, let currentCandidate, let pathResolver else { return }
         task?.cancel()
+        releaseReadyResource()
         requestGeneration &+= 1
         let resolver = resolvedRemotePath.map { remotePath in
             { @Sendable in remotePath }
@@ -83,6 +85,7 @@ final class TerminalPreviewSession: ObservableObject {
     func close() {
         task?.cancel()
         task = nil
+        releaseReadyResource()
         pathResolver = nil
         resolvedRemotePath = nil
         requestGeneration &+= 1
@@ -92,13 +95,13 @@ final class TerminalPreviewSession: ObservableObject {
     private func startLoading(
         _ candidate: TerminalPreviewCandidate,
         resolvingPathWith resolver: @escaping PathResolver,
-        client: TerminalPreviewFileClient
+        client: TerminalPreviewClient
     ) {
         let activeGeneration = requestGeneration
         state = .loading(candidate)
         task = Task.detached(priority: .userInitiated) { [weak self] in
             var resolvedRemotePath: String?
-            let result: Result<TerminalPreviewFileResource, Error>
+            let result: Result<TerminalPreviewResource, Error>
             do {
                 let remotePath = try await resolver()
                 resolvedRemotePath = remotePath
@@ -121,7 +124,7 @@ final class TerminalPreviewSession: ObservableObject {
     }
 
     private func finish(
-        _ result: Result<TerminalPreviewFileResource, Error>,
+        _ result: Result<TerminalPreviewResource, Error>,
         candidate: TerminalPreviewCandidate,
         generation: UInt,
         resolvedRemotePath: String?
@@ -132,15 +135,27 @@ final class TerminalPreviewSession: ObservableObject {
             self.resolvedRemotePath = resolvedRemotePath
         }
         switch result {
-        case .success(let resource) where canPreview(resource.url):
-            state = .ready(candidate, resource)
-        case .success:
-            state = .failed(
-                candidate,
-                TerminalPreviewFileError.unsupported.localizedDescription
-            )
+        case .success(let resource):
+            switch resource {
+            case .file(let file) where !canPreview(file.url):
+                state = .failed(
+                    candidate,
+                    TerminalPreviewFileError.unsupported.localizedDescription
+                )
+            default:
+                state = .ready(candidate, resource)
+            }
         case .failure(let error):
             state = .failed(candidate, error.localizedDescription)
         }
+    }
+
+    private var readyResource: TerminalPreviewResource? {
+        guard case .ready(_, let resource) = state else { return nil }
+        return resource
+    }
+
+    private func releaseReadyResource() {
+        readyResource?.close()
     }
 }

@@ -404,6 +404,10 @@ struct RemuxSessionCitadelSFTPClientProvider: RemuxSFTPClientProvider {
         try await provider.withClient(operation)
     }
 
+    func openClientLease() async throws -> RemuxSFTPClientLease<RemuxCitadelSFTPClient> {
+        try await provider.openClientLease()
+    }
+
     private static func openLease(
         scope: RemuxSessionSFTPChildScope,
         hostDescription: String,

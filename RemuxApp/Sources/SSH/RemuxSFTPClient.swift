@@ -246,7 +246,7 @@ struct RemuxShortLivedSFTPClientProvider<Client: Sendable>: RemuxSFTPClientProvi
     func withClient<ReturnValue: Sendable>(
         _ operation: @Sendable (Client) async throws -> ReturnValue
     ) async throws -> ReturnValue {
-        let lease = try await openLease()
+        let lease = try await openClientLease()
         do {
             let result = try await operation(lease.client)
             await close(lease)
@@ -255,6 +255,10 @@ struct RemuxShortLivedSFTPClientProvider<Client: Sendable>: RemuxSFTPClientProvi
             await close(lease)
             throw error
         }
+    }
+
+    func openClientLease() async throws -> RemuxSFTPClientLease<Client> {
+        try await openLease()
     }
 
     private func close(_ lease: RemuxSFTPClientLease<Client>) async {

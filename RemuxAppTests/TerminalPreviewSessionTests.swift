@@ -8,7 +8,7 @@ final class TerminalPreviewSessionTests: XCTestCase {
     func testReplacementIgnoresLateCompletionFromCancelledRequest() async throws {
         let tempRoot = try makeTempRoot()
         defer { try? FileManager.default.removeItem(at: tempRoot) }
-        let client = TerminalPreviewFileClient { path in
+        let client = filePreviewClient { path in
             if path.hasSuffix("first.txt") {
                 try? await Task.sleep(for: .milliseconds(120))
             }
@@ -38,7 +38,7 @@ final class TerminalPreviewSessionTests: XCTestCase {
     func testCloseCancelsPresentationAndLateCompletionCannotReopenIt() async throws {
         let tempRoot = try makeTempRoot()
         defer { try? FileManager.default.removeItem(at: tempRoot) }
-        let client = TerminalPreviewFileClient { path in
+        let client = filePreviewClient { path in
             try? await Task.sleep(for: .milliseconds(80))
             return try Self.makeResource(path: path, in: tempRoot)
         }
@@ -62,7 +62,7 @@ final class TerminalPreviewSessionTests: XCTestCase {
     func testCloseWhileResolvingDoesNotStartFileLoad() async throws {
         let resolutions = PreviewAttemptCounter()
         let loads = PreviewAttemptCounter()
-        let client = TerminalPreviewFileClient { _ in
+        let client = filePreviewClient { _ in
             _ = await loads.next()
             throw PreviewTestError.failed
         }
@@ -103,7 +103,7 @@ final class TerminalPreviewSessionTests: XCTestCase {
         let tempRoot = try makeTempRoot()
         defer { try? FileManager.default.removeItem(at: tempRoot) }
         let attempts = PreviewAttemptCounter()
-        let client = TerminalPreviewFileClient { path in
+        let client = filePreviewClient { path in
             if await attempts.next() == 1 {
                 throw PreviewTestError.failed
             }
@@ -139,7 +139,7 @@ final class TerminalPreviewSessionTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: tempRoot) }
         let resolutions = PreviewAttemptCounter()
         let attempts = PreviewAttemptCounter()
-        let client = TerminalPreviewFileClient { path in
+        let client = filePreviewClient { path in
             if await attempts.next() == 1 {
                 throw PreviewTestError.failed
             }
@@ -175,7 +175,7 @@ final class TerminalPreviewSessionTests: XCTestCase {
     func testUnsupportedLocalArtifactProducesTruthfulFailure() async throws {
         let tempRoot = try makeTempRoot()
         defer { try? FileManager.default.removeItem(at: tempRoot) }
-        let client = TerminalPreviewFileClient { path in
+        let client = filePreviewClient { path in
             try Self.makeResource(path: path, in: tempRoot)
         }
         let session = TerminalPreviewSession(
@@ -199,6 +199,15 @@ final class TerminalPreviewSessionTests: XCTestCase {
 
     private func request(path: String) -> TerminalPreviewCandidate {
         TerminalPreviewCandidate(selection: path)!
+    }
+
+    private func filePreviewClient(
+        load: @escaping @Sendable (String) async throws -> TerminalPreviewFileResource
+    ) -> TerminalPreviewClient {
+        TerminalPreviewClient(
+            loadFile: load,
+            openStaticHTML: { _ in throw PreviewTestError.failed }
+        )
     }
 
     private func open(path: String, in session: TerminalPreviewSession) {

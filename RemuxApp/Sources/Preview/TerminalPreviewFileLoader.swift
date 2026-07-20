@@ -18,6 +18,58 @@ enum TerminalPreviewFileError: LocalizedError, Equatable, Sendable {
     }
 }
 
+enum TerminalPreviewRemoteFileReader {
+    typealias MetadataHandler = @Sendable (RemuxSFTPFileMetadata) async throws -> Void
+    typealias ChunkHandler = @Sendable (Data) async throws -> Void
+
+    static func stream<Client: RemuxSFTPReadOnlyClient>(
+        client: Client,
+        remotePath: String,
+        maximumByteCount: UInt64,
+        knownMetadata: RemuxSFTPFileMetadata? = nil,
+        onMetadata: @escaping MetadataHandler = { _ in },
+        onChunk: @escaping ChunkHandler
+    ) async throws -> RemuxSFTPFileMetadata {
+        let metadata: RemuxSFTPFileMetadata
+        if let knownMetadata {
+            metadata = knownMetadata
+        } else {
+            metadata = try await client.metadata(atPath: remotePath)
+        }
+        if let size = metadata.size, size > maximumByteCount {
+            throw TerminalPreviewFileError.tooLarge(
+                maximumByteCount: maximumByteCount
+            )
+        }
+        try await onMetadata(metadata)
+
+        try await client.withFile(atPath: remotePath) { remoteFile in
+            var offset: UInt64 = 0
+            while true {
+                try Task.checkCancellation()
+                let remaining = maximumByteCount - min(offset, maximumByteCount)
+                let requestedLength = Int(min(
+                    UInt64(RemuxSFTPReadableFile.maximumChunkLength),
+                    remaining + 1
+                ))
+                let data = try await remoteFile.readChunk(
+                    from: offset,
+                    length: requestedLength
+                )
+                guard !data.isEmpty else { break }
+                guard UInt64(data.count) <= remaining else {
+                    throw TerminalPreviewFileError.tooLarge(
+                        maximumByteCount: maximumByteCount
+                    )
+                }
+                try await onChunk(data)
+                offset += UInt64(data.count)
+            }
+        }
+        return metadata
+    }
+}
+
 final class TerminalPreviewFileResource: @unchecked Sendable, Equatable {
     let url: URL
     private let directoryURL: URL
@@ -68,13 +120,6 @@ where Provider: RemuxSFTPClientProvider,
     func load(remotePath: String) async throws -> TerminalPreviewFileResource {
         try await provider.withClient { client in
             let fileManager = FileManager.default
-            let metadata = try await client.metadata(atPath: remotePath)
-            if let size = metadata.size, size > maximumByteCount {
-                throw TerminalPreviewFileError.tooLarge(
-                    maximumByteCount: maximumByteCount
-                )
-            }
-
             let directoryURL = temporaryDirectory.appendingPathComponent(
                 "RemuxPreview-\(UUID().uuidString)",
                 isDirectory: true
@@ -96,37 +141,16 @@ where Provider: RemuxSFTPClientProvider,
                 let handle = try FileHandle(forWritingTo: fileURL)
                 let plainTextProbe: ExtensionlessPlainTextProbe?
                 do {
-                    plainTextProbe = try await client.withFile(atPath: remotePath) { remoteFile in
-                        var plainTextProbe = probePlainText
-                            ? ExtensionlessPlainTextProbe()
-                            : nil
-                        var offset: UInt64 = 0
-                        while true {
-                            try Task.checkCancellation()
-                            let remaining = maximumByteCount - min(
-                                offset,
-                                maximumByteCount
-                            )
-                            let requestedLength = Int(min(
-                                UInt64(RemuxSFTPReadableFile.maximumChunkLength),
-                                remaining + 1
-                            ))
-                            let data = try await remoteFile.readChunk(
-                                from: offset,
-                                length: requestedLength
-                            )
-                            guard !data.isEmpty else { break }
-                            guard UInt64(data.count) <= remaining else {
-                                throw TerminalPreviewFileError.tooLarge(
-                                    maximumByteCount: maximumByteCount
-                                )
-                            }
-                            plainTextProbe?.consume(data)
-                            try handle.write(contentsOf: data)
-                            offset += UInt64(data.count)
-                        }
-                        return plainTextProbe
+                    let probe = LockedPlainTextProbe(enabled: probePlainText)
+                    _ = try await TerminalPreviewRemoteFileReader.stream(
+                        client: client,
+                        remotePath: remotePath,
+                        maximumByteCount: maximumByteCount
+                    ) { data in
+                        probe.consume(data)
+                        try handle.write(contentsOf: data)
                     }
+                    plainTextProbe = probe.value
                     try handle.close()
                 } catch {
                     do {
@@ -175,6 +199,23 @@ where Provider: RemuxSFTPClientProvider,
             return "Preview"
         }
         return component
+    }
+}
+
+private final class LockedPlainTextProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var probe: ExtensionlessPlainTextProbe?
+
+    init(enabled: Bool) {
+        self.probe = enabled ? ExtensionlessPlainTextProbe() : nil
+    }
+
+    func consume(_ data: Data) {
+        lock.withLock { probe?.consume(data) }
+    }
+
+    var value: ExtensionlessPlainTextProbe? {
+        lock.withLock { probe }
     }
 }
 

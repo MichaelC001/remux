@@ -1088,6 +1088,7 @@ final class RemuxAppUITests: XCTestCase {
 
         let pathScenarios = [
             (token: "./README.md", name: "dot-relative", shouldPreview: true),
+            (token: "index.html", name: "static-html-relative-assets", shouldPreview: true),
             (token: "/etc/hosts", name: "absolute-extensionless", shouldPreview: true),
             (token: "does-not-exist.md", name: "missing", shouldPreview: false),
         ]

@@ -387,6 +387,9 @@ session="$1"
 fixture_suffix="${session#remux-latency-pv-}"
 fixture_dir="/tmp/rpv-$fixture_suffix"
 fixture_path="$fixture_dir/README.md"
+html_path="$fixture_dir/index.html"
+css_path="$fixture_dir/preview.css"
+image_path="$fixture_dir/preview.svg"
 tmux_bin="$(command -v tmux 2>/dev/null || true)"
 if [ -z "$tmux_bin" ] && [ -x /opt/homebrew/bin/tmux ]; then
   tmux_bin=/opt/homebrew/bin/tmux
@@ -400,7 +403,7 @@ cleanup_failed_fixture() {
   status=$?
   if [ "$status" -ne 0 ]; then
     "$tmux_bin" kill-session -t "$session" 2>/dev/null || true
-    rm -f -- "$fixture_path"
+    rm -f -- "$fixture_path" "$html_path" "$css_path" "$image_path"
     rmdir -- "$fixture_dir" 2>/dev/null || true
   fi
   exit "$status"
@@ -415,6 +418,25 @@ REMUX_PREVIEW_FILE_CONTENT_ALPHA
 REMUX_PREVIEW_FILE_CONTENT_BETA
 REMUX_PREVIEW_FILE_CONTENT_GAMMA
 PREVIEW_FILE
+cat >"$html_path" <<'PREVIEW_HTML'
+<!doctype html>
+<html>
+<head><link rel="stylesheet" href="preview.css"></head>
+<body><img src="preview.svg" alt="Relative preview resource loaded"></body>
+</html>
+PREVIEW_HTML
+cat >"$css_path" <<'PREVIEW_CSS'
+html, body { margin: 0; min-height: 100%; background: #123047; }
+body { display: grid; place-items: center; }
+img { width: min(72vw, 420px); }
+PREVIEW_CSS
+cat >"$image_path" <<'PREVIEW_SVG'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 240">
+  <rect width="400" height="240" rx="28" fill="#14b8a6"/>
+  <circle cx="100" cy="120" r="54" fill="#f59e0b"/>
+  <path d="M190 72h150v32H190zm0 64h110v32H190z" fill="#f8fafc"/>
+</svg>
+PREVIEW_SVG
 
 # Match normal shell output: the pane's current directory contains README.md,
 # and `ls` prints only that bare filename at a stable top-row position. Each
@@ -452,7 +474,7 @@ cleanup_generated_sessions() {
     local remote_command
     remote_command="session=$session; tmux_bin=\$(command -v tmux 2>/dev/null || true); if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; \"\$tmux_bin\" kill-session -t \"\$session\" 2>/dev/null || true"
     if [[ "$fixture_name" == "relative-file-preview" && "$session" == "$fixture_session" ]]; then
-      remote_command+="; fixture_suffix=\${session#remux-latency-pv-}; fixture_dir=/tmp/rpv-\$fixture_suffix; fixture_path=\$fixture_dir/README.md; rm -f -- \"\$fixture_path\"; rmdir -- \"\$fixture_dir\" 2>/dev/null || true"
+      remote_command+="; fixture_suffix=\${session#remux-latency-pv-}; fixture_dir=/tmp/rpv-\$fixture_suffix; rm -f -- \"\$fixture_dir/README.md\" \"\$fixture_dir/index.html\" \"\$fixture_dir/preview.css\" \"\$fixture_dir/preview.svg\"; rmdir -- \"\$fixture_dir\" 2>/dev/null || true"
     fi
 
     if ! REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \

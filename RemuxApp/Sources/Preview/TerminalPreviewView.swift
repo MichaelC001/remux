@@ -30,11 +30,13 @@ struct TerminalPreviewView: View {
                     .accessibilityIdentifier("terminal.preview.refresh")
 
                 if case .ready(_, let resource) = session.state {
-                    ShareLink(item: resource.url) {
-                        Image(systemName: "square.and.arrow.up")
+                    if let shareURL = resource.shareURL {
+                        ShareLink(item: shareURL) {
+                            Image(systemName: "square.and.arrow.up")
+                        }
+                        .accessibilityLabel("Share")
+                        .accessibilityIdentifier("terminal.preview.share")
                     }
-                    .accessibilityLabel("Share")
-                    .accessibilityIdentifier("terminal.preview.share")
                 }
             }
             .font(.subheadline.weight(.semibold))
@@ -66,9 +68,16 @@ struct TerminalPreviewView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .accessibilityIdentifier("terminal.preview.loading")
         case .ready(_, let resource):
-            GhosttyQuickLookPreview(resource: resource)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .accessibilityIdentifier("terminal.preview.content")
+            Group {
+                switch resource {
+                case .file(let file):
+                    GhosttyQuickLookPreview(resource: file)
+                case .staticHTML(let html):
+                    TerminalPreviewStaticHTMLView(resource: html)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityIdentifier("terminal.preview.content")
         case .failed(_, let message):
             VStack(spacing: 14) {
                 Image(systemName: "doc.questionmark")

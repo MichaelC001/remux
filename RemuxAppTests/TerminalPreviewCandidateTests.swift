@@ -24,11 +24,21 @@ final class TerminalPreviewCandidateTests: XCTestCase {
             "http://localhost:3000",
             "file://server/srv/app/readme.md",
             "/srv/app/bad\0name.txt",
+        ] {
+            XCTAssertNil(TerminalPreviewCandidate(selection: value), value)
+        }
+    }
+
+    func testAcceptsStaticHTMLPaths() {
+        for value in [
             "/srv/app/index.html",
             "/srv/app/index.HTM",
             "/srv/app/page.xhtml",
         ] {
-            XCTAssertNil(TerminalPreviewCandidate(selection: value), value)
+            XCTAssertEqual(
+                TerminalPreviewCandidate(selection: value)?.remotePath,
+                value
+            )
         }
     }
 
