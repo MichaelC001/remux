@@ -196,9 +196,10 @@ private extension TmuxControlTransportCloseDisposition {
 }
 
 actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenessChecking,
-    TmuxControlTransportSFTPProviding {
+    TmuxControlTransportSFTPProviding, TmuxControlTransportLiveForwardProviding {
     nonisolated let receivedBytes: AsyncThrowingStream<Data, Error>
     nonisolated let sessionSFTPClientProvider: RemuxSessionCitadelSFTPClientProvider
+    nonisolated let sessionLiveForwardProvider: RemuxSessionLiveForwardProvider
 
     private let configuration: SSHTmuxControlConfiguration
     private let inboundStream: SSHTmuxControlInboundStream
@@ -224,6 +225,9 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
             scope: sessionSFTPScope,
             hostDescription: "\(configuration.host):\(configuration.port)",
             operationTimeout: configuration.sftpOperationTimeout
+        )
+        self.sessionLiveForwardProvider = RemuxSessionLiveForwardProvider(
+            scope: sessionSFTPScope
         )
         let inboundStream = SSHTmuxControlInboundStream()
         self.inboundStream = inboundStream
@@ -292,6 +296,15 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
                 rootChannel: claimedConnection.sshRoot.rootChannel,
                 invalidateRootForReuse: {
                     await claimedConnection.invalidateForReuse()
+                }
+            )
+            await sessionLiveForwardProvider.activate(
+                openerFactory: { [sshRoot = claimedConnection.sshRoot] target in
+                    .directTCPIP(
+                        sshRoot: sshRoot,
+                        target: target,
+                        originatorAddress: Self.liveForwardOriginatorAddress
+                    )
                 }
             )
             guard !isClosed else { throw SSHTmuxControlTransportError.closed }
@@ -407,6 +420,13 @@ actor SSHTmuxControlTransport: TmuxControlTransport, TmuxControlTransportLivenes
         sessionSFTPDrainTask = task
         return await task.value
     }
+
+    // The SSH wire format requires an IP-literal originator; the real
+    // originator is always this device's loopback browser connection.
+    private static let liveForwardOriginatorAddress = try! SocketAddress(
+        ipAddress: "127.0.0.1",
+        port: 0
+    )
 
     nonisolated static func startWasInterruptedByClose(
         _ error: any Error,

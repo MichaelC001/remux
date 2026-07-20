@@ -21,6 +21,10 @@ protocol TmuxControlTransportSFTPProviding: Sendable {
     var sessionSFTPClientProvider: RemuxSessionCitadelSFTPClientProvider { get }
 }
 
+protocol TmuxControlTransportLiveForwardProviding: Sendable {
+    var sessionLiveForwardProvider: RemuxSessionLiveForwardProvider { get }
+}
+
 enum TmuxControlTransportCloseDisposition: Equatable, Sendable {
     case reusable
     case invalidated
