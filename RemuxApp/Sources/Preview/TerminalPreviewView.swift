@@ -5,57 +5,50 @@ struct TerminalPreviewView: View {
     let terminalTheme: TerminalTheme
 
     var body: some View {
-        VStack(spacing: 0) {
-            topBar
-            Divider()
+        NavigationStack {
             content
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(terminalTheme.terminalSurfaceBackground)
-        .preferredColorScheme(terminalTheme.terminalChromeColorScheme)
-        .environment(\.ghosttyTerminalChromeStyle, terminalTheme.terminalChromeStyle)
-    }
-
-    private var topBar: some View {
-        ZStack {
-            HStack(spacing: 16) {
-                Button(action: session.close) {
-                    Label("Terminal", systemImage: "chevron.left")
-                }
-                .accessibilityIdentifier("terminal.preview.back")
-
-                Spacer(minLength: 80)
-
-                Button("Refresh", action: session.refresh)
-                    .accessibilityIdentifier("terminal.preview.refresh")
-
-                if case .ready(_, let resource) = session.state {
-                    if let shareURL = resource.shareURL {
-                        ShareLink(item: shareURL) {
-                            Image(systemName: "square.and.arrow.up")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(terminalTheme.terminalSurfaceBackground)
+                .navigationTitle(session.currentCandidate?.filename ?? "Preview")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button(action: session.close) {
+                            HStack(spacing: 5) {
+                                Image(systemName: "chevron.left")
+                                    .font(.body.weight(.semibold))
+                                Text("Terminal")
+                            }
                         }
-                        .accessibilityLabel("Share")
-                        .accessibilityIdentifier("terminal.preview.share")
+                        .accessibilityIdentifier("terminal.preview.back")
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(action: session.refresh) {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .accessibilityLabel("Refresh")
+                        .accessibilityIdentifier("terminal.preview.refresh")
+                    }
+                    if case .ready(_, let resource) = session.state,
+                       let shareURL = resource.shareURL {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            ShareLink(item: shareURL) {
+                                Image(systemName: "square.and.arrow.up")
+                            }
+                            .accessibilityLabel("Share")
+                            .accessibilityIdentifier("terminal.preview.share")
+                        }
                     }
                 }
-            }
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(terminalTheme.terminalChromeStyle.accent)
-
-            VStack(spacing: 1) {
-                Text(session.currentCandidate?.filename ?? "Preview")
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                Text(session.serverDisplayName)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 104)
+                .toolbarBackground(
+                    terminalTheme.terminalSurfaceBackground,
+                    for: .navigationBar
+                )
+                .toolbarBackground(.visible, for: .navigationBar)
         }
-        .frame(height: 48)
-        .padding(.horizontal, 16)
-        .background(.regularMaterial)
+        .tint(.primary)
+        .preferredColorScheme(terminalTheme.terminalChromeColorScheme)
+        .environment(\.ghosttyTerminalChromeStyle, terminalTheme.terminalChromeStyle)
     }
 
     @ViewBuilder
