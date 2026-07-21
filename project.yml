@@ -9,6 +9,8 @@ settings:
   base:
     PRODUCT_BUNDLE_IDENTIFIER: dev.remux.app
     PRODUCT_NAME: Remux
+    MARKETING_VERSION: 0.1.0
+    CURRENT_PROJECT_VERSION: 1
     SWIFT_VERSION: 6.0
     IPHONEOS_DEPLOYMENT_TARGET: 18.0
     TARGETED_DEVICE_FAMILY: 1
@@ -29,6 +31,8 @@ targets:
       - path: RemuxApp/Sources
       - path: RemuxApp/Assets.xcassets
       - path: RemuxApp/Remux.icon
+      - path: RemuxApp/PrivacyInfo.xcprivacy
+        buildPhase: resources
     settings:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: Remux
@@ -45,6 +49,9 @@ targets:
       path: RemuxApp/Info.plist
       properties:
         CFBundleDisplayName: Remux
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UIApplicationSupportsIndirectInputEvents: true
         UISupportedInterfaceOrientations:
