@@ -1,5 +1,7 @@
 # Remux
 
+> A native iOS client for remote tmux workspaces.
+
 <p align="center">
   <a href="https://www.youtube.com/watch?v=WZXKzUdI6mQ">
     <img src="docs/media/remux-readme.webp" alt="Remux demo" width="900">
@@ -10,71 +12,65 @@
   <a href="https://www.youtube.com/watch?v=WZXKzUdI6mQ">Watch high-quality demo</a>
 </p>
 
-Remux is a native iOS client for remote tmux workspaces.
+## About
 
-Remux brings tmux's session, window, and pane model into a native iPhone
-interface. Connect to a server, open or create tmux sessions, swipe between
-windows, open the pane picker as a bottom sheet, and split or close panes.
+Remux is a native iOS client for remote tmux workspaces, built on Ghostty.
+It brings tmux's session, window, and pane model into a mobile-first
+interface. It previews files and running dev servers straight from the
+terminal, and uploads photos and files, with markup for images.
 
-## What Works Today
+## Features
 
-- Save SSH servers and multiple tmux sessions per server
-- Open existing tmux sessions or create new ones over SSH
-- Keep multiple terminal sessions running and switch between them
-- Render tmux windows and panes as native iOS-managed terminal surfaces
-- Browse tmux windows and panes from native iOS controls
-- Focus panes and route keyboard, paste, mouse, and scroll input to the
-  focused pane
-- Create and close tmux windows from the app
-- Split and close tmux panes from the app
-- Copy terminal selections and paste through the focused pane
-- Store server passwords in Keychain
-- Remember trusted SSH hosts
-- Save terminal font and theme settings
+- **tmux sessions**: Attach to running sessions or start new ones.
+- **Windows and panes**: Swipe between windows, pick panes from a bottom
+  sheet with live previews, and split, zoom, or close them.
+- **Shortcut palette**: Run saved commands with a tap. Starter sets cover
+  shell, Claude Code, and Codex, and you can add your own commands and
+  groups.
+- **Attachments**: Upload photos and files to the server, with markup for
+  images. The remote path is typed at the prompt.
+- **File preview**: Long-press a path in terminal output to preview it:
+  code, images, PDFs, or HTML pages.
+- **Localhost preview**: Long-press a localhost URL to open the dev server
+  running on the remote machine, hot reload and WebSockets included.
+- **Cursor control**: Hold the space bar or long-press in the terminal,
+  then drag to place the cursor.
+- **Direct SSH**: Remux connects straight to the server, with no relay and
+  no account. Passwords and private keys are stored in the iOS Keychain,
+  and trusted host keys are remembered.
+- **Themes**: Ghostty default, Catppuccin Mocha, and Catppuccin Latte,
+  with adjustable font size.
 
-## Current Limits
+## Installation
 
-- This is early development work, not a daily-driver terminal yet.
-- SSH is the only transport available today. Mosh support is planned.
-- Source builds currently require a local GhosttyKit XCFramework at the
-  path configured in [project.yml](project.yml). The framework is not
-  distributed in this repository, so it must be available at that path before
-  generating or building the project.
+Remux is in development. A TestFlight beta is planned; until then, build
+from source.
 
-## Build from Source
+## Building from Source
 
 Requirements:
 
 - Xcode with iOS 18 SDK support
 - XcodeGen
-- Zig and the Ghostty checkout configured in [project.yml](project.yml)
 
-Build the ReleaseFast GhosttyKit XCFramework used by production and profiling
-builds:
+Fetch the prebuilt GhosttyKit framework:
 
 ```bash
-scripts/build_release_ghosttykit.sh
+scripts/fetch_ghosttykit.sh
 ```
 
-Remux Release builds verify the XCFramework's actual build mode and fail if it
-is not ReleaseFast. Debug Remux builds may use any GhosttyKit build mode.
-
-Generate the Xcode project:
+Generate the Xcode project and build:
 
 ```bash
 xcodegen generate
-```
 
-Build:
-
-```bash
 xcodebuild build \
   -project Remux.xcodeproj \
   -scheme Remux \
   -destination 'generic/platform=iOS Simulator'
 ```
 
-Test:
+Run the tests:
 
 ```bash
 xcodebuild test \
@@ -83,16 +79,12 @@ xcodebuild test \
   -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'
 ```
 
-## Repository Layout
+To build GhosttyKit yourself instead of fetching it, see
+[remux-ghostty](https://github.com/h3nock/remux-ghostty) and
+[scripts/build_release_ghosttykit.sh](scripts/build_release_ghosttykit.sh).
 
-- [RemuxApp](RemuxApp): iOS app source
-- [RemuxAppTests](RemuxAppTests): unit and integration-style tests
-- [RemuxAppUITests](RemuxAppUITests): UI tests
-- [docs](docs): project documentation
-- [project.yml](project.yml): XcodeGen project definition
+## Acknowledgments
 
-## Documentation
-
-- [Overview](docs/overview.md)
-- [Architecture](docs/architecture.md)
-- [Development](docs/development.md)
+Remux is built on [Ghostty](https://github.com/ghostty-org/ghostty)'s
+terminal core and uses [Citadel](https://github.com/orlandos-nl/Citadel)
+for SSH.
