@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GHOSTTY_REF: 98fa1219801016edd43fea8132f5922fc8b80db5
+  GHOSTTY_REF: 51fad3b5d135fde528110ffecd6a7afea231fa21
   XCODE_DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
 
 jobs:
