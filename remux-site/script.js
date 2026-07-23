@@ -112,6 +112,23 @@
     panelStateKey: "controlsPanel",
   });
 
+  const revealTargets = Array.from(document.querySelectorAll("[data-reveal]"));
+  if ("IntersectionObserver" in window) {
+    const revealObserver = new IntersectionObserver(
+      (entries, observer) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          entry.target.classList.add("is-visible");
+          observer.unobserve(entry.target);
+        });
+      },
+      { threshold: 0.12 },
+    );
+    revealTargets.forEach((target) => revealObserver.observe(target));
+  } else {
+    revealTargets.forEach((target) => target.classList.add("is-visible"));
+  }
+
   const updateActiveWindow = () => {
     if (sections.length === 0) return;
 
@@ -129,6 +146,23 @@
     setActiveWindow(activeID);
   };
 
+  const alignInitialHash = () => {
+    const targetID = window.location.hash.slice(1);
+    if (!sectionIDs.includes(targetID)) return;
+
+    const target = document.getElementById(targetID);
+    if (!target) return;
+
+    const root = document.documentElement;
+    const previousScrollBehavior = root.style.scrollBehavior;
+    const headerHeight = document.querySelector(".site-header")?.getBoundingClientRect().height ?? 0;
+    const targetTop = target.getBoundingClientRect().top + window.scrollY - headerHeight - 8;
+    root.style.scrollBehavior = "auto";
+    window.scrollTo({ top: targetTop });
+    root.style.scrollBehavior = previousScrollBehavior;
+    updateActiveWindow();
+  };
+
   let frame = 0;
   const onViewportChange = () => {
     if (frame) return;
@@ -140,6 +174,12 @@
 
   updateClock();
   updateActiveWindow();
-  window.setInterval(updateClock, 30_000);  window.addEventListener("scroll", onViewportChange, { passive: true });
+  window.setInterval(updateClock, 30_000);
+  window.addEventListener("load", () => window.requestAnimationFrame(alignInitialHash));
+  window.addEventListener("scroll", onViewportChange, { passive: true });
   window.addEventListener("resize", onViewportChange);
+
+  if (document.fonts?.ready) {
+    document.fonts.ready.then(() => window.requestAnimationFrame(alignInitialHash));
+  }
 })();
