@@ -5,311 +5,176 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta
       name="description"
-      content="Remux is a native iPhone client for remote tmux sessions, windows, and panes."
+      content="Remux brings your tmux workspace to iPhone with touch controls, remote previews, saved commands, and attachments."
     >
-    <meta name="theme-color" content="#080a0d">
-    <title>Remux — A native iPhone client for tmux</title>
-    <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+    <meta name="theme-color" content="#030806">
+    <title>Remux — Your tmux workspace, designed for iPhone</title>
+    <link rel="icon" href="./assets/remux-app-icon.svg" type="image/svg+xml">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&amp;display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500;600;700&amp;display=swap"
       rel="stylesheet"
     >
-    <link rel="stylesheet" href="./styles.css?v=10">
-    <script src="./script.js?v=3" defer></script>
+    <link rel="stylesheet" href="./styles.css?v=19">
+    <script src="./script.js?v=5" defer></script>
   </head>
   <body>
     <a class="skip-link" href="#main-content">Skip to content</a>
 
     <header class="site-header">
       <a class="brand" href="#home" aria-label="Remux home">
-        <span aria-hidden="true">&gt;_</span>
+        <img src="./assets/remux-app-icon.svg" alt="" width="30" height="30">
         <span>remux</span>
       </a>
-      <nav class="header-actions" aria-label="Primary navigation">
-        <a href="https://github.com/h3nock/remux" target="_blank" rel="noopener noreferrer">
+      <div class="header-actions">
+        <a
+          class="source-link"
+          href="https://github.com/h3nock/remux"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
           source
         </a>
         <a
           class="testflight-link"
-          href="https://testflight.apple.com/join/REMUX_PLACEHOLDER"
+          href="https://testflight.apple.com/join/fHqG1ruE"
           target="_blank"
           rel="noopener noreferrer"
         >
           TestFlight
         </a>
-      </nav>
+      </div>
     </header>
 
     <main id="main-content">
-      <section id="home" class="window hero-window" aria-labelledby="home-title">
-        <div class="window-shell">
-          <div class="window-titlebar">
-            <span><b>0</b> home</span>
-            <span>iPhone / tmux</span>
+      <section id="home" class="site-section hero-section" aria-labelledby="home-title">
+        <div class="section-frame hero-frame">
+          <div class="section-bar">
+            <span>home</span>
+            <span>tmux / iPhone</span>
           </div>
-          <div class="window-body split hero-layout">
-            <div class="copy-pane hero-copy">
-              <p class="context-line"><span>native iPhone client</span> / tmux</p>
-              <h1 id="home-title">remux</h1>
-              <p class="headline">A native iPhone client for tmux.</p>
+
+          <div class="hero-grid">
+            <div class="hero-copy" data-reveal>
+              <h1 id="home-title">Your tmux workspace, designed for iPhone.</h1>
               <p class="lede">
-                Open or create remote tmux sessions, then move between their windows and panes
-                with controls designed for iPhone.
+                Navigate sessions, preview files and localhost, attach files, and use terminal
+                controls built for touch.
               </p>
-              <div class="actions">
+              <div class="hero-actions">
                 <a
-                  class="button primary"
-                  href="https://testflight.apple.com/join/REMUX_PLACEHOLDER"
+                  class="button button-primary"
+                  href="https://testflight.apple.com/join/fHqG1ruE"
                   target="_blank"
                   rel="noopener noreferrer"
                 >
                   Join TestFlight
                 </a>
                 <a
-                  class="button"
-                  href="https://www.youtube.com/watch?v=WZXKzUdI6mQ"
+                  class="text-link"
+                  href="https://www.youtube.com/watch?v=iKp6nHFRKrc"
                   target="_blank"
                   rel="noopener noreferrer"
                 >
-                  Watch demo
+                  Watch the demo <span aria-hidden="true">↗</span>
                 </a>
               </div>
-              <p class="proof">sessions <i>/</i> windows <i>/</i> panes</p>
             </div>
 
-            <figure class="media-pane hero-media">
-              <div class="pane-label"><span>terminal</span><span>connected</span></div>
-              <div class="device-stage">
-                <div class="device-frame">
-                  <img
-                    class="device-screen"
-                    src="./assets/device-codex.webp?v=1"
-                    alt="Codex reviewing an architecture document in Remux with the iPhone terminal dock visible"
-                    width="1380"
-                    height="2880"
-                    fetchpriority="high"
-                  >
-                </div>
+            <figure class="product-visual hero-visual" data-reveal>
+              <div class="device-stage hero-device-stage">
+                <img
+                  class="device-image"
+                  src="./assets/device-windows.webp?v=1"
+                  alt="Remux on iPhone showing the tmux window and pane switcher"
+                  width="1380"
+                  height="2880"
+                  fetchpriority="high"
+                >
               </div>
             </figure>
           </div>
         </div>
       </section>
 
-      <section id="sessions" class="window" aria-labelledby="sessions-title">
-        <div class="window-shell">
-          <div class="window-titlebar">
-            <span><b>1</b> sessions</span>
-            <span>active / recent / servers</span>
+      <section id="workspace" class="site-section" aria-labelledby="workspace-title">
+        <div class="section-frame">
+          <div class="section-bar">
+            <span>workspace</span>
+            <div class="section-switcher" role="tablist" aria-label="Workspace views">
+              <button
+                id="workspace-tab-sessions"
+                class="section-tab is-active"
+                type="button"
+                role="tab"
+                aria-selected="true"
+                aria-controls="workspace-panel-sessions"
+                data-workspace-state="sessions"
+              >
+                sessions
+              </button>
+              <button
+                id="workspace-tab-windows"
+                class="section-tab"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="workspace-panel-windows"
+                tabindex="-1"
+                data-workspace-state="windows"
+              >
+                windows / panes
+              </button>
+            </div>
           </div>
-          <div class="window-body split">
-            <div class="copy-pane">
-              <p class="context-line"><span>sessions &amp; servers</span> / tmux</p>
-              <h2 id="sessions-title">Your tmux sessions and servers in one place.</h2>
-              <p class="lede">
-                Save multiple servers, open or create named sessions, and switch between active
-                and recent sessions.
-              </p>
 
-              <dl class="tui-table">
-                <div><dt>servers</dt><dd>Multiple saved connections</dd></div>
-                <div><dt>sessions</dt><dd>Multiple sessions per server</dd></div>
-                <div><dt>login</dt><dd>Password or private key</dd></div>
-                <div><dt>credentials</dt><dd>Stored in Keychain</dd></div>
-              </dl>
+          <div class="feature-grid">
+            <div class="feature-copy" data-reveal>
+              <h2 id="workspace-title">Move through tmux with taps and swipes.</h2>
+              <p class="lede">Preview windows and panes, then jump straight in.</p>
+              <ul class="feature-points" aria-label="Workspace features">
+                <li>Swipe between windows</li>
+                <li>Choose windows and panes from the picker</li>
+                <li>Split or close panes</li>
+              </ul>
             </div>
 
-            <figure class="media-pane session-media">
-              <div class="pane-label"><span>sessions &amp; servers</span><span>2 servers / 3 active</span></div>
-              <div class="device-stage">
-                <div class="device-frame">
-                  <img
-                    class="device-screen"
-                    src="./assets/device-home.webp?v=1"
-                    alt="Remux showing three active tmux sessions across two saved servers"
-                    width="1380"
-                    height="2880"
-                    loading="lazy"
-                  >
-                </div>
-              </div>
-            </figure>
-          </div>
-        </div>
-      </section>
-
-      <section id="windows" class="window" aria-labelledby="windows-title">
-        <div class="window-shell">
-          <div class="window-titlebar">
-            <span><b>2</b> windows</span>
-            <span>windows / panes</span>
-          </div>
-          <div class="window-body split">
-            <div class="copy-pane">
-              <p class="context-line"><span>native navigation</span> / tmux</p>
-              <h2 id="windows-title">Browse windows and panes with native controls.</h2>
-              <p class="lede">
-                Swipe between windows, preview windows and panes, create or close windows, and
-                split, stack, or close panes.
-              </p>
-
-              <dl class="tui-table compact-table">
-                <div><dt>windows</dt><dd>Swipe · select · new · remove</dd></div>
-                <div><dt>panes</dt><dd>Select · split · stack · remove</dd></div>
-              </dl>
-            </div>
-
-            <figure class="media-pane window-media">
-              <div class="pane-label"><span>window picker</span><span>session workspace</span></div>
-              <div class="device-stage">
-                <div class="device-frame">
-                  <img
-                    class="device-screen"
-                    src="./assets/device-windows.webp?v=1"
-                    alt="The Remux window picker showing four live previews from a remote developer workspace"
-                    width="1380"
-                    height="2880"
-                    loading="lazy"
-                  >
-                </div>
-              </div>
-            </figure>
-          </div>
-        </div>
-      </section>
-
-      <section id="terminal" class="window" aria-labelledby="terminal-title">
-        <div class="window-shell">
-          <div class="window-titlebar">
-            <span><b>3</b> terminal</span>
-            <span>input / navigate / tools</span>
-          </div>
-          <div class="window-body split">
-            <div class="copy-pane">
-              <p class="context-line"><span>terminal controls</span> / iPhone</p>
-              <h2 id="terminal-title">Terminal controls built for iPhone.</h2>
-              <p class="lede">
-                Use Ctrl, Esc, and Tab from the dock. Hold Ctrl for saved commands, or add
-                photos, files, and copied content from your iPhone.
-              </p>
-
-              <div class="command-lines" aria-label="Terminal control features">
-                <p>
-                  <b>input</b>
-                  <span class="inline-values"><code>ctrl</code><code>esc</code><code>tab</code><span>keyboard</span></span>
-                </p>
-                <p><b>navigate</b><span>scroll · select · copy · move cursor</span></p>
-                <p><b>shortcuts</b><span>Save and run commands you use often</span></p>
-                <p><b>attachments</b><span>Photos · files · copied content · annotate images</span></p>
-              </div>
-            </div>
-
-            <figure class="media-pane terminal-media">
-              <div class="pane-label terminal-pane-label">
-                <span>terminal controls</span>
-                <div class="terminal-tabs" role="tablist" aria-label="Terminal control views">
-                  <button
-                    id="terminal-tab-shortcuts"
-                    class="terminal-tab is-active"
-                    type="button"
-                    role="tab"
-                    aria-selected="true"
-                    aria-controls="terminal-panel-shortcuts"
-                    data-terminal-state="shortcuts"
-                  >
-                    shortcuts
-                  </button>
-                  <button
-                    id="terminal-tab-attachments"
-                    class="terminal-tab"
-                    type="button"
-                    role="tab"
-                    aria-selected="false"
-                    aria-controls="terminal-panel-attachments"
-                    tabindex="-1"
-                    data-terminal-state="attachments"
-                  >
-                    attachments
-                  </button>
-                  <button
-                    id="terminal-tab-annotation"
-                    class="terminal-tab"
-                    type="button"
-                    role="tab"
-                    aria-selected="false"
-                    aria-controls="terminal-panel-annotation"
-                    tabindex="-1"
-                    data-terminal-state="annotation"
-                  >
-                    annotation
-                  </button>
-                </div>
-              </div>
-              <div class="terminal-stage">
+            <figure class="product-visual" data-reveal>
+              <div class="device-panel-stage">
                 <div
-                  id="terminal-panel-shortcuts"
-                  class="terminal-panel is-active"
+                  id="workspace-panel-sessions"
+                  class="tab-panel is-active"
                   role="tabpanel"
-                  aria-labelledby="terminal-tab-shortcuts"
+                  aria-labelledby="workspace-tab-sessions"
                   aria-hidden="false"
-                  data-terminal-panel="shortcuts"
+                  data-workspace-panel="sessions"
                 >
-                  <div class="device-stage">
-                    <div class="device-frame">
-                      <img
-                        class="device-screen"
-                        src="./assets/device-controls.webp?v=1"
-                        alt="Remux terminal with the Codex shortcut collection open, showing saved slash commands"
-                        width="1380"
-                        height="2880"
-                        loading="lazy"
-                      >
-                    </div>
-                  </div>
+                  <img
+                    class="device-image"
+                    src="./assets/device-home.webp?v=1"
+                    alt="Remux showing active and recent tmux sessions across saved servers"
+                    width="1380"
+                    height="2880"
+                    loading="lazy"
+                  >
                 </div>
                 <div
-                  id="terminal-panel-attachments"
-                  class="terminal-panel"
+                  id="workspace-panel-windows"
+                  class="tab-panel"
                   role="tabpanel"
-                  aria-labelledby="terminal-tab-attachments"
+                  aria-labelledby="workspace-tab-windows"
                   aria-hidden="true"
-                  data-terminal-panel="attachments"
+                  data-workspace-panel="windows"
                 >
-                  <div class="device-stage">
-                    <div class="device-frame">
-                      <img
-                        class="device-screen"
-                        src="./assets/device-attach.webp?v=1"
-                        alt="Remux terminal with Photos, Files, and Paste attachment options open"
-                        width="1380"
-                        height="2880"
-                        loading="lazy"
-                      >
-                    </div>
-                  </div>
-                </div>
-                <div
-                  id="terminal-panel-annotation"
-                  class="terminal-panel"
-                  role="tabpanel"
-                  aria-labelledby="terminal-tab-annotation"
-                  aria-hidden="true"
-                  data-terminal-panel="annotation"
-                >
-                  <div class="device-stage">
-                    <div class="device-frame">
-                      <img
-                        class="device-screen"
-                        src="./assets/device-annotation.webp?v=1"
-                        alt="Remux image annotation editor with drawing tools and an attached screenshot"
-                        width="1380"
-                        height="2880"
-                        loading="lazy"
-                      >
-                    </div>
-                  </div>
+                  <img
+                    class="device-image"
+                    src="./assets/device-windows.webp?v=1"
+                    alt="Remux showing the tmux window and pane switcher"
+                    width="1380"
+                    height="2880"
+                    loading="lazy"
+                  >
                 </div>
               </div>
             </figure>
@@ -317,41 +182,176 @@
         </div>
       </section>
 
-      <section id="get" class="window" aria-labelledby="get-title">
-        <div class="window-shell">
-          <div class="window-titlebar">
-            <span><b>4</b> get</span>
-            <span>TestFlight / iPhone</span>
+      <section id="controls" class="site-section" aria-labelledby="controls-title">
+        <div class="section-frame">
+          <div class="section-bar">
+            <span>controls</span>
+            <div class="section-switcher" role="tablist" aria-label="Terminal controls">
+              <button
+                id="controls-tab-shortcuts"
+                class="section-tab is-active"
+                type="button"
+                role="tab"
+                aria-selected="true"
+                aria-controls="controls-panel-shortcuts"
+                data-controls-state="shortcuts"
+              >
+                shortcuts
+              </button>
+              <button
+                id="controls-tab-attachments"
+                class="section-tab"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="controls-panel-attachments"
+                tabindex="-1"
+                data-controls-state="attachments"
+              >
+                attachments
+              </button>
+              <button
+                id="controls-tab-annotation"
+                class="section-tab"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="controls-panel-annotation"
+                tabindex="-1"
+                data-controls-state="annotation"
+              >
+                annotation
+              </button>
+            </div>
           </div>
-          <div class="window-body get-layout">
-            <h2 id="get-title">Get Remux on TestFlight.</h2>
-            <p>Install Remux on your iPhone and connect to your tmux sessions.</p>
-            <div class="actions centered">
+
+          <div class="feature-grid">
+            <div class="feature-copy" data-reveal>
+              <h2 id="controls-title">Terminal controls built for iPhone.</h2>
+              <p class="lede">
+                Use modifier keys, saved commands, attachments, and touch gestures that make
+                terminal input easier.
+              </p>
+              <ul class="feature-points" aria-label="Terminal control features">
+                <li>Long-press and drag to move the cursor</li>
+                <li>Run saved commands</li>
+                <li>Attach and annotate files</li>
+              </ul>
+            </div>
+
+            <figure class="product-visual" data-reveal>
+              <div class="device-panel-stage">
+                <div
+                  id="controls-panel-shortcuts"
+                  class="tab-panel is-active"
+                  role="tabpanel"
+                  aria-labelledby="controls-tab-shortcuts"
+                  aria-hidden="false"
+                  data-controls-panel="shortcuts"
+                >
+                  <img
+                    class="device-image"
+                    src="./assets/device-controls.webp?v=1"
+                    alt="Remux shortcut palette for running saved commands"
+                    width="1380"
+                    height="2880"
+                    loading="lazy"
+                  >
+                </div>
+                <div
+                  id="controls-panel-attachments"
+                  class="tab-panel"
+                  role="tabpanel"
+                  aria-labelledby="controls-tab-attachments"
+                  aria-hidden="true"
+                  data-controls-panel="attachments"
+                >
+                  <img
+                    class="device-image"
+                    src="./assets/device-attach.webp?v=1"
+                    alt="Remux attachment picker for sending photos and files"
+                    width="1380"
+                    height="2880"
+                    loading="lazy"
+                  >
+                </div>
+                <div
+                  id="controls-panel-annotation"
+                  class="tab-panel"
+                  role="tabpanel"
+                  aria-labelledby="controls-tab-annotation"
+                  aria-hidden="true"
+                  data-controls-panel="annotation"
+                >
+                  <img
+                    class="device-image"
+                    src="./assets/device-annotation.webp?v=1"
+                    alt="Remux image annotation tools before uploading an attachment"
+                    width="1380"
+                    height="2880"
+                    loading="lazy"
+                  >
+                </div>
+              </div>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <section id="get" class="site-section get-section" aria-labelledby="get-title">
+        <div class="section-frame get-frame">
+          <div class="section-bar">
+            <span>get remux</span>
+            <span>public beta</span>
+          </div>
+          <div class="get-content" data-reveal>
+            <h2 id="get-title">Get Remux.</h2>
+            <p class="lede">Available in public beta on TestFlight.</p>
+            <div class="get-actions">
               <a
-                class="button primary"
-                href="https://testflight.apple.com/join/REMUX_PLACEHOLDER"
+                class="button button-primary"
+                href="https://testflight.apple.com/join/fHqG1ruE"
                 target="_blank"
                 rel="noopener noreferrer"
               >
                 Join TestFlight
               </a>
+              <a
+                class="text-link"
+                href="https://www.youtube.com/watch?v=iKp6nHFRKrc"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Watch the demo <span aria-hidden="true">↗</span>
+              </a>
+              <a
+                class="text-link"
+                href="https://github.com/h3nock/remux"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                View source <span aria-hidden="true">↗</span>
+              </a>
             </div>
+            <p class="trust-line">
+              <span aria-hidden="true">●</span> Direct SSH. No Remux account or relay. Credentials
+              stay in the iOS Keychain.
+            </p>
           </div>
         </div>
       </section>
     </main>
 
-    <nav class="tmux-status" aria-label="Page windows">
-      <span class="session-name">[remux]</span>
-      <div class="window-links">
-        <a href="#home" data-window="home">0:home</a>
-        <a href="#sessions" data-window="sessions">1:sessions</a>
-        <a href="#windows" data-window="windows">2:windows</a>
-        <a href="#terminal" data-window="terminal">3:terminal</a>
-        <a href="#get" data-window="get">4:get</a>
+    <nav class="tmux-status" aria-label="Section navigation">
+      <a class="status-brand" href="#home">[remux]</a>
+      <div class="status-windows">
+        <a href="#home" data-window="home">0:home*</a>
+        <a href="#workspace" data-window="workspace">1:workspace</a>
+        <a href="#controls" data-window="controls">2:controls</a>
+        <a href="#get" data-window="get">3:get</a>
       </div>
-      <span id="mobile-window" class="mobile-window">0:home*</span>
-      <span class="status-meta">"getremux.app" <time id="clock">--:--</time></span>
+      <span class="status-current" id="mobile-window">0:home*</span>
+      <time id="clock" aria-label="Local time"></time>
     </nav>
   </body>
 </html>
