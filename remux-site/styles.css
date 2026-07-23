@@ -347,54 +347,26 @@ a.button.primary:hover {
 }
 
 .device-frame {
-  --device-bezel: clamp(5px, 0.55vw, 8px);
-  --device-radius: clamp(28px, 4.6vh, 52px);
   position: relative;
-  width: min(72cqw, 40.526cqh, 280px);
+  width: min(78cqw, 42.167cqh, 290px);
   height: auto;
   max-width: 100%;
-  aspect-ratio: 1260 / 2736;
-  padding: var(--device-bezel);
-  border: 1px solid #3b424d;
-  border-radius: var(--device-radius);
-  background: linear-gradient(145deg, #353b45 0%, #171a20 38%, #090b0e 100%);
-  box-shadow:
-    0 28px 58px rgba(0, 0, 0, 0.52),
-    0 4px 12px rgba(0, 0, 0, 0.7),
-    inset 0 1px 0 rgba(255, 255, 255, 0.16),
-    inset 0 0 0 1px rgba(0, 0, 0, 0.72);
+  aspect-ratio: 1380 / 2880;
+  filter:
+    drop-shadow(0 24px 24px rgba(0, 0, 0, 0.42))
+    drop-shadow(0 4px 6px rgba(0, 0, 0, 0.62));
   transition: transform 260ms ease;
 }
 
-.device-frame::before {
-  content: "";
-  position: absolute;
-  inset: 2px;
-  z-index: 1;
-  border-radius: calc(var(--device-radius) - 2px);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.045);
-  pointer-events: none;
-}
-
-.device-frame::after {
-  content: "";
-  position: absolute;
-  top: 27%;
-  right: -4px;
-  width: 3px;
-  height: 12%;
-  border-radius: 0 2px 2px 0;
-  background: #454c57;
-  box-shadow: inset 1px 0 rgba(255, 255, 255, 0.16);
+.hero-media .device-frame {
+  width: min(85cqw, 47.917cqh, 330px);
 }
 
 .device-screen {
   width: 100%;
-  height: 100%;
-  border-radius: calc(var(--device-radius) - var(--device-bezel) - 2px);
+  height: auto;
   object-fit: contain;
   object-position: center;
-  overflow: hidden;
 }
 
 .terminal-tabs {
@@ -772,9 +744,8 @@ h2 {
     left: 10px;
   }
 
-  .device-frame {
-    --device-bezel: 4px;
-    --device-radius: clamp(20px, 7vw, 30px);
+  .hero-media .device-frame {
+    width: min(88cqw, 47.917cqh, 205px);
   }
 
   .terminal-pane-label > span:first-child {
