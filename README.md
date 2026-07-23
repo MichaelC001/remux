@@ -2,9 +2,7 @@
 
 > A native iOS client for remote tmux workspaces.
 
-<p align="center">
-  <img src="docs/media/remux-readme.webp" alt="Remux demo" width="900">
-</p>
+https://github.com/user-attachments/assets/53d7ffd2-c2ba-4661-955f-37e3b94f9859
 
 <p align="center">
   <a href="https://testflight.apple.com/join/fHqG1ruE">Join the beta on TestFlight</a>
