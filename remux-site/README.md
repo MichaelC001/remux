@@ -24,6 +24,7 @@ terminal controls that a phone keyboard omits, and join the public beta.
 - keep view switching in the section bar instead of nesting a second tab bar inside the media pane;
 - preserve device geometry and size phones from the media pane height, not from viewport width;
 - use the official iPhone Air frame for the document Preview composition;
+- let the current product walkthrough fill the home media pane, with a still for reduced motion;
 - keep the desktop tmux status line as secondary navigation and make it non-fixed on mobile;
 - point TestFlight actions to the public invite at <https://testflight.apple.com/join/fHqG1ruE>.
 

@@ -8,6 +8,54 @@
   const windowLinks = Array.from(document.querySelectorAll("[data-window]"));
   const mobileWindow = document.getElementById("mobile-window");
   const clock = document.getElementById("clock");
+  const heroVideo = document.getElementById("hero-demo");
+  const heroVideoToggle = document.querySelector(".hero-video-toggle");
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+  const updateHeroVideoToggle = () => {
+    if (!heroVideo || !heroVideoToggle) return;
+
+    const paused = heroVideo.paused;
+    heroVideoToggle.textContent = paused ? "play" : "pause";
+    heroVideoToggle.setAttribute("aria-label", `${paused ? "Play" : "Pause"} demo`);
+  };
+
+  const playHeroVideo = () => {
+    if (!heroVideo || reducedMotion.matches) return;
+
+    const playback = heroVideo.play();
+    if (playback) {
+      playback.catch((error) => {
+        console.info("Remux demo autoplay was unavailable.", error);
+        updateHeroVideoToggle();
+      });
+    }
+  };
+
+  if (heroVideo && heroVideoToggle) {
+    if (reducedMotion.matches) {
+      heroVideo.removeAttribute("autoplay");
+      heroVideo.pause();
+    }
+
+    heroVideo.addEventListener("play", updateHeroVideoToggle);
+    heroVideo.addEventListener("pause", updateHeroVideoToggle);
+    heroVideoToggle.addEventListener("click", () => {
+      if (heroVideo.paused) {
+        playHeroVideo();
+      } else {
+        heroVideo.pause();
+      }
+    });
+    reducedMotion.addEventListener("change", (event) => {
+      if (event.matches) {
+        heroVideo.pause();
+      } else {
+        playHeroVideo();
+      }
+    });
+    updateHeroVideoToggle();
+  }
 
   windowLinks.forEach((link) => {
     link.dataset.baseLabel = link.textContent.replace(/\*$/, "");
