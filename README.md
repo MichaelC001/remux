@@ -3,13 +3,11 @@
 > A native iOS client for remote tmux workspaces.
 
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=WZXKzUdI6mQ">
-    <img src="docs/media/remux-readme.webp" alt="Remux demo" width="900">
-  </a>
+  <img src="docs/media/remux-readme.webp" alt="Remux demo" width="900">
 </p>
 
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=WZXKzUdI6mQ">Watch high-quality demo</a>
+  <a href="https://testflight.apple.com/join/fHqG1ruE">Join the beta on TestFlight</a>
 </p>
 
 ## About
@@ -43,8 +41,9 @@ terminal, and uploads photos and files, with markup for images.
 
 ## Installation
 
-Remux is in development. A TestFlight beta is planned; until then, build
-from source.
+Remux is available as a public beta on TestFlight:
+[testflight.apple.com/join/fHqG1ruE](https://testflight.apple.com/join/fHqG1ruE).
+You can also build from source.
 
 ## Building from Source
 
