@@ -182,6 +182,71 @@
         </div>
       </section>
 
+      <section id="preview" class="site-section" aria-labelledby="preview-title">
+        <div class="section-frame">
+          <div class="section-bar">
+            <span>preview</span>
+            <span>files / localhost</span>
+          </div>
+
+          <div class="feature-grid feature-grid-reverse">
+            <div class="feature-copy" data-reveal>
+              <h2 id="preview-title">Long-press to preview.</h2>
+              <p class="lede">
+                Open files and localhost links from the machine running your session.
+              </p>
+              <ul class="feature-points" aria-label="Preview features">
+                <li>Code, images, PDFs, and HTML</li>
+                <li>Hot reload and WebSockets</li>
+                <li>Uses the session's machine</li>
+              </ul>
+            </div>
+
+            <figure class="product-visual preview-visual" data-reveal>
+              <div class="device-stage">
+                <div class="preview-device" aria-hidden="true">
+                  <div class="preview-device-screen">
+                    <div class="preview-status">
+                      <span>9:41</span>
+                      <span>•••  ◒  ▰</span>
+                    </div>
+                    <div class="preview-toolbar">
+                      <span>‹ Terminal</span>
+                      <span class="preview-title">
+                        <strong>Attention Is All You Need</strong>
+                        <small>MacBook</small>
+                      </span>
+                      <span>↻</span>
+                    </div>
+                    <div class="preview-document">
+                      <img
+                        src="./assets/attention-is-all-you-need-page-1.png?v=1"
+                        alt=""
+                        width="1530"
+                        height="1980"
+                        loading="lazy"
+                      >
+                    </div>
+                  </div>
+                  <img
+                    class="preview-device-frame"
+                    src="./assets/iphone-air-space-black-frame.png?v=1"
+                    alt=""
+                    width="1380"
+                    height="2880"
+                    loading="lazy"
+                  >
+                </div>
+                <span class="sr-only">
+                  Remux previewing the Attention Is All You Need PDF from the server running the
+                  current tmux session.
+                </span>
+              </div>
+            </figure>
+          </div>
+        </div>
+      </section>
+
       <section id="controls" class="site-section" aria-labelledby="controls-title">
         <div class="section-frame">
           <div class="section-bar">
@@ -347,8 +412,9 @@
       <div class="status-windows">
         <a href="#home" data-window="home">0:home*</a>
         <a href="#workspace" data-window="workspace">1:workspace</a>
-        <a href="#controls" data-window="controls">2:controls</a>
-        <a href="#get" data-window="get">3:get</a>
+        <a href="#preview" data-window="preview">2:preview</a>
+        <a href="#controls" data-window="controls">3:controls</a>
+        <a href="#get" data-window="get">4:get</a>
       </div>
       <span class="status-current" id="mobile-window">0:home*</span>
       <time id="clock" aria-label="Local time"></time>

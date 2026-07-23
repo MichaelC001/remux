@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const sectionIDs = ["home", "workspace", "controls", "get"];
+  const sectionIDs = ["home", "workspace", "preview", "controls", "get"];
   const sections = sectionIDs
     .map((id) => document.getElementById(id))
     .filter((section) => section !== null);
