@@ -23,7 +23,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
     @MainActor
     func testDeleteBackwardSendsBackspaceKeyEvent() {
         let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
-        var receivedEvent: GhosttySurfaceKeyEvent?
+        var receivedEvents: [GhosttySurfaceKeyEvent] = []
 
         view.update(
             isEnabled: true,
@@ -32,7 +32,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             sendText: { _ in true },
             sendPaste: { _ in true },
             sendKeyEvent: {
-                receivedEvent = $0
+                receivedEvents.append($0)
                 return true
             },
             onTrackpadStateChange: { _ in }
@@ -40,7 +40,30 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
 
         view.deleteBackward()
 
-        XCTAssertEqual(receivedEvent, .init(keyCode: .backspace))
+        XCTAssertEqual(receivedEvents, [.init(keyCode: .backspace)])
+    }
+
+    @MainActor
+    func testDeleteBackwardIsIgnoredWhenDisabled() {
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+        var receivedEvents: [GhosttySurfaceKeyEvent] = []
+
+        view.update(
+            isEnabled: false,
+            wantsFirstResponder: false,
+            activationToken: 1,
+            sendText: { _ in true },
+            sendPaste: { _ in true },
+            sendKeyEvent: {
+                receivedEvents.append($0)
+                return true
+            },
+            onTrackpadStateChange: { _ in }
+        )
+
+        view.deleteBackward()
+
+        XCTAssertTrue(receivedEvents.isEmpty)
     }
 
     @MainActor
@@ -736,13 +759,30 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
     }
 
     @MainActor
-    func testResponderProvidesNonNilUITextInputDocumentEndpoints() {
+    func testResponderProvidesCoherentVirtualTextDocument() throws {
         let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
-        XCTAssertNotNil(view.beginningOfDocument)
-        XCTAssertNotNil(view.endOfDocument)
-        XCTAssertNotNil(view.selectedTextRange)
+
+        let beginning = try XCTUnwrap(
+            view.beginningOfDocument as? GhosttyVirtualTextPosition
+        )
+        let end = try XCTUnwrap(
+            view.endOfDocument as? GhosttyVirtualTextPosition
+        )
+        let selection = try XCTUnwrap(
+            view.selectedTextRange as? GhosttyVirtualTextRange
+        )
+        let document = try XCTUnwrap(
+            view.textRange(from: beginning, to: end)
+        )
+
+        XCTAssertEqual(beginning.offset, 0)
+        XCTAssertEqual(end.offset, 1)
+        XCTAssertEqual(selection.from.offset, 1)
+        XCTAssertEqual(selection.to.offset, 1)
+        XCTAssertEqual(view.text(in: document), " ")
+        XCTAssertEqual(view.text(in: selection), "")
         XCTAssertNil(view.markedTextRange)
-        let position = view.position(from: view.beginningOfDocument, offset: 0)
+        let position = view.position(from: beginning, offset: 0)
         XCTAssertNotNil(position, "tokenizer requires non-nil position for offset 0")
     }
 

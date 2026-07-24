@@ -38,8 +38,8 @@ final class GhosttyVirtualTextRange: UITextRange {
 extension GhosttyTerminalResponderUIView: UITextInput {
     var selectedTextRange: UITextRange? {
         get {
-            let zero = GhosttyVirtualTextPosition(offset: 0)
-            return GhosttyVirtualTextRange(from: zero, to: zero)
+            let end = GhosttyVirtualTextPosition(offset: 1)
+            return GhosttyVirtualTextRange(from: end, to: end)
         }
         set { _ = newValue }
     }
@@ -58,7 +58,20 @@ extension GhosttyTerminalResponderUIView: UITextInput {
         set { _ = newValue }
     }
 
-    func text(in range: UITextRange) -> String? { "" }
+    func text(in range: UITextRange) -> String? {
+        guard
+            let range = range as? GhosttyVirtualTextRange,
+            range.from.offset >= 0,
+            range.from.offset <= range.to.offset,
+            range.to.offset <= 1
+        else {
+            return nil
+        }
+
+        // Keep the virtual document coherent so UIKit sees one deletable
+        // character and drives its native Backspace repeat behavior.
+        return range.isEmpty ? "" : " "
+    }
 
     func replace(_ range: UITextRange, withText text: String) {
         _ = range
