@@ -100,6 +100,7 @@ struct SavedServer: Identifiable, Equatable, Codable, Sendable {
     var port: Int
     var username: String
     var identityID: SSHIdentity.ID
+    var tmuxExecutablePath: String?
 
     init(
         id: UUID = UUID(),
@@ -107,7 +108,8 @@ struct SavedServer: Identifiable, Equatable, Codable, Sendable {
         host: String,
         port: Int = 22,
         username: String,
-        identityID: SSHIdentity.ID
+        identityID: SSHIdentity.ID,
+        tmuxExecutablePath: String? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -115,6 +117,7 @@ struct SavedServer: Identifiable, Equatable, Codable, Sendable {
         self.port = port
         self.username = username
         self.identityID = identityID
+        self.tmuxExecutablePath = tmuxExecutablePath
     }
 }
 
@@ -359,6 +362,7 @@ struct TmuxConnectionDraft: Equatable, Sendable {
     var host: String = ""
     var port: String = "22"
     var username: String = ""
+    var tmuxExecutablePath: String = ""
     var authenticationKind: SSHAuthenticationKind = .password
     var password: String = ""
     var privateKeyPEM: String = ""
@@ -373,6 +377,7 @@ struct TmuxConnectionDraft: Equatable, Sendable {
         self.host = server.host
         self.port = String(server.port)
         self.username = server.username
+        self.tmuxExecutablePath = server.tmuxExecutablePath ?? ""
         self.sessionName = workspace.sessionName
     }
 
@@ -400,6 +405,7 @@ struct TmuxConnectionDraftValidation: Equatable, Sendable {
     var host: String?
     var port: String?
     var username: String?
+    var tmuxExecutablePath: String?
     var password: String?
     var privateKey: String?
     var privateKeyPassphrase: String?
@@ -412,6 +418,7 @@ struct TmuxConnectionDraftValidation: Equatable, Sendable {
             host == nil &&
             port == nil &&
             username == nil &&
+            tmuxExecutablePath == nil &&
             password == nil &&
             privateKey == nil &&
             privateKeyPassphrase == nil &&
@@ -444,6 +451,7 @@ struct ValidatedTmuxServerDraft: Equatable, Sendable {
     let host: String
     let port: Int
     let username: String
+    let tmuxExecutablePath: String?
     let credential: Credential
 
     func savedServer(identityID: SSHIdentity.ID) -> SavedServer {
@@ -453,7 +461,8 @@ struct ValidatedTmuxServerDraft: Equatable, Sendable {
             host: host,
             port: port,
             username: username,
-            identityID: identityID
+            identityID: identityID,
+            tmuxExecutablePath: tmuxExecutablePath
         )
     }
 }
@@ -525,6 +534,11 @@ enum TmuxConnectionDraftValidator {
         let displayName = draft.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         let host = draft.host.trimmingCharacters(in: .whitespacesAndNewlines)
         let username = draft.username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedTmuxExecutablePath = draft.tmuxExecutablePath
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let tmuxExecutablePath = trimmedTmuxExecutablePath.isEmpty
+            ? nil
+            : trimmedTmuxExecutablePath
         let password = draft.password
         let privateKeyPEM = draft.privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines)
         let privateKeyPassphrase = draft.privateKeyPassphrase.isEmpty ? nil : draft.privateKeyPassphrase
@@ -545,6 +559,16 @@ enum TmuxConnectionDraftValidator {
         let serverID = existingServerID ?? UUID()
         if username.isEmpty {
             validation.username = "Username is required."
+        }
+
+        if let tmuxExecutablePath {
+            if !tmuxExecutablePath.hasPrefix("/") {
+                validation.tmuxExecutablePath = "Enter an absolute path beginning with /."
+            } else if tmuxExecutablePath.contains("\n") ||
+                        tmuxExecutablePath.contains("\r") ||
+                        tmuxExecutablePath.contains("\0") {
+                validation.tmuxExecutablePath = "Executable path contains invalid characters."
+            }
         }
 
         let credential: ValidatedTmuxServerDraft.Credential
@@ -591,6 +615,7 @@ enum TmuxConnectionDraftValidator {
                 host: host,
                 port: port,
                 username: username,
+                tmuxExecutablePath: tmuxExecutablePath,
                 credential: credential
             )
         )
@@ -631,6 +656,7 @@ private extension TmuxConnectionDraftValidation {
         host = host ?? other.host
         port = port ?? other.port
         username = username ?? other.username
+        tmuxExecutablePath = tmuxExecutablePath ?? other.tmuxExecutablePath
         password = password ?? other.password
         privateKey = privateKey ?? other.privateKey
         privateKeyPassphrase = privateKeyPassphrase ?? other.privateKeyPassphrase

@@ -200,7 +200,8 @@ final class ConnectionProfileRepositoryTests: XCTestCase {
             displayName: "Example",
             host: "example.test",
             username: "deploy",
-            identityID: identityID
+            identityID: identityID,
+            tmuxExecutablePath: "/home/deploy/.local/bin/tmux"
         )
 
         let encoded = try JSONEncoder().encode(server)
@@ -208,6 +209,28 @@ final class ConnectionProfileRepositoryTests: XCTestCase {
 
         XCTAssertEqual(decoded, server)
         XCTAssertEqual(decoded.identityID, identityID)
+        XCTAssertEqual(decoded.tmuxExecutablePath, "/home/deploy/.local/bin/tmux")
+    }
+
+    func testSavedServerDecodesMissingTmuxExecutablePathAsDefault() throws {
+        let id = UUID()
+        let identityID = UUID()
+        let data = Data(
+            """
+            {
+              "id": "\(id.uuidString)",
+              "displayName": "Existing Server",
+              "host": "server.example.test",
+              "port": 22,
+              "username": "demo",
+              "identityID": "\(identityID.uuidString)"
+            }
+            """.utf8
+        )
+
+        let server = try JSONDecoder().decode(SavedServer.self, from: data)
+
+        XCTAssertNil(server.tmuxExecutablePath)
     }
 
     func testSSHIdentityCodablePreservesFields() throws {

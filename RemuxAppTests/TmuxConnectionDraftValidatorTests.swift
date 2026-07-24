@@ -9,6 +9,7 @@ final class TmuxConnectionDraftValidatorTests: XCTestCase {
         draft.port = "22"
         draft.username = "demo"
         draft.password = "demo-password"
+        draft.tmuxExecutablePath = "  /home/demo/.local/share/mise/shims/tmux  "
         draft.sessionName = "base"
 
         let result = TmuxConnectionDraftValidator.validate(
@@ -26,6 +27,14 @@ final class TmuxConnectionDraftValidatorTests: XCTestCase {
         XCTAssertEqual(submission.server.host, "server.example.com")
         XCTAssertEqual(submission.server.port, 22)
         XCTAssertEqual(submission.server.username, "demo")
+        XCTAssertEqual(
+            submission.server.tmuxExecutablePath,
+            "/home/demo/.local/share/mise/shims/tmux"
+        )
+        XCTAssertEqual(
+            submission.server.savedServer(identityID: UUID()).tmuxExecutablePath,
+            "/home/demo/.local/share/mise/shims/tmux"
+        )
         XCTAssertEqual(submission.workspace.serverID, submission.server.serverID)
         XCTAssertEqual(submission.workspace.sessionName, "base")
         XCTAssertEqual(submission.server.credential, .password("demo-password"))
@@ -121,7 +130,46 @@ final class TmuxConnectionDraftValidatorTests: XCTestCase {
 
         XCTAssertEqual(submission.serverID, serverID)
         XCTAssertEqual(submission.displayName, "Laptop")
+        XCTAssertNil(submission.tmuxExecutablePath)
         XCTAssertEqual(submission.credential, .password("demo-password"))
+    }
+
+    func testServerDraftRejectsInvalidTmuxExecutablePaths() {
+        for path in [
+            "~/.local/share/mise/shims/tmux",
+            "/usr/local/bin/tmux\nwhoami",
+            "/usr/local/bin/tmux\0",
+        ] {
+            var draft = validServerDraft()
+            draft.tmuxExecutablePath = path
+
+            let result = TmuxConnectionDraftValidator.validateServer(
+                draft,
+                existingServerID: nil
+            )
+
+            guard case .invalid(let validation) = result else {
+                XCTFail("expected invalid server submission for \(path.debugDescription)")
+                continue
+            }
+
+            XCTAssertNotNil(validation.tmuxExecutablePath)
+        }
+    }
+
+    func testConnectionDraftLoadsSavedTmuxExecutablePathForEditing() {
+        let server = SavedServer(
+            displayName: "Laptop",
+            host: "laptop.example.com",
+            username: "demo",
+            identityID: UUID(),
+            tmuxExecutablePath: "/opt/tmux/bin/tmux"
+        )
+        let workspace = SavedWorkspace(serverID: server.id, sessionName: "ops")
+
+        let draft = TmuxConnectionDraft(server: server, workspace: workspace)
+
+        XCTAssertEqual(draft.tmuxExecutablePath, "/opt/tmux/bin/tmux")
     }
 
     func testValidPrivateKeyDraftProducesPrivateKeyCredential() {

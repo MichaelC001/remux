@@ -68,6 +68,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         )
         XCTAssertNil(defaultConfiguration.traceFlowID)
         XCTAssertEqual(defaultConfiguration.controlNoResponseTimeout, .seconds(15))
+        XCTAssertEqual(defaultConfiguration.tmuxExecutable, "tmux")
 
         let tracedConfiguration = SSHTmuxControlConfiguration(
             host: server.host,
@@ -83,6 +84,35 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertEqual(tracedConfiguration.traceFlowID, "session.open.test")
         XCTAssertEqual(tracedConfiguration.connectTimeout, .seconds(10))
         XCTAssertEqual(tracedConfiguration.controlNoResponseTimeout, .seconds(12))
+    }
+
+    func testAppDependenciesTmuxConfigurationUsesSavedServerExecutable() {
+        let executablePath = "/home/deploy/.local/share/mise/shims/tmux"
+        let server = SavedServer(
+            displayName: "Custom tmux",
+            host: "example.com",
+            username: "deploy",
+            identityID: UUID(),
+            tmuxExecutablePath: executablePath
+        )
+        let workspace = SavedWorkspace(serverID: server.id, sessionName: "base")
+        let target = TmuxConnectionTarget(
+            server: server,
+            workspace: workspace,
+            sshAuth: makePasswordAuth(server: server, password: "pw")
+        )
+        let trustedHostStore = TrustedHostStore(
+            rootURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        )
+
+        let configuration = RemuxAppDependencies.sshConfiguration(
+            for: target,
+            trustedHostStore: trustedHostStore,
+            traceFlowID: nil
+        )
+
+        XCTAssertEqual(configuration.tmuxExecutable, executablePath)
     }
 
     func testSFTPLeaseOpenTimeoutReturnsSuccessfulOperation() async throws {
