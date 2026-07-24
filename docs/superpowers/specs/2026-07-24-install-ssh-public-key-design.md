@@ -89,13 +89,18 @@ When the user taps **Install on Host**, Remux:
 
 The possible results are:
 
-- **Success:** show **Already installed**. Do not ask for a password.
+- **Authentication and command success:** show **Already installed**. Do not
+  ask for a password.
+- **Authentication success followed by command rejection or failure:** report
+  that the key is accepted but the server could not run the compatibility
+  check. Do not ask for a password because reinstalling the key cannot fix
+  remote command policy.
 - **Definite authentication rejection:** present the password sheet.
 - **Host trust required:** present Remux's host-key confirmation, then retry
   the preflight only after explicit approval.
-- **DNS, network, timeout, protocol, local key, or remote-command failure:**
-  show the actual failure. Do not reinterpret it as a missing key and do not
-  ask for a password.
+- **DNS, network, timeout, protocol, or local key failure:** show the actual
+  failure. Do not reinterpret it as a missing key and do not ask for a
+  password.
 
 ### Password installation
 
@@ -207,10 +212,10 @@ It receives the server endpoint, provisional server ID, public-key line,
 authentication factories, and host-key validator through dependencies. It
 does not read or write repositories.
 
-Both preflight and installation use dedicated roots rather than the shared
-tmux root pool. This guarantees prompt cleanup, prevents the one-time password
-operation from being retained as an idle reusable connection, and isolates
-setup failures from active tmux sessions.
+Preflight, installation, and verification all use dedicated roots rather than
+the shared tmux root pool. This guarantees prompt cleanup, prevents the
+one-time password operation from being retained as an idle reusable
+connection, and isolates setup failures from active tmux sessions.
 
 ### Setup state
 
@@ -267,6 +272,8 @@ The feature distinguishes at least these cases:
 - host-key trust required or host key changed;
 - key already accepted;
 - key authentication rejected;
+- key authentication accepted but the compatibility command rejected or
+  failed;
 - password authentication rejected or unavailable;
 - network, DNS, connect timeout, or SSH negotiation failure;
 - exec request rejected;
