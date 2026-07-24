@@ -86,6 +86,21 @@ final class SSHPublicKeyInstallerTests: XCTestCase {
         }
     }
 
+    func testPreflightPreservesCancellationAfterKeyAuthentication() async {
+        let recorder = SSHPublicKeyCommandRecorder(results: [
+            .failure(
+                SSHPublicKeyCommandExecutionError(
+                    underlying: CancellationError()
+                )
+            ),
+        ])
+        let installer = makeInstaller(recorder: recorder)
+
+        await assertCancellationError {
+            _ = try await installer.preflight(Self.target)
+        }
+    }
+
     func testPreflightReportsAcceptedKeyWhenProbeExitsNonzero() async {
         let recorder = SSHPublicKeyCommandRecorder(results: [
             .success(.failure(exitStatus: 127, stderr: "missing shell")),
@@ -136,6 +151,27 @@ final class SSHPublicKeyInstallerTests: XCTestCase {
             XCTFail("expected host-trust failure")
         } catch {
             XCTAssertTrue(error is TrustedHostStoreError)
+        }
+    }
+
+    func testAppendUnwrapsPostClaimCommandFailure() async {
+        let recorder = SSHPublicKeyCommandRecorder(results: [
+            .failure(
+                SSHPublicKeyCommandExecutionError(
+                    underlying: SSHPublicKeyLocalizedCommandError.execFailed
+                )
+            ),
+        ])
+        let installer = makeInstaller(recorder: recorder)
+
+        do {
+            try await installer.append(Self.target, password: "one-time-password")
+            XCTFail("expected localized command failure")
+        } catch let error as SSHPublicKeyLocalizedCommandError {
+            XCTAssertEqual(error, .execFailed)
+            XCTAssertEqual(error.localizedDescription, "The authenticated SSH command failed.")
+        } catch {
+            XCTFail("unexpected error: \(error)")
         }
     }
 
@@ -246,6 +282,27 @@ final class SSHPublicKeyInstallerTests: XCTestCase {
         }
     }
 
+    func testVerifyUnwrapsPostClaimCommandFailure() async {
+        let recorder = SSHPublicKeyCommandRecorder(results: [
+            .failure(
+                SSHPublicKeyCommandExecutionError(
+                    underlying: SSHPublicKeyLocalizedCommandError.execFailed
+                )
+            ),
+        ])
+        let installer = makeInstaller(recorder: recorder)
+
+        do {
+            try await installer.verify(Self.target)
+            XCTFail("expected localized command failure")
+        } catch let error as SSHPublicKeyLocalizedCommandError {
+            XCTAssertEqual(error, .execFailed)
+            XCTAssertEqual(error.localizedDescription, "The authenticated SSH command failed.")
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
     func testVerifyUsesFreshKeyProbe() async throws {
         let recorder = SSHPublicKeyCommandRecorder(results: [.success(.success)])
         let installer = makeInstaller(recorder: recorder)
@@ -311,6 +368,57 @@ final class SSHPublicKeyInstallerTests: XCTestCase {
         XCTAssertEqual(Set(roots.closed), Set(roots.opened))
     }
 
+    func testCancellationDuringLiveAuthenticationClosesRootWithoutExecutingAppend() async throws {
+        let generatedKey = SSHPrivateKeyInspector.generateEd25519(
+            comment: "cancelled-live-installer-test"
+        )
+        let serverID = UUID()
+        let server = try await SSHPublicKeyLiveTestServer.start(
+            username: "remux",
+            suspendAuthentication: true
+        )
+        defer { server.stop() }
+        let trustedHostRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SSHPublicKeyInstallerCancellationTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: trustedHostRoot) }
+        let trustedHostStore = TrustedHostStore(rootURL: trustedHostRoot)
+        try trustedHostStore.trustHostKey(
+            SSHHostKeyTrustChallenge(
+                kind: .unknown,
+                serverID: serverID,
+                host: "127.0.0.1",
+                trustedKeyType: nil,
+                trustedOpenSSHPublicKey: nil,
+                receivedKeyType: server.hostKeyType,
+                receivedOpenSSHPublicKey: server.openSSHPublicKey
+            )
+        )
+        let target = SSHPublicKeyInstallTarget(
+            serverID: serverID,
+            host: "127.0.0.1",
+            port: server.port,
+            username: "remux",
+            privateKey: SSHPrivateKeyCredential(privateKeyPEM: generatedKey.privateKeyPEM),
+            publicKeyLine: generatedKey.publicKeyLine
+        )
+        let installer = try SSHPublicKeyInstaller(trustedHostStore: trustedHostStore)
+        let appendTask = Task {
+            try await installer.append(target, password: "one-time-password")
+        }
+
+        let didSuspendAuthentication = await server.waitForSuspendedAuthentication()
+        XCTAssertTrue(didSuspendAuthentication)
+        appendTask.cancel()
+        server.resumeAuthentication()
+
+        await assertCancellationError {
+            try await appendTask.value
+        }
+        let didCloseRoot = await server.waitForClosedRootCount(1)
+        XCTAssertTrue(didCloseRoot, "\(server.recordedRoots)")
+        XCTAssertEqual(server.recordedRoots.execRequestCount, 0)
+    }
+
     private func makeInstaller(
         recorder: SSHPublicKeyCommandRecorder
     ) -> SSHPublicKeyInstaller {
@@ -355,6 +463,21 @@ final class SSHPublicKeyInstallerTests: XCTestCase {
             XCTFail("expected installer error", file: file, line: line)
         } catch let error as SSHPublicKeyInstallerError {
             XCTAssertEqual(error, expectedError, file: file, line: line)
+        } catch {
+            XCTFail("unexpected error: \(error)", file: file, line: line)
+        }
+    }
+
+    private func assertCancellationError(
+        operation: () async throws -> Void,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        do {
+            try await operation()
+            XCTFail("expected cancellation", file: file, line: line)
+        } catch is CancellationError {
+            return
         } catch {
             XCTFail("unexpected error: \(error)", file: file, line: line)
         }
@@ -419,12 +542,21 @@ private enum SSHPublicKeyInstallerTestError: Error, Equatable {
     case networkUnavailable
 }
 
+private enum SSHPublicKeyLocalizedCommandError: LocalizedError, Equatable {
+    case execFailed
+
+    var errorDescription: String? {
+        "The authenticated SSH command failed."
+    }
+}
+
 private final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
     let port: Int
     let openSSHPublicKey: String
     let hostKeyType: String
 
     private let serverChannel: Channel
+    private let authenticationDelegate: SSHPublicKeyLiveAuthenticationDelegate
     private let rootRecorder: SSHPublicKeyLiveRootRecorder
 
     var recordedRoots: SSHPublicKeyLiveRootRecorder.Snapshot {
@@ -434,6 +566,7 @@ private final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
     private init(
         serverChannel: Channel,
         hostPublicKey: NIOSSHPublicKey,
+        authenticationDelegate: SSHPublicKeyLiveAuthenticationDelegate,
         rootRecorder: SSHPublicKeyLiveRootRecorder
     ) throws {
         guard let port = serverChannel.localAddress?.port else {
@@ -451,12 +584,19 @@ private final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
         self.openSSHPublicKey = openSSHPublicKey
         self.hostKeyType = hostKeyType
         self.serverChannel = serverChannel
+        self.authenticationDelegate = authenticationDelegate
         self.rootRecorder = rootRecorder
     }
 
-    static func start(username: String) async throws -> SSHPublicKeyLiveTestServer {
+    static func start(
+        username: String,
+        suspendAuthentication: Bool = false
+    ) async throws -> SSHPublicKeyLiveTestServer {
         let hostKey = NIOSSHPrivateKey(ed25519Key: Curve25519.Signing.PrivateKey())
-        let authenticationDelegate = SSHPublicKeyLiveAuthenticationDelegate(username: username)
+        let authenticationDelegate = SSHPublicKeyLiveAuthenticationDelegate(
+            username: username,
+            suspendAuthentication: suspendAuthentication
+        )
         let rootRecorder = SSHPublicKeyLiveRootRecorder()
         let serverChannel = try await ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
             .childChannelInitializer { channel in
@@ -481,7 +621,9 @@ private final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
                         return childChannel
                             .setOption(ChannelOptions.allowRemoteHalfClosure, value: true)
                             .flatMap {
-                                childChannel.pipeline.addHandler(SSHPublicKeyLiveExecHandler())
+                                childChannel.pipeline.addHandler(
+                                    SSHPublicKeyLiveExecHandler(rootRecorder: rootRecorder)
+                                )
                             }
                     }
                 )
@@ -499,8 +641,24 @@ private final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
         return try SSHPublicKeyLiveTestServer(
             serverChannel: serverChannel,
             hostPublicKey: hostKey.publicKey,
+            authenticationDelegate: authenticationDelegate,
             rootRecorder: rootRecorder
         )
+    }
+
+    func waitForSuspendedAuthentication() async -> Bool {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while ContinuousClock.now < deadline {
+            if authenticationDelegate.hasSuspendedRequest {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return authenticationDelegate.hasSuspendedRequest
+    }
+
+    func resumeAuthentication() {
+        authenticationDelegate.resumeAuthentication()
     }
 
     func waitForClosedRootCount(_ count: Int) async -> Bool {
@@ -529,9 +687,22 @@ private final class SSHPublicKeyLiveAuthenticationDelegate:
     ]
 
     private let username: String
+    private let suspendAuthentication: Bool
+    private let lock = NSLock()
+    private var suspendedResponsePromise: EventLoopPromise<NIOSSHUserAuthenticationOutcome>?
 
-    init(username: String) {
+    var hasSuspendedRequest: Bool {
+        lock.withLock {
+            suspendedResponsePromise != nil
+        }
+    }
+
+    init(
+        username: String,
+        suspendAuthentication: Bool
+    ) {
         self.username = username
+        self.suspendAuthentication = suspendAuthentication
     }
 
     func requestReceived(
@@ -542,6 +713,12 @@ private final class SSHPublicKeyLiveAuthenticationDelegate:
             responsePromise.succeed(.failure)
             return
         }
+        if suspendAuthentication {
+            lock.withLock {
+                suspendedResponsePromise = responsePromise
+            }
+            return
+        }
         switch request.request {
         case .password, .publicKey:
             responsePromise.succeed(.success)
@@ -549,17 +726,32 @@ private final class SSHPublicKeyLiveAuthenticationDelegate:
             responsePromise.succeed(.failure)
         }
     }
+
+    func resumeAuthentication() {
+        let responsePromise = lock.withLock {
+            let responsePromise = suspendedResponsePromise
+            suspendedResponsePromise = nil
+            return responsePromise
+        }
+        responsePromise?.succeed(.success)
+    }
 }
 
 private final class SSHPublicKeyLiveExecHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = SSHChannelData
 
+    private let rootRecorder: SSHPublicKeyLiveRootRecorder
     private var didAcceptExec = false
+
+    init(rootRecorder: SSHPublicKeyLiveRootRecorder) {
+        self.rootRecorder = rootRecorder
+    }
 
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
         switch event {
         case let request as SSHChannelRequestEvent.ExecRequest:
             didAcceptExec = true
+            rootRecorder.recordExecRequest()
             if request.wantReply {
                 context.channel.triggerUserOutboundEvent(ChannelSuccessEvent(), promise: nil)
             }
@@ -592,11 +784,13 @@ private final class SSHPublicKeyLiveRootRecorder: @unchecked Sendable {
     struct Snapshot {
         let opened: [UUID]
         let closed: [UUID]
+        let execRequestCount: Int
     }
 
     private let lock = NSLock()
     private var opened: [UUID] = []
     private var closed: [UUID] = []
+    private var execRequestCount = 0
 
     func open(_ rootID: UUID) {
         lock.withLock {
@@ -610,9 +804,19 @@ private final class SSHPublicKeyLiveRootRecorder: @unchecked Sendable {
         }
     }
 
+    func recordExecRequest() {
+        lock.withLock {
+            execRequestCount += 1
+        }
+    }
+
     func snapshot() -> Snapshot {
         lock.withLock {
-            Snapshot(opened: opened, closed: closed)
+            Snapshot(
+                opened: opened,
+                closed: closed,
+                execRequestCount: execRequestCount
+            )
         }
     }
 }

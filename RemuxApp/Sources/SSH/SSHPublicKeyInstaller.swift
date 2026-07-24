@@ -61,6 +61,56 @@ struct SSHPublicKeyCommandExecutionError: Error, Sendable {
     let underlying: Error
 }
 
+private final class SSHPublicKeyPreparedRootLifetimeOwner: @unchecked Sendable {
+    private enum Phase {
+        case prepared
+        case command
+    }
+
+    private let preparedRoot: RemuxSSHPreparedRoot
+    private let lock = NSLock()
+    private var phase = Phase.prepared
+    private var cleanupTask: Task<Void, Never>?
+
+    init(preparedRoot: RemuxSSHPreparedRoot) {
+        self.preparedRoot = preparedRoot
+    }
+
+    func cancel() {
+        _ = cleanupTaskBeforeCommand()
+    }
+
+    func cleanupBeforeCommand() async {
+        await cleanupTaskBeforeCommand()?.value
+    }
+
+    func transferToCommand() -> Bool {
+        lock.withLock {
+            guard case .prepared = phase,
+                  cleanupTask == nil
+            else {
+                return false
+            }
+            phase = .command
+            return true
+        }
+    }
+
+    private func cleanupTaskBeforeCommand() -> Task<Void, Never>? {
+        lock.withLock {
+            guard case .prepared = phase else { return nil }
+            if let cleanupTask {
+                return cleanupTask
+            }
+            let cleanupTask = Task { [preparedRoot] in
+                await preparedRoot.cancelAndCleanup()
+            }
+            self.cleanupTask = cleanupTask
+            return cleanupTask
+        }
+    }
+}
+
 struct SSHPublicKeyInstaller: Sendable {
     typealias CommandRunner = @Sendable (
         SSHPublicKeyInstallTarget,
@@ -104,7 +154,10 @@ struct SSHPublicKeyInstaller: Sendable {
                 Self.probeCommand,
                 nil
             )
-        } catch is SSHPublicKeyCommandExecutionError {
+        } catch let error as SSHPublicKeyCommandExecutionError {
+            if error.underlying is CancellationError {
+                throw CancellationError()
+            }
             throw SSHPublicKeyInstallerError.keyAcceptedButProbeFailed
         } catch {
             guard Self.isPrivateKeyAuthenticationRejection(error) else {
@@ -131,6 +184,8 @@ struct SSHPublicKeyInstaller: Sendable {
                 installationCommand,
                 Data("\(target.publicKeyLine)\n".utf8)
             )
+        } catch let error as SSHPublicKeyCommandExecutionError {
+            throw error.underlying
         } catch {
             guard Self.isPasswordAuthenticationRejection(error) else {
                 throw error
@@ -155,6 +210,8 @@ struct SSHPublicKeyInstaller: Sendable {
                 Self.probeCommand,
                 nil
             )
+        } catch let error as SSHPublicKeyCommandExecutionError {
+            throw error.underlying
         } catch {
             guard Self.isPrivateKeyAuthenticationRejection(error) else {
                 throw error
@@ -201,29 +258,39 @@ struct SSHPublicKeyInstaller: Sendable {
                 configuration: configuration,
                 trace: trace
             )
-            let root: RemuxSSHRoot
-            do {
-                root = try await prepared.sshRoot()
-            } catch {
-                await prepared.cancelAndCleanup()
-                throw error
-            }
-            let claimed: RemuxSSHClaimedRoot
-            do {
-                claimed = try await prepared.claim(root, trace: trace)
-            } catch {
-                await prepared.cancelAndCleanup()
-                throw error
-            }
-            do {
-                return try await RemuxSSHExecSession.run(
-                    using: claimed,
-                    command: command,
-                    stdin: stdin,
-                    trace: trace
-                )
-            } catch {
-                throw SSHPublicKeyCommandExecutionError(underlying: error)
+            let lifetime = SSHPublicKeyPreparedRootLifetimeOwner(preparedRoot: prepared)
+            return try await withTaskCancellationHandler {
+                do {
+                    let root = try await prepared.sshRoot()
+                    try Task.checkCancellation()
+                    let claimed = try await prepared.claim(root, trace: trace)
+                    try Task.checkCancellation()
+                    guard lifetime.transferToCommand() else {
+                        await lifetime.cleanupBeforeCommand()
+                        throw CancellationError()
+                    }
+                    do {
+                        return try await RemuxSSHExecSession.run(
+                            using: claimed,
+                            command: command,
+                            stdin: stdin,
+                            trace: trace
+                        )
+                    } catch {
+                        if error is CancellationError || Task.isCancelled {
+                            throw CancellationError()
+                        }
+                        throw SSHPublicKeyCommandExecutionError(underlying: error)
+                    }
+                } catch {
+                    await lifetime.cleanupBeforeCommand()
+                    if error is CancellationError || Task.isCancelled {
+                        throw CancellationError()
+                    }
+                    throw error
+                }
+            } onCancel: {
+                lifetime.cancel()
             }
         }
     }
