@@ -57,35 +57,61 @@ struct SSHTmuxControlConfiguration: Sendable {
     }
 }
 
-struct SSHTmuxControlChannelCompletionState: Equatable, Sendable {
+final class SSHTmuxControlChannelCompletionState: @unchecked Sendable {
+    private let lock = NIOLock()
     private var didFinish = false
     private var exitStatus: Int?
 
-    mutating func recordExitStatus(_ status: Int) {
-        exitStatus = status
+    func recordExitStatus(_ status: Int) {
+        lock.withLock {
+            exitStatus = status
+        }
     }
 
-    mutating func finish(
+    func finish(
         _ error: Error?,
         diagnostics: SSHTmuxStartupDiagnostics?
     ) -> Result<Void, Error>? {
-        guard !didFinish else { return nil }
-        didFinish = true
+        lock.withLock {
+            guard !didFinish else { return nil }
+            didFinish = true
 
-        if let error {
-            return .failure(error)
-        }
-
-        if let exitStatus, exitStatus != 0 {
-            return .failure(
-                SSHTmuxControlTransportError.remoteExit(
-                    exitStatus,
-                    diagnostics: diagnostics
+            if let execError = error as? RemuxSSHExecSessionError,
+               execError == .requestFailed {
+                return .failure(
+                    SSHTmuxControlTransportError.channelRequestFailed(
+                        .exec,
+                        diagnostics: diagnostics
+                    )
                 )
-            )
-        }
+            }
 
-        return .success(())
+            if let error {
+                return .failure(error)
+            }
+
+            if let exitStatus, exitStatus != 0 {
+                return .failure(
+                    SSHTmuxControlTransportError.remoteExit(
+                        exitStatus,
+                        diagnostics: diagnostics
+                    )
+                )
+            }
+
+            return .success(())
+        }
+    }
+}
+
+private extension Result where Success == Void, Failure == Error {
+    var failure: Error? {
+        switch self {
+        case .success:
+            return nil
+        case .failure(let error):
+            return error
+        }
     }
 }
 
@@ -527,25 +553,19 @@ private func traceControlByteChunk(
 }
 
 private final class SSHTmuxControlConnection: @unchecked Sendable {
-    private let claimedConnection: RemuxSSHClaimedRoot
-    private let sessionChannel: Channel
+    private let execConnection: RemuxSSHExecConnection
     private let viewportTraceState: SSHTmuxControlViewportTraceState
-    private let allocator = ByteBufferAllocator()
-    private let closeLock = NIOLock()
-    private var didClose = false
 
     init(
-        claimedConnection: RemuxSSHClaimedRoot,
-        sessionChannel: Channel,
+        execConnection: RemuxSSHExecConnection,
         viewportTraceState: SSHTmuxControlViewportTraceState
     ) {
-        self.claimedConnection = claimedConnection
-        self.sessionChannel = sessionChannel
+        self.execConnection = execConnection
         self.viewportTraceState = viewportTraceState
     }
 
     var isControlChannelActive: Bool {
-        claimedConnection.sshRoot.rootChannel.isActive && sessionChannel.isActive
+        execConnection.isActive
     }
 
     func write(_ data: Data) async throws {
@@ -557,8 +577,6 @@ private final class SSHTmuxControlConnection: @unchecked Sendable {
             source: "ssh.writeAndFlush",
             viewportDescription: viewportTraceState.description()
         )
-        var buffer = allocator.buffer(capacity: data.count)
-        buffer.writeBytes(data)
         let start = GhosttyRuntimeTrace.nowNanos()
         GhosttyRuntimeTrace.latency(
             "ssh.writeAndFlush begin bytes=\(data.count) preview=\(GhosttyRuntimeTrace.preview(data, limit: 160))"
@@ -573,9 +591,7 @@ private final class SSHTmuxControlConnection: @unchecked Sendable {
             at: start
         )
         do {
-            try await sessionChannel.writeAndFlush(
-                SSHChannelData(type: .channel, data: .byteBuffer(buffer))
-            )
+            try await execConnection.write(data)
         } catch {
             GhosttyRuntimeTrace.flowEndIfActive(
                 GhosttyRuntimeTrace.paneSwitchFlow,
@@ -604,77 +620,19 @@ private final class SSHTmuxControlConnection: @unchecked Sendable {
         disposition: TmuxControlTransportCloseDisposition,
         childDrain: RemuxSFTPChildDrain
     ) async {
-        let shouldClose = closeLock.withLock {
-            guard !didClose else { return false }
-            didClose = true
-            return true
-        }
-        guard shouldClose else { return }
-
-        let sessionChannelClosedCleanly: Bool
-        do {
-            try await sessionChannel.close()
-            sessionChannelClosedCleanly = true
-        } catch {
-            sessionChannelClosedCleanly = false
-            NSLog("Remux tmux control channel close failed: %@", String(describing: error))
-        }
-
         let rootDisposition: RemuxSSHRootLeaseDisposition
-        if childDrain == .dirty || !sessionChannelClosedCleanly {
+        if childDrain == .dirty {
             rootDisposition = .invalidated
         } else {
             rootDisposition = disposition.sshRootLeaseDisposition
         }
-        await claimedConnection.release(rootDisposition)
-    }
-}
-
-private final class SSHTmuxPreparedControlSession: @unchecked Sendable {
-    let claimedConnection: RemuxSSHClaimedRoot
-    let sessionChannel: Channel
-
-    private let closeLock = NIOLock()
-    private var didClose = false
-
-    init(
-        claimedConnection: RemuxSSHClaimedRoot,
-        sessionChannel: Channel
-    ) {
-        self.claimedConnection = claimedConnection
-        self.sessionChannel = sessionChannel
-    }
-
-    func close(disposition: RemuxSSHRootLeaseDisposition) async {
-        let shouldClose = closeLock.withLock {
-            guard !didClose else { return false }
-            didClose = true
-            return true
-        }
-        guard shouldClose else { return }
-
-        let rootDisposition: RemuxSSHRootLeaseDisposition
-        do {
-            try await sessionChannel.close()
-            rootDisposition = disposition
-        } catch {
-            NSLog("Remux prepared tmux channel close failed: %@", String(describing: error))
-            rootDisposition = .invalidated
-        }
-        await claimedConnection.release(rootDisposition)
+        await execConnection.close(disposition: rootDisposition)
     }
 }
 
 private enum SSHTmuxControlBootstrap {
-    static func openSessionChannel(
-        using sshRoot: RemuxSSHRoot,
-        trace: RemuxTransportStartupTrace
-    ) async throws -> Channel {
-        try await sshRoot.openSessionChannel(trace: trace)
-    }
-
     static func activateControlSession(
-        using preparedSession: SSHTmuxPreparedControlSession,
+        using claimedConnection: RemuxSSHClaimedRoot,
         viewport: TmuxControlViewport,
         command: String,
         controlNoResponseTimeout: TimeAmount,
@@ -682,43 +640,17 @@ private enum SSHTmuxControlBootstrap {
         onOutput: @escaping @Sendable (Data) -> Void,
         onFinish: @escaping @Sendable (Error?) -> Void
     ) async throws -> SSHTmuxControlConnection {
-        let childChannel = preparedSession.sessionChannel
         let viewportTraceState = SSHTmuxControlViewportTraceState(viewport: viewport)
-        let firstOutputPromise = childChannel.eventLoop.makePromise(of: Void.self)
-        let firstOutputGate = SSHTmuxControlFirstOutputGate(promise: firstOutputPromise)
-        let firstOutputTimeout = childChannel.eventLoop.scheduleTask(
-            deadline: .now() + controlNoResponseTimeout
-        ) { [firstOutputGate] in
-            firstOutputGate.fail(
-                SSHTmuxControlTransportError.controlSessionNoResponse(controlNoResponseTimeout)
-            )
-        }
-        let handler = SSHTmuxControlChannelHandler(
-            viewportTraceState: viewportTraceState,
-            onFirstOutput: { [firstOutputGate] data in
-                firstOutputGate.succeed()
-                trace.event(
-                    "firstOutput",
-                    fields: [
-                        "bytes": "\(data.count)",
-                        "preview": GhosttyRuntimeTrace.preview(data, limit: 80),
-                    ]
-                )
-            },
-            onOutput: onOutput,
-            onFinish: { [firstOutputGate] error in
-                firstOutputGate.fail(
-                    error ?? SSHTmuxControlTransportError.controlSessionNoResponse(
-                        controlNoResponseTimeout
-                    )
-                )
-                onFinish(error)
-            }
+        let firstOutputPromise = claimedConnection.sshRoot.rootChannel.eventLoop.makePromise(
+            of: Void.self
         )
+        let firstOutputGate = SSHTmuxControlFirstOutputGate(promise: firstOutputPromise)
+        let router = SSHTmuxControlChannelDataRouter()
+        let completionState = SSHTmuxControlChannelCompletionState()
 
-        try await trace.stage("sessionChannel.handler.add") {
-            try await childChannel.pipeline.addHandler(handler).get()
-        }
+        GhosttyRuntimeTrace.tmuxViewport(
+            "startup.exec.request viewport=\(GhosttyRuntimeTrace.viewportDescription(viewport)) commandBytes=\(command.lengthOfBytes(using: .utf8)) preview=\(GhosttyRuntimeTrace.preview(Data(command.utf8), limit: 220))"
+        )
 
         // Deliberately NO pseudo-terminal: the control-mode protocol is a
         // plain byte stream pumped straight into Ghostty's session parser. A PTY
@@ -728,16 +660,68 @@ private enum SSHTmuxControlBootstrap {
         // channel emits exactly the verified wire contract; TERM is exported
         // by the remote command line and the client size is owned by the
         // session's refresh-client reporting.
-        try await trace.stage(
-            "exec.request",
-            fields: ["commandBytes": "\(command.lengthOfBytes(using: .utf8))"]
-        ) {
-            GhosttyRuntimeTrace.tmuxViewport(
-                "startup.exec.request viewport=\(GhosttyRuntimeTrace.viewportDescription(viewport)) commandBytes=\(command.lengthOfBytes(using: .utf8)) preview=\(GhosttyRuntimeTrace.preview(Data(command.utf8), limit: 220))"
-            )
-            handler.expectReply(for: .exec)
-            try await childChannel.triggerUserOutboundEvent(
-                SSHChannelRequestEvent.ExecRequest(command: command, wantReply: true)
+        let execConnection = try await RemuxSSHExecSession.open(
+            using: claimedConnection,
+            command: command,
+            trace: trace,
+            onData: { type, data in
+                switch router.route(type: type, data: data) {
+                case .stdout(let reportFirstOutput):
+                    traceControlByteChunk(
+                        data,
+                        direction: "rx",
+                        source: "ssh.channelRead",
+                        viewportDescription: viewportTraceState.description()
+                    )
+                    GhosttyRuntimeTrace.latency(
+                        "ssh.channelRead bytes=\(data.count) preview=\(GhosttyRuntimeTrace.preview(data, limit: 160))"
+                    )
+                    if reportFirstOutput {
+                        firstOutputGate.succeed()
+                        trace.event(
+                            "firstOutput",
+                            fields: [
+                                "bytes": "\(data.count)",
+                                "preview": GhosttyRuntimeTrace.preview(data, limit: 80),
+                            ]
+                        )
+                    }
+                    onOutput(data)
+                case .stderr:
+                    GhosttyRuntimeTrace.latency(
+                        "ssh.channelRead.stderr bytes=\(data.count) preview=\(GhosttyRuntimeTrace.preview(data, limit: 160))"
+                    )
+                case .extendedData:
+                    GhosttyRuntimeTrace.latency(
+                        "ssh.channelRead.extended type=\(type.description) bytes=\(data.count) preview=\(GhosttyRuntimeTrace.preview(data, limit: 160))"
+                    )
+                }
+            },
+            onFinish: { exitStatus, error in
+                if let exitStatus {
+                    completionState.recordExitStatus(exitStatus)
+                }
+                guard let completion = completionState.finish(
+                    error,
+                    diagnostics: router.diagnostics
+                ) else {
+                    return
+                }
+                let failure = completion.failure
+                firstOutputGate.fail(
+                    failure ?? SSHTmuxControlTransportError.controlSessionNoResponse(
+                        controlNoResponseTimeout
+                    )
+                )
+                onFinish(failure)
+            }
+        )
+
+        let firstOutputTimeout = claimedConnection.sshRoot.rootChannel.eventLoop.scheduleTask(
+            deadline: .now() + controlNoResponseTimeout
+        ) { [firstOutputGate] in
+            firstOutputGate.fail(
+                SSHTmuxControlTransportError.controlSessionNoResponse(controlNoResponseTimeout)
             )
         }
         do {
@@ -750,13 +734,13 @@ private enum SSHTmuxControlBootstrap {
             firstOutputTimeout.cancel()
         } catch {
             firstOutputTimeout.cancel()
+            await execConnection.close(disposition: .invalidated)
             throw error
         }
         trace.event("bootstrap.connected")
 
         return SSHTmuxControlConnection(
-            claimedConnection: preparedSession.claimedConnection,
-            sessionChannel: childChannel,
+            execConnection: execConnection,
             viewportTraceState: viewportTraceState
         )
     }
@@ -770,181 +754,14 @@ private enum SSHTmuxControlBootstrap {
         onOutput: @escaping @Sendable (Data) -> Void,
         onFinish: @escaping @Sendable (Error?) -> Void
     ) async throws -> SSHTmuxControlConnection {
-        var preparedSession: SSHTmuxPreparedControlSession?
-        do {
-            let childChannel = try await openSessionChannel(
-                using: claimedConnection.sshRoot,
-                trace: trace
-            )
-            let session = SSHTmuxPreparedControlSession(
-                claimedConnection: claimedConnection,
-                sessionChannel: childChannel
-            )
-            preparedSession = session
-
-            return try await activateControlSession(
-                using: session,
-                viewport: viewport,
-                command: command,
-                controlNoResponseTimeout: controlNoResponseTimeout,
-                trace: trace,
-                onOutput: onOutput,
-                onFinish: onFinish
-            )
-        } catch {
-            if let preparedSession {
-                await preparedSession.close(disposition: .invalidated)
-            } else {
-                await claimedConnection.releaseAfterFailedStart()
-            }
-            throw error
-        }
-    }
-}
-
-private final class SSHTmuxControlChannelHandler: ChannelInboundHandler, @unchecked Sendable {
-    typealias InboundIn = SSHChannelData
-
-    private let viewportTraceState: SSHTmuxControlViewportTraceState
-    private let onFirstOutput: @Sendable (Data) -> Void
-    private let onOutput: @Sendable (Data) -> Void
-    private let onFinish: @Sendable (Error?) -> Void
-    private let lock = NIOLock()
-    private var channelDataRouter = SSHTmuxControlChannelDataRouter()
-    private var completionState = SSHTmuxControlChannelCompletionState()
-    private var requestReplyTracker = SSHTmuxControlChannelRequestReplyTracker()
-
-    init(
-        viewportTraceState: SSHTmuxControlViewportTraceState,
-        onFirstOutput: @escaping @Sendable (Data) -> Void,
-        onOutput: @escaping @Sendable (Data) -> Void,
-        onFinish: @escaping @Sendable (Error?) -> Void
-    ) {
-        self.viewportTraceState = viewportTraceState
-        self.onFirstOutput = onFirstOutput
-        self.onOutput = onOutput
-        self.onFinish = onFinish
-    }
-
-    func expectReply(for request: SSHTmuxControlChannelRequestKind) {
-        lock.withLock {
-            requestReplyTracker.expectReply(for: request)
-        }
-    }
-
-    func handlerAdded(context: ChannelHandlerContext) {
-        context.channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { [weak self] error in
-            self?.finish(error)
-        }
-    }
-
-    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
-        switch event {
-        case let status as SSHChannelRequestEvent.ExitStatus:
-            lock.withLock {
-                completionState.recordExitStatus(Int(status.exitStatus))
-            }
-        case is ChannelSuccessEvent:
-            lock.withLock {
-                _ = requestReplyTracker.acknowledgeSuccess()
-            }
-        case is NIOSSH.ChannelFailureEvent:
-            let failure = lock.withLock {
-                (
-                    request: requestReplyTracker.acknowledgeFailure(),
-                    diagnostics: channelDataRouter.diagnostics
-                )
-            }
-            finish(
-                SSHTmuxControlTransportError.channelRequestFailed(
-                    failure.request,
-                    diagnostics: failure.diagnostics
-                )
-            )
-        default:
-            context.fireUserInboundEventTriggered(event)
-        }
-    }
-
-    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        let channelData = unwrapInboundIn(data)
-
-        guard case .byteBuffer(var buffer) = channelData.data else {
-            return
-        }
-
-        guard let bytes = buffer.readBytes(length: buffer.readableBytes), !bytes.isEmpty else {
-            return
-        }
-
-        let data = Data(bytes)
-        let route = lock.withLock {
-            channelDataRouter.route(type: channelData.type, data: data)
-        }
-        switch route {
-        case .stdout(let reportFirstOutput):
-            handleStdout(data, reportFirstOutput: reportFirstOutput)
-        case .stderr:
-            handleStderr(data)
-        case .extendedData(let typeDescription):
-            handleExtendedData(data, typeDescription: typeDescription)
-        }
-    }
-
-    private func handleStdout(_ data: Data, reportFirstOutput: Bool) {
-        traceControlByteChunk(
-            data,
-            direction: "rx",
-            source: "ssh.channelRead",
-            viewportDescription: viewportTraceState.description()
+        try await activateControlSession(
+            using: claimedConnection,
+            viewport: viewport,
+            command: command,
+            controlNoResponseTimeout: controlNoResponseTimeout,
+            trace: trace,
+            onOutput: onOutput,
+            onFinish: onFinish
         )
-        GhosttyRuntimeTrace.latency(
-            "ssh.channelRead bytes=\(data.count) preview=\(GhosttyRuntimeTrace.preview(data, limit: 160))"
-        )
-        if reportFirstOutput {
-            onFirstOutput(data)
-        }
-        onOutput(data)
-    }
-
-    private func handleStderr(_ data: Data) {
-        GhosttyRuntimeTrace.latency(
-            "ssh.channelRead.stderr bytes=\(data.count) preview=\(GhosttyRuntimeTrace.preview(data, limit: 160))"
-        )
-    }
-
-    private func handleExtendedData(_ data: Data, typeDescription: String) {
-        GhosttyRuntimeTrace.latency(
-            "ssh.channelRead.extended type=\(typeDescription) bytes=\(data.count) preview=\(GhosttyRuntimeTrace.preview(data, limit: 160))"
-        )
-    }
-
-    func channelInactive(context: ChannelHandlerContext) {
-        finish(nil)
-        context.fireChannelInactive()
-    }
-
-    func handlerRemoved(context: ChannelHandlerContext) {
-        finish(nil)
-    }
-
-    func errorCaught(context: ChannelHandlerContext, error: Error) {
-        finish(error)
-        context.close(promise: nil)
-    }
-
-    private func finish(_ error: Error?) {
-        let completion = lock.withLock { () -> Result<Void, Error>? in
-            completionState.finish(error, diagnostics: channelDataRouter.diagnostics)
-        }
-
-        guard let completion else { return }
-
-        switch completion {
-        case .success:
-            onFinish(nil)
-        case .failure(let error):
-            onFinish(error)
-        }
     }
 }
