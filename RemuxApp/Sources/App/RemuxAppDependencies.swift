@@ -14,6 +14,7 @@ struct RemuxAppDependencies: Sendable {
     let shortcutRepository: any ShortcutRepository
     let credentialStore: any SSHCredentialStore
     let trustedHostStore: TrustedHostStore
+    let publicKeyInstaller: SSHPublicKeyInstaller
     private let sshRootService: RemuxSSHRootService
     private let transportFactory: @Sendable (
         _ target: TmuxConnectionTarget,
@@ -41,6 +42,7 @@ struct RemuxAppDependencies: Sendable {
         shortcutRepository: any ShortcutRepository,
         credentialStore: any SSHCredentialStore,
         trustedHostStore: TrustedHostStore,
+        publicKeyInstaller: SSHPublicKeyInstaller,
         sshRootService: RemuxSSHRootService = RemuxSSHRootService(),
         transportFactory: @escaping @Sendable (
             _ target: TmuxConnectionTarget,
@@ -67,6 +69,7 @@ struct RemuxAppDependencies: Sendable {
         self.shortcutRepository = shortcutRepository
         self.credentialStore = credentialStore
         self.trustedHostStore = trustedHostStore
+        self.publicKeyInstaller = publicKeyInstaller
         self.sshRootService = sshRootService
         self.transportFactory = transportFactory
         self.sshConnectionPrewarmer = sshConnectionPrewarmer
@@ -106,12 +109,16 @@ struct RemuxAppDependencies: Sendable {
         let root = try ApplicationStorage.remuxRoot()
         let credentialStore: any SSHCredentialStore = KeychainSSHCredentialStore()
 #endif
+        let trustedHostStore = TrustedHostStore(rootURL: root)
         return RemuxAppDependencies(
             profileRepository: FileBackedConnectionProfileRepository(rootURL: root),
             settingsRepository: FileBackedTerminalSettingsRepository(rootURL: root),
             shortcutRepository: FileBackedShortcutRepository(rootURL: root),
             credentialStore: credentialStore,
-            trustedHostStore: TrustedHostStore(rootURL: root)
+            trustedHostStore: trustedHostStore,
+            publicKeyInstaller: try SSHPublicKeyInstaller(
+                trustedHostStore: trustedHostStore
+            )
         )
     }
 
@@ -263,13 +270,20 @@ struct RemuxAppDependencies: Sendable {
     static func uiTesting() throws -> RemuxAppDependencies {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("RemuxUITesting", isDirectory: true)
+        let trustedHostStore = TrustedHostStore(rootURL: root)
 
         return RemuxAppDependencies(
             profileRepository: InMemoryConnectionProfileRepository(),
             settingsRepository: InMemoryTerminalSettingsRepository(),
             shortcutRepository: InMemoryShortcutRepository(),
             credentialStore: InMemorySSHCredentialStore(),
-            trustedHostStore: TrustedHostStore(rootURL: root),
+            trustedHostStore: trustedHostStore,
+            publicKeyInstaller: SSHPublicKeyInstaller(
+                installationCommand: "exit 0",
+                commandRunner: { _, _, _, _ in
+                    RemuxSSHExecResult(exitStatus: 0, stdout: Data(), stderr: Data())
+                }
+            ),
             transportFactory: { _, _, _ in
                 DeterministicTmuxControlTransport(chunks: [])
             },

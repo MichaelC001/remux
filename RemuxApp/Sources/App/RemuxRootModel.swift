@@ -1,5 +1,25 @@
 import Foundation
 
+enum SSHPublicKeyInstallDraftError: Error, Equatable, LocalizedError {
+    case invalidHost
+    case invalidPort
+    case invalidUsername
+    case invalidPrivateKey
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidHost:
+            "IP or hostname is required."
+        case .invalidPort:
+            "Port must be between 1 and 65535."
+        case .invalidUsername:
+            "Username is required."
+        case .invalidPrivateKey:
+            "Import a valid OpenSSH private key."
+        }
+    }
+}
+
 struct ActiveTerminalSession: Identifiable, Equatable, Sendable {
     let id: SavedWorkspace.ID
     var target: TmuxConnectionTarget
@@ -294,6 +314,77 @@ final class RemuxRootModel: ObservableObject {
         guard case .setup(var draft, let validation, let mode) = state else { return }
         mutation(&draft)
         state = .setup(draft, validation, mode)
+    }
+
+    func publicKeyInstallTarget(
+        for draft: TmuxConnectionDraft
+    ) throws -> SSHPublicKeyInstallTarget {
+        let host = draft.host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !host.isEmpty else {
+            throw SSHPublicKeyInstallDraftError.invalidHost
+        }
+        guard let port = Int(draft.port), (1...65_535).contains(port) else {
+            throw SSHPublicKeyInstallDraftError.invalidPort
+        }
+        let username = draft.username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !username.isEmpty else {
+            throw SSHPublicKeyInstallDraftError.invalidUsername
+        }
+        guard let inspection = try? SSHPrivateKeyInspector.inspect(draft.privateKeyPEM) else {
+            throw SSHPublicKeyInstallDraftError.invalidPrivateKey
+        }
+        let passphrase = draft.privateKeyPassphrase.isEmpty
+            ? nil
+            : draft.privateKeyPassphrase
+
+        return SSHPublicKeyInstallTarget(
+            serverID: draft.serverID,
+            host: host,
+            port: port,
+            username: username,
+            privateKey: SSHPrivateKeyCredential(
+                privateKeyPEM: inspection.normalizedPEM,
+                passphrase: passphrase
+            ),
+            publicKeyLine: inspection.publicKeyLine
+        )
+    }
+
+    func preflightPublicKeyInstallation(
+        _ draft: TmuxConnectionDraft
+    ) async throws -> SSHPublicKeyPreflightOutcome {
+        try await dependencies.publicKeyInstaller.preflight(
+            publicKeyInstallTarget(for: draft)
+        )
+    }
+
+    func appendPublicKey(
+        _ draft: TmuxConnectionDraft,
+        password: String
+    ) async throws {
+        try await dependencies.publicKeyInstaller.append(
+            publicKeyInstallTarget(for: draft),
+            password: password
+        )
+    }
+
+    func verifyPublicKeyInstallation(
+        _ draft: TmuxConnectionDraft
+    ) async throws {
+        try await dependencies.publicKeyInstaller.verify(
+            publicKeyInstallTarget(for: draft)
+        )
+    }
+
+    func trustSetupHostKey(_ challenge: SSHHostKeyTrustChallenge) throws {
+        try dependencies.trustedHostStore.trustHostKey(challenge)
+    }
+
+    func cancelSetup() async {
+        if case .setup(let draft, _, .newServer) = state {
+            try? dependencies.trustedHostStore.deleteIdentity(for: draft.serverID)
+        }
+        await showLibrary()
     }
 
     func saveAndConnect() async {

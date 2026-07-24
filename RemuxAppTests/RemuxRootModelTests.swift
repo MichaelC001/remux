@@ -32,6 +32,200 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(RemuxAppLifecycleProjection(scenePhase: .background).appLifecyclePhase, .background)
     }
 
+    func testInstallTargetUsesDraftStableIDAndNormalizedEndpoint() throws {
+        let harness = makeHarness()
+        var draft = makePublicKeyInstallDraft()
+        draft.host = " \nserver.example.test\t "
+        draft.port = "2222"
+        draft.username = "\t remux \n"
+        draft.privateKeyPassphrase = "key passphrase"
+        let inspection = try SSHPrivateKeyInspector.inspect(draft.privateKeyPEM)
+
+        let target = try harness.model.publicKeyInstallTarget(for: draft)
+
+        XCTAssertEqual(
+            target,
+            SSHPublicKeyInstallTarget(
+                serverID: draft.serverID,
+                host: "server.example.test",
+                port: 2222,
+                username: "remux",
+                privateKey: SSHPrivateKeyCredential(
+                    privateKeyPEM: inspection.normalizedPEM,
+                    passphrase: "key passphrase"
+                ),
+                publicKeyLine: inspection.publicKeyLine
+            )
+        )
+    }
+
+    func testInstallTargetIgnoresDisplayNameSessionAndTmuxValidation() throws {
+        let harness = makeHarness()
+        var draft = makePublicKeyInstallDraft()
+        draft.displayName = ""
+        draft.tmuxExecutablePath = "relative/tmux"
+        draft.authenticationKind = .password
+        draft.password = ""
+        draft.sessionName = ""
+
+        let target = try harness.model.publicKeyInstallTarget(for: draft)
+
+        XCTAssertEqual(target.serverID, draft.serverID)
+        XCTAssertEqual(target.host, draft.host)
+        XCTAssertEqual(target.port, 22)
+        XCTAssertEqual(target.username, draft.username)
+    }
+
+    func testInstallTargetRejectsMissingEndpointOrInvalidKey() {
+        let harness = makeHarness()
+
+        assertPublicKeyInstallTargetError(.invalidHost, model: harness.model) {
+            $0.host = " \n "
+        }
+        assertPublicKeyInstallTargetError(.invalidPort, model: harness.model) {
+            $0.port = "0"
+        }
+        assertPublicKeyInstallTargetError(.invalidPort, model: harness.model) {
+            $0.port = "65536"
+        }
+        assertPublicKeyInstallTargetError(.invalidPort, model: harness.model) {
+            $0.port = "ssh"
+        }
+        assertPublicKeyInstallTargetError(.invalidUsername, model: harness.model) {
+            $0.username = "\t"
+        }
+        assertPublicKeyInstallTargetError(.invalidPrivateKey, model: harness.model) {
+            $0.privateKeyPEM = "not an OpenSSH private key"
+        }
+    }
+
+    func testPreflightPassesTargetToInstaller() async throws {
+        let recorder = RootModelPublicKeyInstallerRecorder(
+            results: [.success(RemuxSSHExecResult(exitStatus: 0, stdout: Data(), stderr: Data()))]
+        )
+        let harness = makeHarness(publicKeyInstaller: makePublicKeyInstaller(recorder: recorder))
+        let draft = makePublicKeyInstallDraft()
+        let expectedTarget = try harness.model.publicKeyInstallTarget(for: draft)
+        harness.model.beginNewServer()
+        let stateBefore = harness.model.state
+
+        let outcome = try await harness.model.preflightPublicKeyInstallation(draft)
+
+        let recordedTargets = await recorder.recordedTargets()
+        XCTAssertEqual(outcome, .alreadyInstalled)
+        XCTAssertEqual(recordedTargets, [expectedTarget])
+        XCTAssertEqual(harness.model.state, stateBefore)
+    }
+
+    func testAppendDoesNotWritePasswordToDraftOrCredentialStore() async throws {
+        let recorder = RootModelPublicKeyInstallerRecorder(
+            results: [.success(RemuxSSHExecResult(exitStatus: 0, stdout: Data(), stderr: Data()))]
+        )
+        let harness = makeHarness(publicKeyInstaller: makePublicKeyInstaller(recorder: recorder))
+        var draft = makePublicKeyInstallDraft()
+        draft.password = "normal connection password"
+        harness.model.beginNewServer()
+        harness.model.updateDraft { setupDraft in
+            setupDraft = draft
+        }
+        let stateBefore = harness.model.state
+
+        try await harness.model.appendPublicKey(draft, password: "one-use setup password")
+
+        let storedCredentials = await harness.credentialStore.credentialsSnapshot()
+        let installerCredentials = await recorder.recordedCredentials()
+        XCTAssertEqual(harness.model.state, stateBefore)
+        XCTAssertTrue(storedCredentials.isEmpty)
+        XCTAssertEqual(installerCredentials, [.password("one-use setup password")])
+    }
+
+    func testVerifyPassesExactTargetToInstaller() async throws {
+        let recorder = RootModelPublicKeyInstallerRecorder(
+            results: [.success(RemuxSSHExecResult(exitStatus: 0, stdout: Data(), stderr: Data()))]
+        )
+        let harness = makeHarness(publicKeyInstaller: makePublicKeyInstaller(recorder: recorder))
+        let draft = makePublicKeyInstallDraft()
+        let expectedTarget = try harness.model.publicKeyInstallTarget(for: draft)
+        harness.model.beginNewServer()
+        let stateBefore = harness.model.state
+
+        try await harness.model.verifyPublicKeyInstallation(draft)
+
+        let recordedTargets = await recorder.recordedTargets()
+        let recordedCredentials = await recorder.recordedCredentials()
+        XCTAssertEqual(recordedTargets, [expectedTarget])
+        XCTAssertEqual(recordedCredentials, [.privateKey(expectedTarget.privateKey)])
+        XCTAssertEqual(harness.model.state, stateBefore)
+    }
+
+    func testTrustSetupHostKeyStoresChallengeForDraftServerID() throws {
+        let harness = makeHarness()
+        harness.model.beginNewServer()
+        let draft = try setupDraft(from: harness.model.state)
+        let challenge = makeHostKeyChallenge(serverID: draft.serverID, host: "setup.example.test")
+
+        try harness.model.trustSetupHostKey(challenge)
+
+        let identities = try loadTrustedHostIdentities(root: harness.trustedHostRoot)
+        XCTAssertEqual(identities.count, 1)
+        XCTAssertEqual(identities[0].serverID, draft.serverID)
+        XCTAssertEqual(identities[0].host, challenge.host)
+        XCTAssertEqual(identities[0].keyType, challenge.receivedKeyType)
+        XCTAssertEqual(identities[0].openSSHPublicKey, challenge.receivedOpenSSHPublicKey)
+    }
+
+    func testCancelNewServerRemovesProvisionalTrust() async throws {
+        let harness = makeHarness()
+        await harness.model.load()
+        harness.model.beginNewServer()
+        let draft = try setupDraft(from: harness.model.state)
+        try harness.model.trustSetupHostKey(
+            makeHostKeyChallenge(serverID: draft.serverID, host: "setup.example.test")
+        )
+
+        await harness.model.cancelSetup()
+
+        XCTAssertEqual(harness.model.state, .library)
+        XCTAssertEqual(try loadTrustedHostIdentities(root: harness.trustedHostRoot), [])
+    }
+
+    func testCancelExistingServerPreservesExistingTrust() async throws {
+        let pair = makePasswordBackedServer()
+        let workspace = SavedWorkspace(serverID: pair.server.id, sessionName: "base")
+        let harness = makeHarness(
+            servers: [pair.server],
+            workspaces: [workspace],
+            identities: [pair.identity]
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("normal connection password"),
+            identityID: pair.identity.id
+        )
+        await harness.model.load()
+        let challenge = makeHostKeyChallenge(
+            serverID: pair.server.id,
+            host: pair.server.host
+        )
+
+        await harness.model.beginEditServer(serverID: pair.server.id)
+        try harness.model.trustSetupHostKey(challenge)
+        await harness.model.cancelSetup()
+
+        await harness.model.beginNewWorkspace(for: pair.server.id)
+        await harness.model.cancelSetup()
+
+        await harness.model.beginEditWorkspace(
+            serverID: pair.server.id,
+            workspaceID: workspace.id
+        )
+        await harness.model.cancelSetup()
+
+        XCTAssertEqual(harness.model.state, .library)
+        let identities = try loadTrustedHostIdentities(root: harness.trustedHostRoot)
+        XCTAssertEqual(identities.map(\.serverID), [pair.server.id])
+        XCTAssertEqual(identities.map(\.openSSHPublicKey), [challenge.receivedOpenSSHPublicKey])
+    }
+
     func testSaveAndConnectPersistsNewProfileAndUsesCurrentSettings() async throws {
         let settings = TerminalSettings(fontSize: 15, theme: .remuxDark)
         let harness = makeHarness(settings: settings)
@@ -2080,6 +2274,7 @@ final class RemuxRootModelTests: XCTestCase {
             TrustedHostStore,
             RemuxSSHRootService
         ) -> any GhosttyAttachmentTransferService)? = nil,
+        publicKeyInstaller: SSHPublicKeyInstaller? = nil,
         terminalScreenModelFactory: RemuxRootModel.TerminalScreenModelFactory? = nil
     ) -> RemuxRootModelHarness {
         let profileRepository = TestConnectionProfileRepository(
@@ -2103,6 +2298,9 @@ final class RemuxRootModelTests: XCTestCase {
         let resolvedAttachmentTransferServiceFactory = attachmentTransferServiceFactory ?? { _, _, _ in
             FailingGhosttyAttachmentTransferService()
         }
+        let resolvedPublicKeyInstaller = publicKeyInstaller ?? makePublicKeyInstaller(
+            recorder: RootModelPublicKeyInstallerRecorder(results: [])
+        )
         let resolvedTerminalScreenModelFactory = terminalScreenModelFactory ?? makeTestTerminalScreenModel
         let dependencies = RemuxAppDependencies(
             profileRepository: profileRepository,
@@ -2110,6 +2308,7 @@ final class RemuxRootModelTests: XCTestCase {
             shortcutRepository: shortcutRepository,
             credentialStore: credentialStore,
             trustedHostStore: trustedHostStore,
+            publicKeyInstaller: resolvedPublicKeyInstaller,
             transportFactory: resolvedTransportFactory,
             sshConnectionPrewarmer: resolvedSSHConnectionPrewarmer,
             attachmentTransferServiceFactory: resolvedAttachmentTransferServiceFactory,
@@ -2174,6 +2373,71 @@ final class RemuxRootModelTests: XCTestCase {
         return try JSONDecoder().decode([TrustedHostIdentity].self, from: data)
     }
 
+    private func makePublicKeyInstallDraft() -> TmuxConnectionDraft {
+        let generatedKey = SSHPrivateKeyInspector.generateEd25519()
+        var draft = TmuxConnectionDraft(
+            serverID: UUID(uuidString: "1B42C2B6-BE4B-4FA6-A637-641071273214")!
+        )
+        draft.host = "server.example.test"
+        draft.port = "22"
+        draft.username = "remux"
+        draft.privateKeyPEM = generatedKey.privateKeyPEM
+        return draft
+    }
+
+    private func assertPublicKeyInstallTargetError(
+        _ expected: SSHPublicKeyInstallDraftError,
+        model: RemuxRootModel,
+        mutation: (inout TmuxConnectionDraft) -> Void,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        var draft = makePublicKeyInstallDraft()
+        mutation(&draft)
+
+        XCTAssertThrowsError(try model.publicKeyInstallTarget(for: draft), file: file, line: line) {
+            XCTAssertEqual($0 as? SSHPublicKeyInstallDraftError, expected, file: file, line: line)
+        }
+    }
+
+    private func setupDraft(from state: RemuxRootModel.State) throws -> TmuxConnectionDraft {
+        guard case .setup(let draft, _, _) = state else {
+            throw RootModelSetupTestError.expectedSetup
+        }
+        return draft
+    }
+
+    private func makeHostKeyChallenge(
+        serverID: SavedServer.ID,
+        host: String
+    ) -> SSHHostKeyTrustChallenge {
+        SSHHostKeyTrustChallenge(
+            kind: .unknown,
+            serverID: serverID,
+            host: host,
+            trustedKeyType: nil,
+            trustedOpenSSHPublicKey: nil,
+            receivedKeyType: "ssh-ed25519",
+            receivedOpenSSHPublicKey: "ssh-ed25519 setup-host-key"
+        )
+    }
+
+    private func makePublicKeyInstaller(
+        recorder: RootModelPublicKeyInstallerRecorder
+    ) -> SSHPublicKeyInstaller {
+        SSHPublicKeyInstaller(
+            installationCommand: "fixture installation command",
+            commandRunner: { target, credential, command, stdin in
+                try await recorder.run(
+                    target: target,
+                    credential: credential,
+                    command: command,
+                    stdin: stdin
+                )
+            }
+        )
+    }
+
     private func waitUntil(
         timeout: TimeInterval = 1.0,
         condition: () -> Bool
@@ -2216,6 +2480,41 @@ private struct RemuxRootModelHarness {
     let credentialHelper: TestServerCredentialStore
     let credentialStore: TestSSHCredentialStore
     let trustedHostRoot: URL
+}
+
+private enum RootModelSetupTestError: Error {
+    case expectedSetup
+}
+
+private actor RootModelPublicKeyInstallerRecorder {
+    private var results: [Result<RemuxSSHExecResult, Error>]
+    private var targets: [SSHPublicKeyInstallTarget] = []
+    private var credentials: [SSHCredential] = []
+
+    init(results: [Result<RemuxSSHExecResult, Error>]) {
+        self.results = results
+    }
+
+    func run(
+        target: SSHPublicKeyInstallTarget,
+        credential: SSHCredential,
+        command: String,
+        stdin: Data?
+    ) throws -> RemuxSSHExecResult {
+        _ = command
+        _ = stdin
+        targets.append(target)
+        credentials.append(credential)
+        return try results.removeFirst().get()
+    }
+
+    func recordedTargets() -> [SSHPublicKeyInstallTarget] {
+        targets
+    }
+
+    func recordedCredentials() -> [SSHCredential] {
+        credentials
+    }
 }
 
 @MainActor
@@ -2670,5 +2969,9 @@ private actor TestSSHCredentialStore: SSHCredentialStore {
 
     func deleteCredential(identityID: UUID) async throws {
         credentials.removeValue(forKey: identityID)
+    }
+
+    func credentialsSnapshot() -> [UUID: SSHCredential] {
+        credentials
     }
 }
