@@ -181,6 +181,7 @@ struct TerminalDisconnectReason: Equatable, Sendable {
         case authentication
         case hostKey
         case profile
+        case tmuxUnavailable
         case remoteExit
         case runtime
         case userClosed
@@ -198,6 +199,8 @@ struct TerminalDisconnectReason: Equatable, Sendable {
                 "host_key"
             case .profile:
                 "profile"
+            case .tmuxUnavailable:
+                "tmux_unavailable"
             case .remoteExit:
                 "remote_exit"
             case .runtime:
@@ -232,6 +235,7 @@ struct TerminalDisconnectReason: Equatable, Sendable {
              .authentication,
              .hostKey,
              .profile,
+             .tmuxUnavailable,
              .remoteExit,
              .runtime,
              .userClosed,

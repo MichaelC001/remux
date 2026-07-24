@@ -41,6 +41,25 @@ final class GhosttyTerminalDisconnectReasonClassifierTests: XCTestCase {
         )
         XCTAssertEqual(
             GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
+                SSHTmuxControlTransportError.remoteExit(127)
+            ).kind,
+            .tmuxUnavailable
+        )
+        let missingPathDiagnostics = SSHTmuxStartupDiagnostics(
+            stdoutByteCount: 0,
+            stderrByteCount: 45,
+            extendedDataByteCount: 0,
+            stderrPreview: "sh: /missing/tmux: No such file or directory\\x0A",
+            extendedDataPreview: nil
+        )
+        XCTAssertEqual(
+            GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
+                SSHTmuxControlTransportError.remoteExit(126, diagnostics: missingPathDiagnostics)
+            ).kind,
+            .tmuxUnavailable
+        )
+        XCTAssertEqual(
+            GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
                 SSHTmuxControlTransportError.channelRequestFailed(.exec)
             ).kind,
             .profile

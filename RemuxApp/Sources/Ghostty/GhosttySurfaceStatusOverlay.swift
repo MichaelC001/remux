@@ -164,12 +164,13 @@ struct GhosttySurfaceStatusOverlay: View {
                 )
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-        } else if reason?.kind == .serverUnreachable {
+        } else if reason?.kind == .serverUnreachable || reason?.kind == .tmuxUnavailable {
+            let identifierKind = reason?.kind == .tmuxUnavailable ? "tmux" : "unreachable"
             HStack(spacing: 12) {
                 GhosttyRepairActionButton(
                     title: "Retry",
                     systemName: "arrow.clockwise",
-                    accessibilityIdentifier: "terminal.status.unreachable.retry",
+                    accessibilityIdentifier: "terminal.status.\(identifierKind).retry",
                     chromeStyle: chromeStyle,
                     isPrimary: true,
                     action: onReconnect
@@ -178,7 +179,7 @@ struct GhosttySurfaceStatusOverlay: View {
                 GhosttyRepairActionButton(
                     title: "Edit Server",
                     systemName: "slider.horizontal.3",
-                    accessibilityIdentifier: "terminal.status.unreachable.editServer",
+                    accessibilityIdentifier: "terminal.status.\(identifierKind).editServer",
                     chromeStyle: chromeStyle,
                     action: onEditServer
                 )
@@ -217,6 +218,10 @@ struct GhosttySurfaceStatusOverlay: View {
             return "Server Unreachable"
         }
 
+        if reason?.kind == .tmuxUnavailable {
+            return "tmux Unavailable"
+        }
+
         return "Disconnected"
     }
 
@@ -231,6 +236,10 @@ struct GhosttySurfaceStatusOverlay: View {
 
         if reason?.kind == .serverUnreachable {
             return "CONNECTION"
+        }
+
+        if reason?.kind == .tmuxUnavailable {
+            return "TMUX"
         }
 
         return "TERMINAL"

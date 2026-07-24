@@ -25,7 +25,16 @@ enum GhosttyTerminalDisconnectReasonClassifier {
 
         if let sshError = error as? SSHTmuxControlTransportError {
             switch sshError {
-            case .remoteExit:
+            case .remoteExit(let status, let diagnostics):
+                if let message = tmuxExecutableFailureMessage(
+                    status: status,
+                    diagnostics: diagnostics
+                ) {
+                    return TerminalDisconnectReason(
+                        kind: .tmuxUnavailable,
+                        message: message
+                    )
+                }
                 return TerminalDisconnectReason(kind: .remoteExit, message: message)
             case .channelRequestFailed:
                 return TerminalDisconnectReason(kind: .profile, message: message)
@@ -46,6 +55,25 @@ enum GhosttyTerminalDisconnectReasonClassifier {
         }
 
         return TerminalDisconnectReason(kind: .unknown, message: message)
+    }
+
+    private static func tmuxExecutableFailureMessage(
+        status: Int,
+        diagnostics: SSHTmuxStartupDiagnostics?
+    ) -> String? {
+        guard status == 126 || status == 127 else {
+            return nil
+        }
+
+        let stderr = diagnostics?.stderrPreview?.lowercased() ?? ""
+        let tmuxWasNotFound = stderr.contains("command not found") ||
+            stderr.contains("no such file or directory")
+
+        if status == 127 || tmuxWasNotFound {
+            return "Install tmux on this server or update Executable Path."
+        }
+
+        return "Check the tmux executable and its permissions, then try again."
     }
 
     private static func isServerUnreachable(_ error: any Error) -> Bool {
