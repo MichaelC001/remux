@@ -32,7 +32,7 @@ final class RemuxSSHExecConnection: @unchecked Sendable {
     private let releaseRoot: @Sendable (RemuxSSHRootLeaseDisposition) async -> Void
     private let allocator = ByteBufferAllocator()
     private let closeLock = NIOLock()
-    private var didClose = false
+    private var closeTask: Task<Void, Never>?
 
     init(
         sessionChannel: Channel,
@@ -67,24 +67,128 @@ final class RemuxSSHExecConnection: @unchecked Sendable {
     }
 
     func close(disposition: RemuxSSHRootLeaseDisposition) async {
-        let shouldClose = closeLock.withLock {
-            guard !didClose else { return false }
-            didClose = true
-            return true
+        let task = closeLock.withLock { () -> Task<Void, Never> in
+            if let closeTask = self.closeTask {
+                return closeTask
+            }
+            let closeTask = Task { [sessionChannel, releaseRoot] in
+                let rootDisposition: RemuxSSHRootLeaseDisposition
+                do {
+                    try await sessionChannel.close()
+                    rootDisposition = disposition
+                } catch ChannelError.alreadyClosed {
+                    rootDisposition = disposition
+                } catch {
+                    NSLog("Remux SSH exec channel close failed: %@", String(describing: error))
+                    rootDisposition = .invalidated
+                }
+                await releaseRoot(rootDisposition)
+            }
+            self.closeTask = closeTask
+            return closeTask
         }
-        guard shouldClose else { return }
+        await task.value
+    }
+}
 
-        let rootDisposition: RemuxSSHRootLeaseDisposition
-        do {
-            try await sessionChannel.close()
-            rootDisposition = disposition
-        } catch ChannelError.alreadyClosed {
-            rootDisposition = disposition
-        } catch {
-            NSLog("Remux SSH exec channel close failed: %@", String(describing: error))
-            rootDisposition = .invalidated
+private final class RemuxSSHExecCleanupOwner: @unchecked Sendable {
+    private let cleanup: @Sendable (RemuxSSHRootLeaseDisposition) async -> Void
+    private let lock = NIOLock()
+    private var cleanupTask: Task<Void, Never>?
+
+    init(
+        cleanup: @escaping @Sendable (RemuxSSHRootLeaseDisposition) async -> Void
+    ) {
+        self.cleanup = cleanup
+    }
+
+    func run(_ disposition: RemuxSSHRootLeaseDisposition) async {
+        let task = lock.withLock { () -> Task<Void, Never> in
+            if let cleanupTask = self.cleanupTask {
+                return cleanupTask
+            }
+            let cleanupTask = Task { [cleanup] in
+                await cleanup(disposition)
+            }
+            self.cleanupTask = cleanupTask
+            return cleanupTask
         }
-        await releaseRoot(rootDisposition)
+        await task.value
+    }
+}
+
+final class RemuxSSHExecLifetimeOwner: @unchecked Sendable {
+    private let rootCleanupOwner: RemuxSSHExecCleanupOwner
+    private let lock = NIOLock()
+    private var connectionCleanupOwner: RemuxSSHExecCleanupOwner?
+    private var isCancelled = false
+
+    init(
+        releaseRoot: @escaping @Sendable (RemuxSSHRootLeaseDisposition) async -> Void
+    ) {
+        rootCleanupOwner = RemuxSSHExecCleanupOwner(cleanup: releaseRoot)
+    }
+
+    func makeConnection(
+        sessionChannel: Channel,
+        isRootActive: @escaping @Sendable () -> Bool = { true }
+    ) -> RemuxSSHExecConnection {
+        let connection = RemuxSSHExecConnection(
+            sessionChannel: sessionChannel,
+            isRootActive: isRootActive,
+            releaseRoot: { [rootCleanupOwner] disposition in
+                await rootCleanupOwner.run(disposition)
+            }
+        )
+        installConnectionCleanup { disposition in
+            await connection.close(disposition: disposition)
+        }
+        return connection
+    }
+
+    func installConnectionCleanup(
+        _ cleanup: @escaping @Sendable (RemuxSSHRootLeaseDisposition) async -> Void
+    ) {
+        let cleanupOwner = RemuxSSHExecCleanupOwner(cleanup: cleanup)
+        let shouldInvalidate = lock.withLock {
+            connectionCleanupOwner = cleanupOwner
+            return isCancelled
+        }
+        if shouldInvalidate {
+            Task {
+                await cleanupOwner.run(.invalidated)
+            }
+        }
+    }
+
+    func cancel() {
+        let connectionCleanupOwner = lock.withLock {
+            isCancelled = true
+            return self.connectionCleanupOwner
+        }
+
+        Task { [rootCleanupOwner] in
+            if let connectionCleanupOwner {
+                await connectionCleanupOwner.run(.invalidated)
+            } else {
+                await rootCleanupOwner.run(.invalidated)
+            }
+        }
+    }
+
+    func close(disposition: RemuxSSHRootLeaseDisposition) async {
+        let cleanup = lock.withLock {
+            (
+                connectionCleanupOwner: connectionCleanupOwner,
+                disposition: isCancelled ? .invalidated : disposition
+            )
+        }
+
+        if let connectionCleanupOwner = cleanup.connectionCleanupOwner {
+            await connectionCleanupOwner.run(cleanup.disposition)
+        } else {
+            await rootCleanupOwner.run(cleanup.disposition)
+        }
     }
 }
 
@@ -96,19 +200,37 @@ enum RemuxSSHExecSession {
         onData: @escaping @Sendable (SSHChannelData.DataType, Data) -> Void,
         onFinish: @escaping @Sendable (Int?, Error?) -> Void
     ) async throws -> RemuxSSHExecConnection {
-        var connection: RemuxSSHExecConnection?
+        let lifetime = makeLifetime(for: claimedRoot)
+        return try await withTaskCancellationHandler {
+            try await open(
+                using: claimedRoot,
+                command: command,
+                trace: trace,
+                lifetime: lifetime,
+                onData: onData,
+                onFinish: onFinish
+            )
+        } onCancel: {
+            lifetime.cancel()
+        }
+    }
+
+    private static func open(
+        using claimedRoot: RemuxSSHClaimedRoot,
+        command: String,
+        trace: RemuxTransportStartupTrace,
+        lifetime: RemuxSSHExecLifetimeOwner,
+        onData: @escaping @Sendable (SSHChannelData.DataType, Data) -> Void,
+        onFinish: @escaping @Sendable (Int?, Error?) -> Void
+    ) async throws -> RemuxSSHExecConnection {
         do {
             let sessionChannel = try await claimedRoot.sshRoot.openSessionChannel(trace: trace)
-            let openedConnection = RemuxSSHExecConnection(
+            let openedConnection = lifetime.makeConnection(
                 sessionChannel: sessionChannel,
                 isRootActive: {
                     claimedRoot.sshRoot.rootChannel.isActive
-                },
-                releaseRoot: { disposition in
-                    await claimedRoot.release(disposition)
                 }
             )
-            connection = openedConnection
             let handler = RemuxSSHExecChannelHandler(
                 onData: onData,
                 onFinish: onFinish
@@ -131,11 +253,7 @@ enum RemuxSSHExecSession {
             }
             return openedConnection
         } catch {
-            if let connection {
-                await connection.close(disposition: .invalidated)
-            } else {
-                await claimedRoot.release(.invalidated)
-            }
+            await lifetime.close(disposition: .invalidated)
             throw error
         }
     }
@@ -147,14 +265,15 @@ enum RemuxSSHExecSession {
         trace: RemuxTransportStartupTrace
     ) async throws -> RemuxSSHExecResult {
         let collector = RemuxSSHExecResultCollector()
+        let lifetime = makeLifetime(for: claimedRoot)
 
         return try await withTaskCancellationHandler {
-            var connection: RemuxSSHExecConnection?
             do {
                 let openedConnection = try await open(
                     using: claimedRoot,
                     command: command,
                     trace: trace,
+                    lifetime: lifetime,
                     onData: { type, data in
                         collector.receive(type: type, data: data)
                     },
@@ -162,7 +281,6 @@ enum RemuxSSHExecSession {
                         collector.finish(exitStatus: exitStatus, error: error)
                     }
                 )
-                connection = openedConnection
                 try Task.checkCancellation()
 
                 if let stdin {
@@ -174,14 +292,23 @@ enum RemuxSSHExecSession {
 
                 let result = try await collector.value()
                 try Task.checkCancellation()
-                await openedConnection.close(disposition: .reusable)
+                await lifetime.close(disposition: .reusable)
                 return result
             } catch {
-                await connection?.close(disposition: .invalidated)
+                await lifetime.close(disposition: .invalidated)
                 throw error
             }
         } onCancel: {
             collector.cancel()
+            lifetime.cancel()
+        }
+    }
+
+    private static func makeLifetime(
+        for claimedRoot: RemuxSSHClaimedRoot
+    ) -> RemuxSSHExecLifetimeOwner {
+        RemuxSSHExecLifetimeOwner { disposition in
+            await claimedRoot.release(disposition)
         }
     }
 }
@@ -348,12 +475,14 @@ final class RemuxSSHExecChannelHandler: ChannelInboundHandler, @unchecked Sendab
                 exitStatus = Int(status.exitStatus)
             }
         case is ChannelSuccessEvent:
-            lock.withLock {
-                pendingExecReplies = max(0, pendingExecReplies - 1)
+            guard consumeExpectedExecReply() else {
+                context.fireUserInboundEventTriggered(event)
+                return
             }
         case is NIOSSH.ChannelFailureEvent:
-            lock.withLock {
-                pendingExecReplies = max(0, pendingExecReplies - 1)
+            guard consumeExpectedExecReply() else {
+                context.fireUserInboundEventTriggered(event)
+                return
             }
             finish(RemuxSSHExecSessionError.requestFailed)
         default:
@@ -395,6 +524,14 @@ final class RemuxSSHExecChannelHandler: ChannelInboundHandler, @unchecked Sendab
         }
         guard let completion else { return }
         onFinish(completion.0, completion.1)
+    }
+
+    private func consumeExpectedExecReply() -> Bool {
+        lock.withLock {
+            guard pendingExecReplies > 0 else { return false }
+            pendingExecReplies -= 1
+            return true
+        }
     }
 }
 

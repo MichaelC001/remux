@@ -43,6 +43,24 @@ final class RemuxSSHExecSessionTests: XCTestCase {
         XCTAssertNoThrow(try channel.finish())
     }
 
+    func testFailureWithoutPendingExecReplyContinuesThroughPipeline() throws {
+        let completionRecorder = RemuxSSHExecCompletionRecorder()
+        let eventRecorder = RemuxSSHExecUserEventRecorder()
+        let handler = RemuxSSHExecChannelHandler(
+            onData: { _, _ in },
+            onFinish: { exitStatus, error in
+                completionRecorder.record(exitStatus: exitStatus, error: error)
+            }
+        )
+        let channel = try EmbeddedChannel(handlers: [handler, eventRecorder])
+
+        channel.pipeline.fireUserInboundEventTriggered(NIOSSH.ChannelFailureEvent())
+
+        XCTAssertEqual(completionRecorder.finishCount, 0)
+        XCTAssertEqual(eventRecorder.failureCount, 1)
+        XCTAssertNoThrow(try channel.finish())
+    }
+
     func testFiniteResultRequiresExitStatus() async {
         let collector = RemuxSSHExecResultCollector()
 
@@ -135,6 +153,43 @@ final class RemuxSSHExecSessionTests: XCTestCase {
         XCTAssertEqual(completionRecorder.finishCount, 1)
     }
 
+    func testCancellationReleasesSuspendedClaimAndLateCompletionDoesNotReleaseTwice() async {
+        let suspension = RemuxSSHExecTestSuspension()
+        let releaseRecorder = RemuxSSHExecReleaseRecorder()
+        let connectionCleanupRecorder = RemuxSSHExecReleaseRecorder()
+        let lifetime = RemuxSSHExecLifetimeOwner { disposition in
+            await releaseRecorder.record(disposition)
+        }
+
+        let operation = Task {
+            await withTaskCancellationHandler {
+                await suspension.wait()
+
+                lifetime.installConnectionCleanup { disposition in
+                    await connectionCleanupRecorder.record(disposition)
+                }
+                await lifetime.close(disposition: .reusable)
+            } onCancel: {
+                lifetime.cancel()
+            }
+        }
+
+        await suspension.waitUntilSuspended()
+        operation.cancel()
+        await releaseRecorder.waitForRelease()
+
+        let cancellationDispositions = await releaseRecorder.dispositions()
+        XCTAssertEqual(cancellationDispositions, [.invalidated])
+
+        await suspension.resume()
+        await operation.value
+
+        let finalDispositions = await releaseRecorder.dispositions()
+        let connectionCleanupDispositions = await connectionCleanupRecorder.dispositions()
+        XCTAssertEqual(finalDispositions, [.invalidated])
+        XCTAssertEqual(connectionCleanupDispositions, [.invalidated])
+    }
+
     private func sshData(
         type: SSHChannelData.DataType,
         string: String
@@ -162,6 +217,56 @@ final class RemuxSSHExecSessionTests: XCTestCase {
 
 private enum RemuxSSHExecTestError: Error {
     case failed
+}
+
+private actor RemuxSSHExecTestSuspension {
+    private var didSuspend = false
+    private var suspensionContinuation: CheckedContinuation<Void, Never>?
+    private var observerContinuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        didSuspend = true
+        observerContinuation?.resume()
+        observerContinuation = nil
+
+        await withCheckedContinuation { continuation in
+            suspensionContinuation = continuation
+        }
+    }
+
+    func waitUntilSuspended() async {
+        guard !didSuspend else { return }
+        await withCheckedContinuation { continuation in
+            observerContinuation = continuation
+        }
+    }
+
+    func resume() {
+        suspensionContinuation?.resume()
+        suspensionContinuation = nil
+    }
+}
+
+private actor RemuxSSHExecReleaseRecorder {
+    private var recordedDispositions: [RemuxSSHRootLeaseDisposition] = []
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func record(_ disposition: RemuxSSHRootLeaseDisposition) {
+        recordedDispositions.append(disposition)
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+
+    func waitForRelease() async {
+        guard recordedDispositions.isEmpty else { return }
+        await withCheckedContinuation { continuation in
+            releaseContinuation = continuation
+        }
+    }
+
+    func dispositions() -> [RemuxSSHRootLeaseDisposition] {
+        recordedDispositions
+    }
 }
 
 private final class RemuxSSHExecDataRecorder: @unchecked Sendable {
@@ -219,6 +324,26 @@ private final class RemuxSSHExecCompletionRecorder: @unchecked Sendable {
             recordedExitStatus = exitStatus
             recordedError = error
         }
+    }
+}
+
+private final class RemuxSSHExecUserEventRecorder: ChannelInboundHandler, @unchecked Sendable {
+    typealias InboundIn = SSHChannelData
+
+    private let lock = NSLock()
+    private var recordedFailureCount = 0
+
+    var failureCount: Int {
+        lock.withLock { recordedFailureCount }
+    }
+
+    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+        if event is NIOSSH.ChannelFailureEvent {
+            lock.withLock {
+                recordedFailureCount += 1
+            }
+        }
+        context.fireUserInboundEventTriggered(event)
     }
 }
 
