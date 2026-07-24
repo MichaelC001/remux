@@ -259,6 +259,7 @@ enum RemuxSSHExecSession {
                 "exec.request",
                 fields: ["commandBytes": "\(command.lengthOfBytes(using: .utf8))"]
             ) {
+                try Task.checkCancellation()
                 handler.expectExecReply()
                 try await sessionChannel.triggerUserOutboundEvent(
                     SSHChannelRequestEvent.ExecRequest(
@@ -285,6 +286,7 @@ enum RemuxSSHExecSession {
 
         return try await withTaskCancellationHandler {
             do {
+                try Task.checkCancellation()
                 let openedConnection = try await open(
                     using: claimedRoot,
                     command: command,

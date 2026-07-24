@@ -550,7 +550,7 @@ private enum SSHPublicKeyLocalizedCommandError: LocalizedError, Equatable {
     }
 }
 
-private final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
+final class SSHPublicKeyLiveTestServer: @unchecked Sendable {
     let port: Int
     let openSSHPublicKey: String
     let hostKeyType: String
@@ -780,7 +780,7 @@ private final class SSHPublicKeyLiveErrorHandler: ChannelInboundHandler, @unchec
     }
 }
 
-private final class SSHPublicKeyLiveRootRecorder: @unchecked Sendable {
+final class SSHPublicKeyLiveRootRecorder: @unchecked Sendable {
     struct Snapshot {
         let opened: [UUID]
         let closed: [UUID]

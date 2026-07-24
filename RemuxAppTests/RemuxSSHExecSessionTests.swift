@@ -227,6 +227,96 @@ final class RemuxSSHExecSessionTests: XCTestCase {
         XCTAssertEqual(connectionCleanupDispositions, [.invalidated])
     }
 
+    func testAlreadyCancelledRunClosesClaimedRootWithoutDispatchingExec() async throws {
+        let generatedKey = SSHPrivateKeyInspector.generateEd25519(
+            comment: "cancelled-exec-session-test"
+        )
+        let serverID = UUID()
+        let server = try await SSHPublicKeyLiveTestServer.start(username: "remux")
+        defer { server.stop() }
+        let trustedHostRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemuxSSHExecSessionCancellationTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: trustedHostRoot) }
+        let trustedHostStore = TrustedHostStore(rootURL: trustedHostRoot)
+        try trustedHostStore.trustHostKey(
+            SSHHostKeyTrustChallenge(
+                kind: .unknown,
+                serverID: serverID,
+                host: "127.0.0.1",
+                trustedKeyType: nil,
+                trustedOpenSSHPublicKey: nil,
+                receivedKeyType: server.hostKeyType,
+                receivedOpenSSHPublicKey: server.openSSHPublicKey
+            )
+        )
+        let savedServer = SavedServer(
+            id: serverID,
+            displayName: "loopback",
+            host: "127.0.0.1",
+            port: server.port,
+            username: "remux",
+            identityID: serverID
+        )
+        let privateKey = SSHPrivateKeyCredential(
+            privateKeyPEM: generatedKey.privateKeyPEM
+        )
+        let trace = RemuxTransportStartupTrace(flowID: "cancelled-exec-session-test")
+        let prepared = RemuxSSHPreparedRoot.dedicated(
+            configuration: RemuxSSHRootConfiguration(
+                host: "127.0.0.1",
+                port: server.port,
+                authenticationMethod: {
+                    try SSHAuthenticationMethodFactory.make(
+                        username: "remux",
+                        credential: .privateKey(privateKey)
+                    )
+                },
+                hostKeyValidator: trustedHostStore.validator(for: savedServer),
+                connectTimeout: .seconds(10)
+            ),
+            trace: trace
+        )
+        let root: RemuxSSHRoot
+        do {
+            root = try await prepared.sshRoot()
+        } catch {
+            await prepared.cancelAndCleanup()
+            throw error
+        }
+        let claimed: RemuxSSHClaimedRoot
+        do {
+            claimed = try await prepared.claim(root, trace: trace)
+        } catch {
+            await prepared.cancelAndCleanup()
+            throw error
+        }
+        let suspension = RemuxSSHExecTestSuspension()
+        let operation = Task {
+            await suspension.wait()
+            return try await RemuxSSHExecSession.run(
+                using: claimed,
+                command: "exit 0",
+                stdin: nil,
+                trace: trace
+            )
+        }
+
+        await suspension.waitUntilSuspended()
+        operation.cancel()
+        await suspension.resume()
+
+        do {
+            _ = try await operation.value
+            XCTFail("expected cancellation")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+        let didCloseRoot = await server.waitForClosedRootCount(1)
+        XCTAssertTrue(didCloseRoot, "\(server.recordedRoots)")
+        XCTAssertEqual(server.recordedRoots.execRequestCount, 0)
+    }
+
     private func sshData(
         type: SSHChannelData.DataType,
         string: String
