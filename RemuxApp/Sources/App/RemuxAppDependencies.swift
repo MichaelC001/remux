@@ -1,3 +1,4 @@
+@preconcurrency import Citadel
 import Foundation
 import NIOCore
 
@@ -267,10 +268,49 @@ struct RemuxAppDependencies: Sendable {
         static let ephemeralStorage = "REMUX_DEBUG_EPHEMERAL_STORAGE"
     }
 
+    private enum DebugPublicKeyInstallOutcome: String {
+        case passwordRequired
+        case alreadyInstalled
+    }
+
+    private actor DebugPublicKeyInstallState {
+        let requiresPassword: Bool
+        var didAppend = false
+
+        init(requiresPassword: Bool) {
+            self.requiresPassword = requiresPassword
+        }
+
+        func run(
+            credential: SSHCredential
+        ) throws -> RemuxSSHExecResult {
+            switch credential {
+            case .password:
+                didAppend = true
+            case .privateKey:
+                if requiresPassword, !didAppend {
+                    throw SSHClientError.allAuthenticationOptionsFailed
+                }
+            }
+
+            return RemuxSSHExecResult(
+                exitStatus: 0,
+                stdout: Data(),
+                stderr: Data()
+            )
+        }
+    }
+
     static func uiTesting() throws -> RemuxAppDependencies {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("RemuxUITesting", isDirectory: true)
         let trustedHostStore = TrustedHostStore(rootURL: root)
+        let publicKeyInstallOutcome = ProcessInfo.processInfo.environment[
+            "REMUX_UI_TEST_PUBLIC_KEY_INSTALL_OUTCOME"
+        ].flatMap(DebugPublicKeyInstallOutcome.init(rawValue:)) ?? .alreadyInstalled
+        let publicKeyInstallState = DebugPublicKeyInstallState(
+            requiresPassword: publicKeyInstallOutcome == .passwordRequired
+        )
 
         return RemuxAppDependencies(
             profileRepository: InMemoryConnectionProfileRepository(),
@@ -280,8 +320,8 @@ struct RemuxAppDependencies: Sendable {
             trustedHostStore: trustedHostStore,
             publicKeyInstaller: SSHPublicKeyInstaller(
                 installationCommand: "exit 0",
-                commandRunner: { _, _, _, _ in
-                    RemuxSSHExecResult(exitStatus: 0, stdout: Data(), stderr: Data())
+                commandRunner: { _, credential, _, _ in
+                    try await publicKeyInstallState.run(credential: credential)
                 }
             ),
             transportFactory: { _, _, _ in

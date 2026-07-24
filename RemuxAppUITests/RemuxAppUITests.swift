@@ -95,8 +95,10 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     func testPrivateKeyAuthenticationFlowShowsActionsUntilKeySelected() {
+        app.launchEnvironment["REMUX_UI_TEST_PUBLIC_KEY_INSTALL_OUTCOME"] = "passwordRequired"
         launchSimulatorApp()
         openConnectionSetup()
+        fillPublicKeyInstallationServerFields()
 
         if !app.buttons["Private Key"].waitForExistence(timeout: 1) {
             app.swipeUp()
@@ -113,9 +115,55 @@ final class RemuxAppUITests: XCTestCase {
 
         XCTAssertTrue(app.staticTexts["Generated ED25519 key"].waitForExistence(timeout: 2))
         XCTAssertTrue(app.buttons["connection.private-key.copy-public"].waitForExistence(timeout: 2))
+        let install = app.buttons["connection.private-key.install"]
+        XCTAssertTrue(install.waitForExistence(timeout: 2))
+        install.tap()
+
+        let password = app.secureTextFields["connection.private-key.install-password"]
+        XCTAssertTrue(password.waitForExistence(timeout: 2))
+        password.tap()
+        password.typeText("one-time-password")
+        app.buttons["connection.private-key.install-confirm"].tap()
+
+        XCTAssertTrue(
+            app.staticTexts["connection.private-key.install-status"]
+                .waitForExistence(timeout: 5)
+        )
+        XCTAssertEqual(
+            app.staticTexts["connection.private-key.install-status"].label,
+            "Installed on host"
+        )
         XCTAssertTrue(app.buttons["connection.private-key.change"].waitForExistence(timeout: 2))
         XCTAssertFalse(app.staticTexts["Ready"].exists)
         XCTAssertFalse(app.staticTexts["Add the public key to your server"].exists)
+    }
+
+    func testAlreadyInstalledPublicKeySkipsPasswordPrompt() {
+        app.launchEnvironment["REMUX_UI_TEST_PUBLIC_KEY_INSTALL_OUTCOME"] = "alreadyInstalled"
+        launchSimulatorApp()
+        openConnectionSetup()
+        fillPublicKeyInstallationServerFields()
+
+        if !app.buttons["Private Key"].waitForExistence(timeout: 1) {
+            app.swipeUp()
+        }
+        XCTAssertTrue(app.buttons["Private Key"].waitForExistence(timeout: 2))
+        app.buttons["Private Key"].tap()
+        app.buttons["connection.private-key.generate"].tap()
+
+        let install = app.buttons["connection.private-key.install"]
+        XCTAssertTrue(install.waitForExistence(timeout: 2))
+        install.tap()
+
+        XCTAssertTrue(
+            app.staticTexts["connection.private-key.install-status"]
+                .waitForExistence(timeout: 5)
+        )
+        XCTAssertEqual(
+            app.staticTexts["connection.private-key.install-status"].label,
+            "Already installed"
+        )
+        XCTAssertFalse(app.secureTextFields["connection.private-key.install-password"].exists)
     }
 
     func testLiveSSHSeededServerOpensReadyTerminalWhenConfigured() throws {
@@ -2501,6 +2549,19 @@ final class RemuxAppUITests: XCTestCase {
         sessionName.typeText("base")
 
         XCTAssertTrue(app.buttons["connection.save"].waitForExistence(timeout: 2))
+    }
+
+    private func fillPublicKeyInstallationServerFields() {
+        let host = app.textFields["connection.host"]
+        host.tap()
+        host.typeText("127.0.0.1")
+
+        let port = app.textFields["connection.port"]
+        XCTAssertEqual(port.value as? String, "22")
+
+        let username = app.textFields["connection.username"]
+        username.tap()
+        username.typeText("demo\n")
     }
 
     private func saveConnectionAndWaitForTerminal() {

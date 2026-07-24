@@ -162,8 +162,17 @@ private struct RemuxWorkspaceShell: View {
                     onConnect: {
                         Task { await model.saveAndConnect() }
                     },
+                    canInstallPublicKey: { draft in
+                        (try? model.publicKeyInstallTarget(for: draft)) != nil
+                    },
+                    preflightPublicKeyInstallation: model.preflightPublicKeyInstallation,
+                    appendPublicKey: { draft, password in
+                        try await model.appendPublicKey(draft, password: password)
+                    },
+                    verifyPublicKeyInstallation: model.verifyPublicKeyInstallation,
+                    trustSetupHostKey: model.trustSetupHostKey,
                     onCancel: {
-                        Task { await model.showLibrary() }
+                        Task { await model.cancelSetup() }
                     }
                 )
             }
@@ -1363,6 +1372,13 @@ private struct ConnectionSetupView: View {
     let terminalTheme: TerminalTheme
     let onChange: ((inout TmuxConnectionDraft) -> Void) -> Void
     let onConnect: () -> Void
+    let canInstallPublicKey: (TmuxConnectionDraft) -> Bool
+    let preflightPublicKeyInstallation: (
+        TmuxConnectionDraft
+    ) async throws -> SSHPublicKeyPreflightOutcome
+    let appendPublicKey: (TmuxConnectionDraft, String) async throws -> Void
+    let verifyPublicKeyInstallation: (TmuxConnectionDraft) async throws -> Void
+    let trustSetupHostKey: (SSHHostKeyTrustChallenge) throws -> Void
     let onCancel: () -> Void
 
     enum Field: Hashable {
@@ -1378,6 +1394,7 @@ private struct ConnectionSetupView: View {
 
     @State private var privateKeyImportError: String?
     @State private var publicKeyCopyMessage: String?
+    @State private var isPublicKeyInstallPresented = false
     @FocusState private var focusedField: Field?
 
     var body: some View {
@@ -1533,6 +1550,18 @@ private struct ConnectionSetupView: View {
             allowsMultipleSelection: false,
             onCompletion: handlePrivateKeyImport
         )
+        .sheet(isPresented: $isPublicKeyInstallPresented) {
+            SSHPublicKeyInstallSheet(
+                draft: draft,
+                onPreflight: preflightPublicKeyInstallation,
+                onAppend: appendPublicKey,
+                onVerify: verifyPublicKeyInstallation,
+                onTrustHostKey: trustSetupHostKey,
+                onCancel: {
+                    isPublicKeyInstallPresented = false
+                }
+            )
+        }
     }
 
     @State private var isPrivateKeyImporterPresented = false
@@ -1949,6 +1978,10 @@ private struct ConnectionSetupView: View {
 
             privateKeySectionDivider()
 
+            privateKeyInstallButton()
+
+            privateKeySectionDivider()
+
             privateKeyChangeMenu()
         }
     }
@@ -1998,6 +2031,36 @@ private struct ConnectionSetupView: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("connection.private-key.copy-public")
+    }
+
+    private func privateKeyInstallButton() -> some View {
+        Button {
+            dismissKeyboard()
+            isPublicKeyInstallPresented = true
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "square.and.arrow.down.on.square")
+                    .font(.body.weight(.semibold))
+                    .frame(width: 22)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Install on Host")
+                        .foregroundStyle(.primary)
+
+                    Text("Add this public key using a one-time password")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 12)
+            }
+            .foregroundStyle(Color.accentColor)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!canInstallPublicKey(draft))
+        .accessibilityIdentifier("connection.private-key.install")
     }
 
     private func privateKeyChangeMenu() -> some View {

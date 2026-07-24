@@ -281,15 +281,17 @@ struct GhosttySurfaceStatusOverlay: View {
             return nil
         }
 
-        guard let fingerprint = hostKeyFingerprint(challenge.receivedOpenSSHPublicKey) else {
+        guard let fingerprint = challenge.receivedKeyFingerprint else {
             return "Received \(challenge.receivedKeyType)"
         }
 
         return "Received \(challenge.receivedKeyType) \(fingerprint)"
     }
+}
 
-    private func hostKeyFingerprint(_ openSSHPublicKey: String) -> String? {
-        let parts = openSSHPublicKey.split(separator: " ", maxSplits: 2)
+extension SSHHostKeyTrustChallenge {
+    var receivedKeyFingerprint: String? {
+        let parts = receivedOpenSSHPublicKey.split(separator: " ", maxSplits: 2)
         guard parts.count >= 2, let blob = Data(base64Encoded: String(parts[1])) else {
             return nil
         }
@@ -297,8 +299,8 @@ struct GhosttySurfaceStatusOverlay: View {
         let digest = Data(SHA256.hash(data: blob))
         return "SHA256:\(digest.base64EncodedString().trimmingCharacters(in: CharacterSet(charactersIn: "=")))"
     }
-
 }
+
 private struct GhosttyRepairActionButton: View {
     let title: String
     let systemName: String
