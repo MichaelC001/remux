@@ -1311,13 +1311,13 @@ final class SSHTmuxControlTransportTests: XCTestCase {
 
         XCTAssertEqual(
             command,
-            "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin TERM=xterm-256color; exec 'tmux' -C new-session -A -s 'base' -x 45 -y 37"
+            "export PATH=\"${PATH:+$PATH:}/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\" TERM=xterm-256color; exec 'tmux' -C new-session -A -s 'base' -x 45 -y 37"
         )
     }
 
     func testControlSessionCommandShellEscapesValues() {
         let command = SSHTmuxControlCommandBuilder.attachOrCreateControlSessionCommand(
-            tmuxExecutable: "/opt/homebrew/bin/tmux",
+            tmuxExecutable: "/home/owner's tools/tmux",
             sessionName: "owner's base",
             initialViewport: TmuxControlViewport(
                 columns: 120,
@@ -1329,7 +1329,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
 
         XCTAssertEqual(
             command,
-            "export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin TERM=xterm-256color; exec '/opt/homebrew/bin/tmux' -C new-session -A -s 'owner'\"'\"'s base' -x 120 -y 40"
+            "export PATH=\"${PATH:+$PATH:}/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\" TERM=xterm-256color; exec '/home/owner'\"'\"'s tools/tmux' -C new-session -A -s 'owner'\"'\"'s base' -x 120 -y 40"
         )
     }
 

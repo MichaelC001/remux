@@ -1,5 +1,5 @@
 enum SSHTmuxControlCommandBuilder {
-    private static let remotePath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    private static let fallbackRemotePath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
     static func attachOrCreateControlSessionCommand(
         tmuxExecutable: String,
@@ -14,7 +14,7 @@ enum SSHTmuxControlCommandBuilder {
         // requirement). The session channel is a bare exec stream feeding
         // Ghostty's tmux session parser directly.
         return """
-        export PATH=\(remotePath) TERM=xterm-256color; exec \(tmux) -C new-session -A -s \(session) -x \(initialViewport.columns) -y \(initialViewport.rows)
+        export PATH="${PATH:+$PATH:}\(fallbackRemotePath)" TERM=xterm-256color; exec \(tmux) -C new-session -A -s \(session) -x \(initialViewport.columns) -y \(initialViewport.rows)
         """
     }
 
