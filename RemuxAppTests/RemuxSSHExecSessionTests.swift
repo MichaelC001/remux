@@ -153,6 +153,43 @@ final class RemuxSSHExecSessionTests: XCTestCase {
         XCTAssertEqual(completionRecorder.finishCount, 1)
     }
 
+    func testPublicOpenCancellationDuringSuspendedOpenThrowsAfterInvalidation() async {
+        let suspension = RemuxSSHExecTestSuspension()
+        let releaseRecorder = RemuxSSHExecReleaseRecorder()
+        let connectionCleanupRecorder = RemuxSSHExecReleaseRecorder()
+        let lifetime = RemuxSSHExecLifetimeOwner { disposition in
+            await releaseRecorder.record(disposition)
+        }
+
+        let operation = Task { () -> Error? in
+            do {
+                _ = try await RemuxSSHExecSession.open(lifetime: lifetime) {
+                    await suspension.wait()
+                    lifetime.installConnectionCleanup { disposition in
+                        await connectionCleanupRecorder.record(disposition)
+                    }
+                }
+                return nil
+            } catch {
+                return error
+            }
+        }
+
+        await suspension.waitUntilSuspended()
+        operation.cancel()
+        await releaseRecorder.waitForRelease()
+
+        let cancellationDispositions = await releaseRecorder.dispositions()
+        XCTAssertEqual(cancellationDispositions, [.invalidated])
+
+        await suspension.resume()
+        let error = await operation.value
+
+        XCTAssertTrue(error is CancellationError)
+        let connectionCleanupDispositions = await connectionCleanupRecorder.dispositions()
+        XCTAssertEqual(connectionCleanupDispositions, [.invalidated])
+    }
+
     func testCancellationReleasesSuspendedClaimAndLateCompletionDoesNotReleaseTwice() async {
         let suspension = RemuxSSHExecTestSuspension()
         let releaseRecorder = RemuxSSHExecReleaseRecorder()

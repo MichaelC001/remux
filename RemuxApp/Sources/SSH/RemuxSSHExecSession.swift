@@ -201,7 +201,7 @@ enum RemuxSSHExecSession {
         onFinish: @escaping @Sendable (Int?, Error?) -> Void
     ) async throws -> RemuxSSHExecConnection {
         let lifetime = makeLifetime(for: claimedRoot)
-        return try await withTaskCancellationHandler {
+        return try await open(lifetime: lifetime) {
             try await open(
                 using: claimedRoot,
                 command: command,
@@ -210,6 +210,22 @@ enum RemuxSSHExecSession {
                 onData: onData,
                 onFinish: onFinish
             )
+        }
+    }
+
+    static func open<Value: Sendable>(
+        lifetime: RemuxSSHExecLifetimeOwner,
+        operation: @escaping @Sendable () async throws -> Value
+    ) async throws -> Value {
+        return try await withTaskCancellationHandler {
+            do {
+                let connection = try await operation()
+                try Task.checkCancellation()
+                return connection
+            } catch {
+                await lifetime.close(disposition: .invalidated)
+                throw error
+            }
         } onCancel: {
             lifetime.cancel()
         }
