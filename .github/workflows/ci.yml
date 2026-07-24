@@ -56,7 +56,7 @@ jobs:
                 break
                 ;;
             esac
-          done < <(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")
+          done < <(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")
 
           printf 'app=%s\n' "${app_changed}" >> "${GITHUB_OUTPUT}"
 
