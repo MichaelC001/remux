@@ -2,6 +2,42 @@ import XCTest
 @testable import Remux
 
 final class TmuxConnectionDraftValidatorTests: XCTestCase {
+    func testNewDraftKeepsServerIDAcrossValidation() {
+        var draft = validServerDraft()
+        let expectedID = draft.serverID
+
+        let first = TmuxConnectionDraftValidator.validateServer(
+            draft,
+            existingServerID: nil
+        )
+        draft.displayName = "Renamed"
+        let second = TmuxConnectionDraftValidator.validateServer(
+            draft,
+            existingServerID: nil
+        )
+
+        guard case .valid(let firstServer) = first,
+              case .valid(let secondServer) = second else {
+            return XCTFail("expected valid server drafts")
+        }
+        XCTAssertEqual(firstServer.serverID, expectedID)
+        XCTAssertEqual(secondServer.serverID, expectedID)
+    }
+
+    func testDraftFromSavedServerUsesSavedServerID() {
+        let server = SavedServer(
+            displayName: "Host",
+            host: "host.example",
+            username: "demo",
+            identityID: UUID()
+        )
+        let workspace = SavedWorkspace(serverID: server.id, sessionName: "main")
+
+        let draft = TmuxConnectionDraft(server: server, workspace: workspace)
+
+        XCTAssertEqual(draft.serverID, server.id)
+    }
+
     func testValidDraftProducesServerDraftWorkspaceAndPassword() {
         var draft = TmuxConnectionDraft()
         draft.displayName = "Example Server"
