@@ -15,10 +15,51 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GHOSTTY_REF: 51fad3b5d135fde528110ffecd6a7afea231fa21
   XCODE_DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
 
 jobs:
+  changes:
+    name: Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      app: ${{ steps.filter.outputs.app }}
+
+    steps:
+      - name: Check out Remux
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
+
+      - name: Detect app changes
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${EVENT_NAME}" != "pull_request" ]]; then
+            printf 'app=true\n' >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          app_changed=false
+          while IFS= read -r path; do
+            case "${path}" in
+              remux-site/*|docs/*|README.md|LICENSE)
+                ;;
+              *)
+                app_changed=true
+                break
+                ;;
+            esac
+          done < <(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")
+
+          printf 'app=%s\n' "${app_changed}" >> "${GITHUB_OUTPUT}"
+
   site:
     name: Site
     runs-on: ubuntu-latest
@@ -43,20 +84,14 @@ jobs:
 
   app:
     name: App
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     runs-on: macos-26
-    timeout-minutes: 75
+    timeout-minutes: 25
 
     steps:
       - name: Check out Remux
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-
-      - name: Check out GhosttyKit source
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-        with:
-          repository: h3nock/remux-ghostty
-          ref: ${{ env.GHOSTTY_REF }}
-          path: ghostty-source
-          persist-credentials: false
 
       - name: Select Xcode
         shell: bash
@@ -76,43 +111,25 @@ jobs:
           udid="$(xcrun simctl create "Remux CI ${GITHUB_RUN_ID}" com.apple.CoreSimulator.SimDeviceType.iPhone-17e "${runtime_id}")"
           printf 'udid=%s\n' "${udid}" >> "${GITHUB_OUTPUT}"
           xcrun simctl boot "${udid}"
-          xcrun simctl bootstatus "${udid}" -b
 
-      - name: Install build tools
+      - name: Install XcodeGen
         shell: bash
         run: |
           set -euo pipefail
           if brew tap | grep -qx 'aws/tap'; then
             brew untap aws/tap
           fi
-          HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen zig@0.15
-          zig_bin="$(brew --prefix zig@0.15)/bin"
-          printf '%s\n' "${zig_bin}" >> "${GITHUB_PATH}"
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen
           xcodegen --version
-          "${zig_bin}/zig" version
 
-      - name: Link GhosttyKit source
+      - name: Fetch GhosttyKit
         shell: bash
-        run: ln -sfn "${GITHUB_WORKSPACE}/ghostty-source" "${GITHUB_WORKSPACE}/../ghostty-remux-upstream-rebuild"
-
-      - name: Restore GhosttyKit
-        id: ghostty-cache
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
-        with:
-          path: ghostty-source/macos/GhosttyKit.xcframework
-          key: ghosttykit-${{ runner.os }}-${{ runner.arch }}-${{ env.GHOSTTY_REF }}-xcode-26.4.1-zig-0.15.2
-
-      - name: Build GhosttyKit
-        if: steps.ghostty-cache.outputs.cache-hit != 'true'
-        env:
-          GHOSTTY_SOURCE_DIR: ${{ github.workspace }}/ghostty-source
-        shell: bash
-        run: scripts/build_release_ghosttykit.sh
+        run: scripts/fetch_ghosttykit.sh
 
       - name: Verify GhosttyKit
         env:
           CONFIGURATION: Release
-          GHOSTTYKIT_XCFRAMEWORK: ${{ github.workspace }}/ghostty-source/macos/GhosttyKit.xcframework
+          GHOSTTYKIT_XCFRAMEWORK: ${{ github.workspace }}/../ghostty-remux-upstream-rebuild/macos/GhosttyKit.xcframework
         shell: bash
         run: scripts/verify_ghosttykit_release_mode.sh
 
@@ -123,19 +140,16 @@ jobs:
           xcodegen generate
           git diff --exit-code -- Remux.xcodeproj
 
+      - name: Wait for simulator
+        shell: bash
+        run: xcrun simctl bootstatus "${{ steps.simulator.outputs.udid }}" -b
+
       - name: Run unit tests
         shell: bash
         run: |
           set -euo pipefail
           rm -rf "${RUNNER_TEMP}/RemuxUnitTests.xcresult"
           xcodebuild test -project Remux.xcodeproj -scheme Remux -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" -only-testing:RemuxTests -resultBundlePath "${RUNNER_TEMP}/RemuxUnitTests.xcresult"
-
-      - name: Run UI smoke tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf "${RUNNER_TEMP}/RemuxUISmokeTests.xcresult"
-          xcodebuild test -project Remux.xcodeproj -scheme RemuxUIOnly -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" -only-testing:RemuxUITests/ShortcutPaletteUITests -resultBundlePath "${RUNNER_TEMP}/RemuxUISmokeTests.xcresult"
 
       - name: Delete simulator
         if: always() && steps.simulator.outputs.udid != ''

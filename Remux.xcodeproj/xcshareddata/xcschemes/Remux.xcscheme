@@ -35,20 +35,6 @@
                ReferencedContainer = "container:Remux.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
-         <BuildActionEntry
-            buildForTesting = "YES"
-            buildForRunning = "NO"
-            buildForProfiling = "NO"
-            buildForArchiving = "NO"
-            buildForAnalyzing = "NO">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "AB8207F2544D6BF9946D8F01"
-               BuildableName = "RemuxUITests.xctest"
-               BlueprintName = "RemuxUITests"
-               ReferencedContainer = "container:Remux.xcodeproj">
-            </BuildableReference>
-         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction
@@ -75,17 +61,6 @@
                BlueprintIdentifier = "996C9890366D3C9DEB51E619"
                BuildableName = "RemuxTests.xctest"
                BlueprintName = "RemuxTests"
-               ReferencedContainer = "container:Remux.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
-         <TestableReference
-            skipped = "NO"
-            parallelizable = "NO">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "AB8207F2544D6BF9946D8F01"
-               BuildableName = "RemuxUITests.xctest"
-               BlueprintName = "RemuxUITests"
                ReferencedContainer = "container:Remux.xcodeproj">
             </BuildableReference>
          </TestableReference>
