@@ -1370,6 +1370,7 @@ private struct ConnectionSetupView: View {
         case host
         case port
         case username
+        case tmuxExecutablePath
         case password
         case privateKeyPassphrase
         case sessionName
@@ -1464,18 +1465,24 @@ private struct ConnectionSetupView: View {
                 .libraryHomeListRowSurface()
             }
 
-            if showsSessionFields {
+            if showsEditableServerFields {
                 Section {
-                    textInputRow(
-                        title: "Name",
-                        placeholder: "e.g. main, work",
-                        keyPath: \.sessionName,
-                        field: .sessionName,
-                        validationMessage: validation.sessionName,
-                        textStyle: .monospaced,
-                        submitLabel: .go,
-                        accessibilityIdentifier: "connection.session"
-                    )
+                    tmuxExecutableInputRow()
+
+                    if showsSessionFields {
+                        sessionNameInputRow(title: "First Session")
+                    }
+                } header: {
+                    Text("tmux")
+                } footer: {
+                    if showsSessionFields {
+                        Text("After connecting, Remux attaches to this session or creates it if needed.")
+                    }
+                }
+                .libraryHomeListRowSurface()
+            } else if showsSessionFields {
+                Section {
+                    sessionNameInputRow(title: "Name")
                 } header: {
                     Text(sessionSectionTitle)
                 } footer: {
@@ -1556,11 +1563,13 @@ private struct ConnectionSetupView: View {
                     return .privateKeyPassphrase
                 }
             }
+            if showsEditableServerFields { return .tmuxExecutablePath }
             if showsSessionFields { return .sessionName }
             return nil
-        case .password:
+        case .password, .privateKeyPassphrase:
+            if showsEditableServerFields { return .tmuxExecutablePath }
             return showsSessionFields ? .sessionName : nil
-        case .privateKeyPassphrase:
+        case .tmuxExecutablePath:
             return showsSessionFields ? .sessionName : nil
         case .sessionName:
             return nil
@@ -1775,6 +1784,33 @@ private struct ConnectionSetupView: View {
         }
     }
 
+    private func tmuxExecutableInputRow() -> some View {
+        textInputRow(
+            title: "Executable Path (Optional)",
+            placeholder: "/absolute/path/to/tmux",
+            keyPath: \.tmuxExecutablePath,
+            field: .tmuxExecutablePath,
+            validationMessage: validation.tmuxExecutablePath,
+            textStyle: .monospaced,
+            keyboardType: .URL,
+            submitLabel: showsSessionFields ? .next : .go,
+            accessibilityIdentifier: "connection.tmux-executable"
+        )
+    }
+
+    private func sessionNameInputRow(title: String) -> some View {
+        textInputRow(
+            title: title,
+            placeholder: "e.g. main, work",
+            keyPath: \.sessionName,
+            field: .sessionName,
+            validationMessage: validation.sessionName,
+            textStyle: .monospaced,
+            submitLabel: .go,
+            accessibilityIdentifier: "connection.session"
+        )
+    }
+
     private func passwordInputRow(validationMessage: String?) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Password")
@@ -1787,7 +1823,7 @@ private struct ConnectionSetupView: View {
                 .textContentType(.oneTimeCode)
                 .multilineTextAlignment(.leading)
                 .focused($focusedField, equals: .password)
-                .submitLabel(showsSessionFields ? .next : .go)
+                .submitLabel(nextField(after: .password) == nil ? .go : .next)
                 .onSubmit { advance(from: .password) }
                 .frame(minHeight: 28)
                 .accessibilityIdentifier("connection.password")
@@ -2030,7 +2066,7 @@ private struct ConnectionSetupView: View {
                 .textContentType(.oneTimeCode)
                 .multilineTextAlignment(.leading)
                 .focused($focusedField, equals: .privateKeyPassphrase)
-                .submitLabel(showsSessionFields ? .next : .go)
+                .submitLabel(nextField(after: .privateKeyPassphrase) == nil ? .go : .next)
                 .onSubmit { advance(from: .privateKeyPassphrase) }
                 .frame(minHeight: 28)
                 .accessibilityIdentifier("connection.private-key.passphrase")

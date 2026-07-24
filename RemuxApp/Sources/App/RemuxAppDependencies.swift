@@ -171,7 +171,7 @@ struct RemuxAppDependencies: Sendable {
         )
     }
 
-    private static func sshConfiguration(
+    static func sshConfiguration(
         for target: TmuxConnectionTarget,
         trustedHostStore: TrustedHostStore,
         traceFlowID: String?
@@ -185,6 +185,7 @@ struct RemuxAppDependencies: Sendable {
             hostKeyValidator: trustedHostStore.validator(for: target.server),
             connectTimeout: RemuxConnectionTimeouts.terminalSSHConnect,
             controlNoResponseTimeout: RemuxConnectionTimeouts.tmuxControlNoResponse,
+            tmuxExecutable: target.server.tmuxExecutablePath ?? "tmux",
             sessionName: target.workspace.sessionName,
             traceFlowID: traceFlowID,
             sshRootKey: RemuxSSHRootKey(target: target)
