@@ -281,8 +281,12 @@ collector must cap stdout and stderr independently at:
 private static let maximumCapturedStreamBytes = 64 * 1024
 ```
 
-It must require an explicit exit status, close the child channel, and release
-the claimed root on every success, error, and cancellation path.
+It must require both remote input EOF and an explicit exit status, in either
+order. Once both are observed it completes exactly once and closes the child
+channel without waiting for remote full close. A true full close without an
+exit status still reports `missingExitStatus`. The run releases the claimed
+root on every success, error, and cancellation path. Long-lived tmux `open`
+does not use the finite EOF-plus-status completion policy.
 
 - [ ] **Step 4: Migrate tmux to the generic session**
 
@@ -659,9 +663,14 @@ Map password authentication rejection to `.passwordRejected`; map
 an append command's nonzero status to `.installationCommandFailed`, and map
 post-append key rejection to `.verificationRejected`. A verification command
 that authenticates but exits nonzero maps to `.verificationCommandFailed`.
-Use bounded UTF-8 stderr, falling back to stdout, as the optional diagnostic.
-Pass `TrustedHostStoreError` and all pre-authentication network/protocol
-errors through unchanged.
+The password-authenticated append boundary discards remote stdout and stderr
+for every command-result failure, retaining only the exit status when one was
+observed. It converts post-claim command execution diagnostics to a generic
+typed installation failure. Verification may use bounded UTF-8 stderr,
+falling back to stdout, as its optional diagnostic. Pass
+`TrustedHostStoreError` and all pre-authentication network/protocol errors
+through unchanged, and preserve cancellation and password rejection as typed
+outcomes.
 
 - [ ] **Step 5: Implement the live dedicated command runner**
 
@@ -785,7 +794,10 @@ func testPreflightPassesTargetToInstaller()
 func testAppendDoesNotWritePasswordToDraftOrCredentialStore()
 func testTrustSetupHostKeyStoresChallengeForDraftServerID()
 func testCancelNewServerRemovesProvisionalTrust()
-func testCancelExistingServerPreservesExistingTrust()
+func testCancelEditServerRestoresExactPriorTrustIdentity()
+func testCancelEditServerRestoresOriginalTrustAbsence()
+func testSuccessfulEditServerRetainsAcceptedUpdatedTrust()
+func testWorkspaceSetupCancellationPreservesAcceptedTrust()
 ```
 
 Use an installer test double only at the external SSH-operation boundary.
@@ -820,9 +832,15 @@ without copying the password into model fields.
 
 - [ ] **Step 4: Implement setup trust and cancellation cleanup**
 
-`trustSetupHostKey` delegates to `TrustedHostStore.trustHostKey`.
-`cancelSetup` captures the current setup mode and draft. For `.newServer`,
-delete the provisional identity before returning to the library:
+`trustSetupHostKey` delegates to `TrustedHostStore.trustHostKey`. When Edit
+Server begins, snapshot the exact `TrustedHostIdentity` for that server ID,
+including absence. Explicit trust remains persisted during setup so the
+interrupted phase can retry. On successful Edit Server save, discard the
+snapshot and keep the accepted trust. On Edit Server cancellation, restore the
+snapshot with the store's smallest exact replacement API.
+
+For `.newServer`, delete the provisional identity before returning to the
+library:
 
 ```swift
 if case .setup(let draft, _, .newServer) = state {
@@ -831,7 +849,7 @@ if case .setup(let draft, _, .newServer) = state {
 await showLibrary()
 ```
 
-Do not delete trust for edit-server or workspace modes.
+New Workspace and Edit Workspace cancellation preserve accepted trust.
 
 - [ ] **Step 5: Run focused tests and commit**
 

@@ -52,7 +52,7 @@ final class RemuxSSHExecSessionTests: XCTestCase {
                 completionRecorder.record(exitStatus: exitStatus, error: error)
             }
         )
-        let channel = try EmbeddedChannel(handlers: [handler, eventRecorder])
+        let channel = EmbeddedChannel(handlers: [handler, eventRecorder])
 
         channel.pipeline.fireUserInboundEventTriggered(NIOSSH.ChannelFailureEvent())
 
@@ -132,6 +132,93 @@ final class RemuxSSHExecSessionTests: XCTestCase {
         )
         _ = try channel.readOutbound(as: SSHChannelData.self)
         XCTAssertThrowsError(try channel.finish())
+    }
+
+    func testFiniteCompletionClosesChannelForExitStatusThenRemoteEOF() throws {
+        let completionRecorder = RemuxSSHExecCompletionRecorder()
+        let outboundRecorder = RemuxSSHExecOutboundRecorder()
+        let handler = RemuxSSHExecChannelHandler(
+            onData: { _, _ in },
+            onFinish: { exitStatus, error in
+                completionRecorder.record(exitStatus: exitStatus, error: error)
+            }
+        )
+        let channel = EmbeddedChannel(handlers: [outboundRecorder, handler])
+
+        channel.pipeline.fireUserInboundEventTriggered(
+            SSHChannelRequestEvent.ExitStatus(exitStatus: 0)
+        )
+        XCTAssertEqual(completionRecorder.finishCount, 0)
+        XCTAssertEqual(outboundRecorder.events, [])
+
+        channel.pipeline.fireUserInboundEventTriggered(ChannelEvent.inputClosed)
+        channel.embeddedEventLoop.run()
+
+        XCTAssertEqual(completionRecorder.finishCount, 1)
+        XCTAssertEqual(completionRecorder.exitStatus, 0)
+        XCTAssertFalse(completionRecorder.hasError)
+        XCTAssertEqual(outboundRecorder.events, [.closeAll])
+        XCTAssertThrowsError(try channel.finish()) { error in
+            XCTAssertEqual(error as? ChannelError, .alreadyClosed)
+        }
+        XCTAssertEqual(completionRecorder.finishCount, 1)
+    }
+
+    func testFiniteCompletionClosesChannelForRemoteEOFThenExitStatus() throws {
+        let completionRecorder = RemuxSSHExecCompletionRecorder()
+        let outboundRecorder = RemuxSSHExecOutboundRecorder()
+        let handler = RemuxSSHExecChannelHandler(
+            onData: { _, _ in },
+            onFinish: { exitStatus, error in
+                completionRecorder.record(exitStatus: exitStatus, error: error)
+            }
+        )
+        let channel = EmbeddedChannel(handlers: [outboundRecorder, handler])
+
+        channel.pipeline.fireUserInboundEventTriggered(ChannelEvent.inputClosed)
+        XCTAssertEqual(completionRecorder.finishCount, 0)
+        XCTAssertEqual(outboundRecorder.events, [])
+
+        channel.pipeline.fireUserInboundEventTriggered(
+            SSHChannelRequestEvent.ExitStatus(exitStatus: 23)
+        )
+        channel.embeddedEventLoop.run()
+
+        XCTAssertEqual(completionRecorder.finishCount, 1)
+        XCTAssertEqual(completionRecorder.exitStatus, 23)
+        XCTAssertFalse(completionRecorder.hasError)
+        XCTAssertEqual(outboundRecorder.events, [.closeAll])
+        XCTAssertThrowsError(try channel.finish()) { error in
+            XCTAssertEqual(error as? ChannelError, .alreadyClosed)
+        }
+        XCTAssertEqual(completionRecorder.finishCount, 1)
+    }
+
+    func testLongLivedCompletionWaitsForFullCloseAfterExitStatusAndEOF() throws {
+        let completionRecorder = RemuxSSHExecCompletionRecorder()
+        let outboundRecorder = RemuxSSHExecOutboundRecorder()
+        let handler = RemuxSSHExecChannelHandler(
+            closeOnRemoteEOFAndExitStatus: false,
+            onData: { _, _ in },
+            onFinish: { exitStatus, error in
+                completionRecorder.record(exitStatus: exitStatus, error: error)
+            }
+        )
+        let channel = EmbeddedChannel(handlers: [outboundRecorder, handler])
+
+        channel.pipeline.fireUserInboundEventTriggered(
+            SSHChannelRequestEvent.ExitStatus(exitStatus: 0)
+        )
+        channel.pipeline.fireUserInboundEventTriggered(ChannelEvent.inputClosed)
+        channel.embeddedEventLoop.run()
+
+        XCTAssertEqual(completionRecorder.finishCount, 0)
+        XCTAssertEqual(outboundRecorder.events, [])
+
+        XCTAssertNoThrow(try channel.finish())
+        XCTAssertEqual(completionRecorder.finishCount, 1)
+        XCTAssertEqual(completionRecorder.exitStatus, 0)
+        XCTAssertFalse(completionRecorder.hasError)
     }
 
     func testCompletionFiresExactlyOnceForErrorThenClose() throws {

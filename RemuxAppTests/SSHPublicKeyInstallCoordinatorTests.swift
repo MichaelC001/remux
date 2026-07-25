@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import Remux
 
@@ -105,6 +106,55 @@ final class SSHPublicKeyInstallCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.passwordError)
         XCTAssertEqual(verificationCount, 0)
         XCTAssertNil(coordinator.pendingTrust)
+    }
+
+    func testAppendFailureStateDoesNotRetainReflectedSecrets() async {
+        let secrets = [
+            "PUBLIC-KEY-STATE-SENTINEL",
+            "PASSWORD-STATE-SENTINEL",
+            "PRIVATE-KEY-STATE-SENTINEL",
+            "PASSPHRASE-STATE-SENTINEL",
+        ]
+        let target = SSHPublicKeyInstallTarget(
+            serverID: UUID(),
+            host: "example.test",
+            port: 22,
+            username: "remux",
+            privateKey: SSHPrivateKeyCredential(
+                privateKeyPEM: secrets[2],
+                passphrase: secrets[3]
+            ),
+            publicKeyLine: secrets[0]
+        )
+        let reflectedOutput = secrets.joined(separator: "|")
+        let installer = SSHPublicKeyInstaller(
+            installationCommand: "install",
+            commandRunner: { _, _, _, _ in
+                RemuxSSHExecResult(
+                    exitStatus: 1,
+                    stdout: Data("stdout:\(reflectedOutput)".utf8),
+                    stderr: Data("stderr:\(reflectedOutput)".utf8)
+                )
+            }
+        )
+        let coordinator = makeCoordinator(
+            append: { _, password in
+                try await installer.append(target, password: password)
+            }
+        )
+
+        await coordinator.preflight()
+        coordinator.password = secrets[1]
+        await coordinator.submitPassword()
+
+        guard case .failed(let retainedError) = coordinator.phase else {
+            return XCTFail("expected retained failure state")
+        }
+        XCTAssertEqual(coordinator.password, "")
+        for secret in secrets {
+            XCTAssertFalse(retainedError.contains(secret))
+            XCTAssertFalse(String(reflecting: coordinator.phase).contains(secret))
+        }
     }
 
     func testRejectingAppendHostKeyClearsPasswordAndDoesNotRetry() async {

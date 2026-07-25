@@ -19,6 +19,7 @@ enum SSHPublicKeyPreflightOutcome: Equatable, Sendable {
 enum SSHPublicKeyInstallerError: Error, Equatable, LocalizedError {
     case keyAcceptedButProbeFailed
     case passwordRejected
+    case installationCommandExecutionFailed
     case installationCommandFailed(exitStatus: Int, diagnostic: String?)
     case verificationRejected
     case verificationCommandFailed(exitStatus: Int, diagnostic: String?)
@@ -29,6 +30,8 @@ enum SSHPublicKeyInstallerError: Error, Equatable, LocalizedError {
             return "The SSH key was accepted, but Remux could not run the compatibility check."
         case .passwordRejected:
             return "The SSH server rejected password authentication."
+        case .installationCommandExecutionFailed:
+            return "Remux could not complete the authenticated public-key installation command."
         case .installationCommandFailed(let exitStatus, let diagnostic):
             return Self.commandFailureDescription(
                 phase: "installing the public key",
@@ -185,7 +188,10 @@ struct SSHPublicKeyInstaller: Sendable {
                 Data("\(target.publicKeyLine)\n".utf8)
             )
         } catch let error as SSHPublicKeyCommandExecutionError {
-            throw error.underlying
+            if error.underlying is CancellationError {
+                throw CancellationError()
+            }
+            throw SSHPublicKeyInstallerError.installationCommandExecutionFailed
         } catch {
             guard Self.isPasswordAuthenticationRejection(error) else {
                 throw error
@@ -196,7 +202,7 @@ struct SSHPublicKeyInstaller: Sendable {
         guard result.exitStatus == 0 else {
             throw SSHPublicKeyInstallerError.installationCommandFailed(
                 exitStatus: result.exitStatus,
-                diagnostic: Self.diagnostic(from: result)
+                diagnostic: nil
             )
         }
     }

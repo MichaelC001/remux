@@ -107,6 +107,12 @@ struct ActiveTerminalScreenEntry: Identifiable {
 @MainActor
 final class RemuxRootModel: ObservableObject {
     private static let libraryPrewarmServerLimit = 3
+
+    private struct EditServerTrustSnapshot {
+        let serverID: SavedServer.ID
+        let identity: TrustedHostIdentity?
+    }
+
     typealias TerminalScreenModelFactory = @MainActor @Sendable (
         TmuxConnectionTarget,
         UUID,
@@ -173,6 +179,7 @@ final class RemuxRootModel: ObservableObject {
     private let terminalScreenModelFactory: TerminalScreenModelFactory
     private var terminalScreenModels: [TerminalRuntimeAttemptKey: TmuxScreenModel] = [:]
     private var currentAppLifecyclePhase: GhosttyAppLifecyclePhase?
+    private var editServerTrustSnapshot: EditServerTrustSnapshot?
 
     init(
         dependencies: RemuxAppDependencies,
@@ -229,12 +236,14 @@ final class RemuxRootModel: ObservableObject {
     }
 
     func beginNewServer() {
+        editServerTrustSnapshot = nil
         state = .setup(TmuxConnectionDraft(), .empty, .newServer)
     }
 
     func beginNewWorkspace(for serverID: SavedServer.ID) async {
         guard let server = library.server(id: serverID) else { return }
 
+        editServerTrustSnapshot = nil
         let workspace = SavedWorkspace(
             serverID: serverID,
             sessionName: ""
@@ -274,7 +283,9 @@ final class RemuxRootModel: ObservableObject {
 
         let identity: SSHIdentity
         let credential: SSHCredential
+        let trustedHostIdentity: TrustedHostIdentity?
         do {
+            trustedHostIdentity = try dependencies.trustedHostStore.identity(for: serverID)
             (identity, credential) = try await loadDraftIdentityCredential(for: server)
         } catch {
             transitionToFailed(error)
@@ -283,6 +294,10 @@ final class RemuxRootModel: ObservableObject {
         let workspace = reconnectWorkspaceID.flatMap { library.workspace(id: $0) }
             ?? library.workspaces(for: serverID).first
             ?? SavedWorkspace(serverID: serverID, sessionName: "")
+        editServerTrustSnapshot = EditServerTrustSnapshot(
+            serverID: serverID,
+            identity: trustedHostIdentity
+        )
         state = .setup(
             TmuxConnectionDraft(
                 server: server,
@@ -303,6 +318,7 @@ final class RemuxRootModel: ObservableObject {
             return
         }
 
+        editServerTrustSnapshot = nil
         state = .setup(
             TmuxConnectionDraft(server: server, workspace: workspace),
             .empty,
@@ -381,9 +397,26 @@ final class RemuxRootModel: ObservableObject {
     }
 
     func cancelSetup() async {
-        if case .setup(let draft, _, .newServer) = state {
+        switch state {
+        case .setup(let draft, _, .newServer):
             try? dependencies.trustedHostStore.deleteIdentity(for: draft.serverID)
+        case .setup(_, _, .editServer(let serverID, _)):
+            if let snapshot = editServerTrustSnapshot,
+               snapshot.serverID == serverID {
+                do {
+                    try dependencies.trustedHostStore.restoreIdentity(
+                        snapshot.identity,
+                        for: serverID
+                    )
+                } catch {
+                    transitionToFailed(error)
+                    return
+                }
+            }
+        default:
+            break
         }
+        editServerTrustSnapshot = nil
         await showLibrary()
     }
 
@@ -509,6 +542,7 @@ final class RemuxRootModel: ObservableObject {
                         updatedIdentityCredential.identity
                     )
                     try await dependencies.profileRepository.saveServer(server)
+                    editServerTrustSnapshot = nil
                 } catch {
                     await restoreCredential(
                         previousCredential,

@@ -154,11 +154,14 @@ final class SSHPublicKeyInstallerTests: XCTestCase {
         }
     }
 
-    func testAppendUnwrapsPostClaimCommandFailure() async {
+    func testAppendSanitizesPostClaimCommandFailure() async {
+        let reflectedSecret = "REFLECTED-REMOTE-DIAGNOSTIC"
         let recorder = SSHPublicKeyCommandRecorder(results: [
             .failure(
                 SSHPublicKeyCommandExecutionError(
-                    underlying: SSHPublicKeyLocalizedCommandError.execFailed
+                    underlying: SSHPublicKeyReflectedCommandError(
+                        diagnostic: reflectedSecret
+                    )
                 )
             ),
         ])
@@ -166,92 +169,76 @@ final class SSHPublicKeyInstallerTests: XCTestCase {
 
         do {
             try await installer.append(Self.target, password: "one-time-password")
-            XCTFail("expected localized command failure")
-        } catch let error as SSHPublicKeyLocalizedCommandError {
-            XCTAssertEqual(error, .execFailed)
-            XCTAssertEqual(error.localizedDescription, "The authenticated SSH command failed.")
+            XCTFail("expected sanitized command failure")
         } catch {
-            XCTFail("unexpected error: \(error)")
+            XCTAssertTrue(error is SSHPublicKeyInstallerError)
+            XCTAssertFalse(error.localizedDescription.contains(reflectedSecret))
+            XCTAssertFalse(String(reflecting: error).contains(reflectedSecret))
         }
     }
 
-    func testAppendMapsNonzeroStatusWithBoundedStderrDiagnostic() async {
-        let diagnostic = String(repeating: "x", count: 8_192)
+    func testAppendPreservesPostClaimCancellation() async {
         let recorder = SSHPublicKeyCommandRecorder(results: [
-            .success(.failure(exitStatus: 73, stderr: diagnostic, stdout: "ignored stdout")),
+            .failure(
+                SSHPublicKeyCommandExecutionError(
+                    underlying: CancellationError()
+                )
+            ),
+        ])
+        let installer = makeInstaller(recorder: recorder)
+
+        await assertCancellationError {
+            try await installer.append(Self.target, password: "one-time-password")
+        }
+    }
+
+    func testAppendDoesNotRetainSecretsReflectedInCommandOutput() async {
+        let secrets = [
+            "PUBLIC-KEY-SENTINEL",
+            "PASSWORD-SENTINEL",
+            "PRIVATE-KEY-SENTINEL",
+            "PASSPHRASE-SENTINEL",
+        ]
+        let reflectedOutput = secrets.joined(separator: "|")
+        let recorder = SSHPublicKeyCommandRecorder(results: [
+            .success(
+                .failure(
+                    exitStatus: 73,
+                    stderr: "stderr:\(reflectedOutput)",
+                    stdout: "stdout:\(reflectedOutput)"
+                )
+            ),
         ])
         let installer = makeInstaller(recorder: recorder)
 
         do {
-            try await installer.append(Self.target, password: "one-time-password")
+            try await installer.append(
+                SSHPublicKeyInstallTarget(
+                    serverID: Self.target.serverID,
+                    host: Self.target.host,
+                    port: Self.target.port,
+                    username: Self.target.username,
+                    privateKey: SSHPrivateKeyCredential(
+                        privateKeyPEM: secrets[2],
+                        passphrase: secrets[3]
+                    ),
+                    publicKeyLine: secrets[0]
+                ),
+                password: secrets[1]
+            )
             XCTFail("expected installation command failure")
         } catch let error as SSHPublicKeyInstallerError {
             guard case .installationCommandFailed(let exitStatus, let recordedDiagnostic) = error else {
                 return XCTFail("unexpected installer error: \(error)")
             }
             XCTAssertEqual(exitStatus, 73)
-            XCTAssertEqual(recordedDiagnostic, String(repeating: "x", count: 4_096))
+            XCTAssertNil(recordedDiagnostic)
+            for secret in secrets {
+                XCTAssertFalse(error.localizedDescription.contains(secret))
+                XCTAssertFalse(String(reflecting: error).contains(secret))
+            }
         } catch {
             XCTFail("unexpected error: \(error)")
-        }
-    }
-
-    func testAppendFallsBackToStdoutDiagnosticWhenStderrIsNotUTF8() async {
-        let recorder = SSHPublicKeyCommandRecorder(results: [
-            .success(
-                RemuxSSHExecResult(
-                    exitStatus: 74,
-                    stdout: Data("home is unavailable".utf8),
-                    stderr: Data([0xff])
-                )
-            ),
-        ])
-        let installer = makeInstaller(recorder: recorder)
-
-        await assertInstallerError(
-            .installationCommandFailed(exitStatus: 74, diagnostic: "home is unavailable")
-        ) {
-            try await installer.append(Self.target, password: "one-time-password")
-        }
-    }
-
-    func testAppendPreservesValidUTF8BeforeDiagnosticBoundary() async {
-        let validPrefix = String(repeating: "x", count: 4_095)
-        let recorder = SSHPublicKeyCommandRecorder(results: [
-            .success(
-                .failure(
-                    exitStatus: 75,
-                    stderr: "\(validPrefix)😀truncated",
-                    stdout: "fallback"
-                )
-            ),
-        ])
-        let installer = makeInstaller(recorder: recorder)
-
-        await assertInstallerError(
-            .installationCommandFailed(exitStatus: 75, diagnostic: validPrefix)
-        ) {
-            try await installer.append(Self.target, password: "one-time-password")
-        }
-    }
-
-    func testAppendPreservesValidUTF8WhenDiagnosticBoundaryIncludesThreeBytesOfScalar() async {
-        let validPrefix = String(repeating: "x", count: 4_093)
-        let recorder = SSHPublicKeyCommandRecorder(results: [
-            .success(
-                .failure(
-                    exitStatus: 76,
-                    stderr: "\(validPrefix)😀truncated",
-                    stdout: "fallback"
-                )
-            ),
-        ])
-        let installer = makeInstaller(recorder: recorder)
-
-        await assertInstallerError(
-            .installationCommandFailed(exitStatus: 76, diagnostic: validPrefix)
-        ) {
-            try await installer.append(Self.target, password: "one-time-password")
         }
     }
 
@@ -547,6 +534,14 @@ private enum SSHPublicKeyLocalizedCommandError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         "The authenticated SSH command failed."
+    }
+}
+
+private struct SSHPublicKeyReflectedCommandError: LocalizedError {
+    let diagnostic: String
+
+    var errorDescription: String? {
+        diagnostic
     }
 }
 

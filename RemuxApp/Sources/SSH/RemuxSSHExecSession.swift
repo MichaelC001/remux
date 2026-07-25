@@ -207,6 +207,7 @@ enum RemuxSSHExecSession {
                 command: command,
                 trace: trace,
                 lifetime: lifetime,
+                closeOnRemoteEOFAndExitStatus: false,
                 onData: onData,
                 onFinish: onFinish
             )
@@ -236,6 +237,7 @@ enum RemuxSSHExecSession {
         command: String,
         trace: RemuxTransportStartupTrace,
         lifetime: RemuxSSHExecLifetimeOwner,
+        closeOnRemoteEOFAndExitStatus: Bool,
         onData: @escaping @Sendable (SSHChannelData.DataType, Data) -> Void,
         onFinish: @escaping @Sendable (Int?, Error?) -> Void
     ) async throws -> RemuxSSHExecConnection {
@@ -248,6 +250,7 @@ enum RemuxSSHExecSession {
                 }
             )
             let handler = RemuxSSHExecChannelHandler(
+                closeOnRemoteEOFAndExitStatus: closeOnRemoteEOFAndExitStatus,
                 onData: onData,
                 onFinish: onFinish
             )
@@ -292,6 +295,7 @@ enum RemuxSSHExecSession {
                     command: command,
                     trace: trace,
                     lifetime: lifetime,
+                    closeOnRemoteEOFAndExitStatus: true,
                     onData: { type, data in
                         collector.receive(type: type, data: data)
                     },
@@ -458,15 +462,19 @@ final class RemuxSSHExecChannelHandler: ChannelInboundHandler, @unchecked Sendab
 
     private let onData: @Sendable (SSHChannelData.DataType, Data) -> Void
     private let onFinish: @Sendable (Int?, Error?) -> Void
+    private let closeOnRemoteEOFAndExitStatus: Bool
     private let lock = NIOLock()
     private var pendingExecReplies = 0
     private var exitStatus: Int?
+    private var didReceiveRemoteEOF = false
     private var didFinish = false
 
     init(
+        closeOnRemoteEOFAndExitStatus: Bool = true,
         onData: @escaping @Sendable (SSHChannelData.DataType, Data) -> Void,
         onFinish: @escaping @Sendable (Int?, Error?) -> Void
     ) {
+        self.closeOnRemoteEOFAndExitStatus = closeOnRemoteEOFAndExitStatus
         self.onData = onData
         self.onFinish = onFinish
     }
@@ -489,9 +497,24 @@ final class RemuxSSHExecChannelHandler: ChannelInboundHandler, @unchecked Sendab
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
         switch event {
         case let status as SSHChannelRequestEvent.ExitStatus:
-            lock.withLock {
+            let completedExitStatus = lock.withLock { () -> Int? in
                 exitStatus = Int(status.exitStatus)
+                return takeFiniteCompletionIfReadyLocked()
             }
+            completeFiniteCommandIfReady(
+                exitStatus: completedExitStatus,
+                context: context
+            )
+        case ChannelEvent.inputClosed:
+            let completedExitStatus = lock.withLock { () -> Int? in
+                didReceiveRemoteEOF = true
+                return takeFiniteCompletionIfReadyLocked()
+            }
+            context.fireUserInboundEventTriggered(event)
+            completeFiniteCommandIfReady(
+                exitStatus: completedExitStatus,
+                context: context
+            )
         case is ChannelSuccessEvent:
             guard consumeExpectedExecReply() else {
                 context.fireUserInboundEventTriggered(event)
@@ -542,6 +565,26 @@ final class RemuxSSHExecChannelHandler: ChannelInboundHandler, @unchecked Sendab
         }
         guard let completion else { return }
         onFinish(completion.0, completion.1)
+    }
+
+    private func takeFiniteCompletionIfReadyLocked() -> Int? {
+        guard closeOnRemoteEOFAndExitStatus,
+              didReceiveRemoteEOF,
+              let exitStatus,
+              !didFinish else {
+            return nil
+        }
+        didFinish = true
+        return exitStatus
+    }
+
+    private func completeFiniteCommandIfReady(
+        exitStatus: Int?,
+        context: ChannelHandlerContext
+    ) {
+        guard let exitStatus else { return }
+        onFinish(exitStatus, nil)
+        context.close(promise: nil)
     }
 
     private func consumeExpectedExecReply() -> Bool {

@@ -118,7 +118,8 @@ The install operation:
 2. requests a fixed POSIX shell installer;
 3. sends exactly one public-key line plus a newline through channel stdin;
 4. sends SSH EOF after the bytes have flushed;
-5. waits for command completion and an explicit zero exit status; and
+5. completes after both remote input EOF and an explicit zero exit status,
+   regardless of their order; and
 6. closes the session and authenticated root immediately.
 
 The UI remains cancellable. Cancellation closes any active channel and root,
@@ -148,7 +149,13 @@ life of the setup flow. The validator and eventual saved server use that same
 ID, so a host key accepted during preflight or installation remains the
 trusted identity when the user connects.
 
-For an existing server, installation uses its existing ID and trust record.
+For an existing server, installation uses its existing ID. Edit Server
+snapshots that ID's exact trust record, including the absence of a record,
+before setup begins. Explicitly accepted trust is persisted immediately so an
+interrupted phase can retry. Canceling Edit Server restores the snapshot;
+successfully saving the edit keeps the accepted trust. New Workspace and Edit
+Workspace cancellation preserve any accepted trust.
+
 For a new server, canceling setup removes any provisional trust record created
 by this flow. An abrupt process termination can leave an unreachable trust
 record, but the random provisional ID is never reused and therefore cannot
@@ -185,14 +192,17 @@ The generic primitive owns:
 - streaming stdout and stderr to callbacks;
 - recording the remote exit status;
 - writing optional stdin and sending EOF;
-- finishing exactly once on exit, close, cancellation, or error; and
+- finishing exactly once on terminal completion, close, cancellation, or
+  error; and
 - returning structured completion rather than parsing log output.
 
 The tmux transport will configure this primitive for streaming output and
 retain its existing first-output timeout, viewport tracing, diagnostics, and
 long-lived lifecycle. The public-key installer will configure the same
-primitive as a finite command, buffer only bounded diagnostic output, and
-require an observed zero exit status.
+primitive as a finite command. A finite command completes and closes its child
+channel once remote input EOF and an exit status have both arrived, without
+waiting for the peer to close the channel. It buffers bounded output while
+running and requires an observed zero exit status.
 
 This refactoring must preserve the existing tmux transport behavior and tests.
 The installer must not reuse the tmux transport abstraction or route command
@@ -260,8 +270,10 @@ assert the generated command's full wording or ordering.
   is never persisted.
 - Neither the password nor public-key stdin is included in trace previews,
   errors, diagnostics, or logs.
-- Bounded stdout and stderr may be retained for actionable remote-command
-  errors, subject to the same redaction rule.
+- The password-authenticated append operation never places remote stdout or
+  stderr in errors, model or UI state, logs, traces, or persistence. Its
+  command failures retain only safe typed categories and an exit status when
+  one was observed.
 - The authenticated password root and all child channels close immediately
   after the finite operation.
 
@@ -314,8 +326,9 @@ Use embedded NIO channels or the existing SSH channel test harness to verify:
 - distinct stdout and stderr routing;
 - stdin delivery followed by EOF;
 - zero, nonzero, and missing exit statuses;
+- exit-status then EOF and EOF then exit-status without a remote full close;
 - remote close, local cancellation, and write failure; and
-- exactly-once completion.
+- exactly-once completion and child-channel close.
 
 Run the existing tmux transport suite unchanged after generalizing the
 handler.
@@ -330,6 +343,8 @@ Use fake SSH-operation dependencies to verify:
 - network and host-trust failures do not request a password;
 - password success runs installation and then key verification;
 - password or remote-command failure does not run verification;
+- append output that reflects key, password, private-key, or passphrase
+  sentinels is absent from returned errors and retained presentation state;
 - verification failure returns the specific partial-success error; and
 - every path closes its dedicated connection.
 
@@ -341,6 +356,10 @@ Verify:
 - an existing-server draft keeps the saved ID;
 - accepting host trust retries the interrupted phase;
 - canceling new-server setup removes provisional trust;
+- canceling Edit Server restores the exact prior trust identity or its
+  absence;
+- saving Edit Server retains accepted updated trust;
+- canceling New Workspace or Edit Workspace preserves accepted trust;
 - the action's enablement depends only on valid endpoint and key inputs;
 - an already-installed key never presents the password sheet;
 - password state is cleared after completion and cancellation; and
