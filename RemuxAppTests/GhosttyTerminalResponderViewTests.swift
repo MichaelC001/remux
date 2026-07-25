@@ -13,8 +13,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             activationToken: 1,
             sendText: { _ in true },
             sendPaste: { _ in true },
-            sendKeyEvent: { _ in true },
-            onTrackpadStateChange: { _ in }
+            sendKeyEvent: { _ in true }
         )
 
         XCTAssertTrue(view.hasText)
@@ -34,8 +33,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             sendKeyEvent: {
                 receivedEvents.append($0)
                 return true
-            },
-            onTrackpadStateChange: { _ in }
+            }
         )
 
         view.deleteBackward()
@@ -57,8 +55,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             sendKeyEvent: {
                 receivedEvents.append($0)
                 return true
-            },
-            onTrackpadStateChange: { _ in }
+            }
         )
 
         view.deleteBackward()
@@ -80,8 +77,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
                 return true
             },
             sendPaste: { _ in true },
-            sendKeyEvent: { _ in true },
-            onTrackpadStateChange: { _ in }
+            sendKeyEvent: { _ in true }
         )
 
         view.insertText("hello")
@@ -103,8 +99,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
                 return true
             },
             sendPaste: { _ in true },
-            sendKeyEvent: { _ in true },
-            onTrackpadStateChange: { _ in }
+            sendKeyEvent: { _ in true }
         )
 
         view.replace(view.selectedTextRange!, withText: "hello")
@@ -126,8 +121,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
                 return true
             },
             sendPaste: { _ in true },
-            sendKeyEvent: { _ in true },
-            onTrackpadStateChange: { _ in }
+            sendKeyEvent: { _ in true }
         )
 
         view.insertText("ignored")
@@ -149,8 +143,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
                 return true
             },
             sendPaste: { _ in true },
-            sendKeyEvent: { _ in true },
-            onTrackpadStateChange: { _ in }
+            sendKeyEvent: { _ in true }
         )
 
         view.replace(view.selectedTextRange!, withText: "ignored")
@@ -176,8 +169,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
                 pastedText.append($0)
                 return true
             },
-            sendKeyEvent: { _ in true },
-            onTrackpadStateChange: { _ in }
+            sendKeyEvent: { _ in true }
         )
 
         UIPasteboard.general.string = "first\nsecond"
@@ -201,8 +193,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
                 pastedText.append($0)
                 return true
             },
-            sendKeyEvent: { _ in true },
-            onTrackpadStateChange: { _ in }
+            sendKeyEvent: { _ in true }
         )
 
         UIPasteboard.general.string = ""
@@ -537,8 +528,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             activationToken: 7,
             sendText: { _ in true },
             sendPaste: { _ in true },
-            sendKeyEvent: { _ in true },
-            onTrackpadStateChange: { _ in }
+            sendKeyEvent: { _ in true }
         )
         view.update(
             isEnabled: true,
@@ -546,8 +536,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             activationToken: 7,
             sendText: { _ in true },
             sendPaste: { _ in true },
-            sendKeyEvent: { _ in true },
-            onTrackpadStateChange: { _ in }
+            sendKeyEvent: { _ in true }
         )
 
         let becameFirstResponder = await waitUntil { view.isFirstResponder }
@@ -574,8 +563,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             activationToken: 3,
             sendText: { _ in true },
             sendPaste: { _ in true },
-            sendKeyEvent: { _ in true },
-            onTrackpadStateChange: { _ in }
+            sendKeyEvent: { _ in true }
         )
 
         XCTAssertTrue(view.canBecomeFirstResponder)
@@ -587,8 +575,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             activationToken: 3,
             sendText: { _ in true },
             sendPaste: { _ in true },
-            sendKeyEvent: { _ in true },
-            onTrackpadStateChange: { _ in }
+            sendKeyEvent: { _ in true }
         )
 
         XCTAssertFalse(view.isFirstResponder)
@@ -618,7 +605,6 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             sendText: { _ in true },
             sendPaste: { _ in true },
             sendKeyEvent: { _ in true },
-            onTrackpadStateChange: { _ in },
             onFirstResponderChange: { reportedStates.append($0) }
         )
 
@@ -652,8 +638,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             activationToken: 3,
             sendText: { _ in true },
             sendPaste: { _ in true },
-            sendKeyEvent: { _ in true },
-            onTrackpadStateChange: { _ in }
+            sendKeyEvent: { _ in true }
         )
         let initiallyBecameFirstResponder = await waitUntil { view.isFirstResponder }
         XCTAssertTrue(initiallyBecameFirstResponder)
@@ -668,8 +653,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             activationToken: 3,
             sendText: { _ in true },
             sendPaste: { _ in true },
-            sendKeyEvent: { _ in true },
-            onTrackpadStateChange: { _ in }
+            sendKeyEvent: { _ in true }
         )
 
         let recoveredFirstResponder = await waitUntil { view.isFirstResponder }
@@ -696,8 +680,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             activationToken: 3,
             sendText: { _ in true },
             sendPaste: { _ in true },
-            sendKeyEvent: { _ in true },
-            onTrackpadStateChange: { _ in }
+            sendKeyEvent: { _ in true }
         )
         let initiallyBecameFirstResponder = await waitUntil { view.isFirstResponder }
         XCTAssertTrue(initiallyBecameFirstResponder)
@@ -708,8 +691,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             activationToken: 3,
             sendText: { _ in true },
             sendPaste: { _ in true },
-            sendKeyEvent: { _ in true },
-            onTrackpadStateChange: { _ in }
+            sendKeyEvent: { _ in true }
         )
 
         XCTAssertTrue(view.isFirstResponder)
@@ -740,8 +722,7 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             activationToken: 1,
             sendText: { _ in true },
             sendPaste: { _ in true },
-            sendKeyEvent: { _ in true },
-            onTrackpadStateChange: { _ in }
+            sendKeyEvent: { _ in true }
         )
 
         XCTAssertFalse(
@@ -787,144 +768,10 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
     }
 
     @MainActor
-    func testFloatingCursorSweepEmitsArrowRightKeyEvents() {
+    func testFloatingCursorCrossingFirstTierEmitsArrowAndPublishesTier() {
         let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
         var receivedEvents: [GhosttySurfaceKeyEvent] = []
-        var receivedHUDStates: [GhosttyKeyboardCursorTrackpad.HUDState] = []
-
-        view.update(
-            isEnabled: true,
-            wantsFirstResponder: true,
-            activationToken: 1,
-            sendText: { _ in true },
-            sendPaste: { _ in true },
-            sendKeyEvent: { event in
-                receivedEvents.append(event)
-                return true
-            },
-            onTrackpadStateChange: { state in
-                receivedHUDStates.append(state)
-            }
-        )
-
-        view.beginFloatingCursor(at: .init(x: 0, y: 0))
-        // Cross the lock deadband so the trackpad commits to the horizontal axis.
-        view.updateFloatingCursor(at: .init(x: 18, y: 0))
-        // After lock, the next horizontal travel above the per-step threshold
-        // should produce one or more arrow-right key events.
-        view.updateFloatingCursor(at: .init(x: 38, y: 0))
-        view.endFloatingCursor()
-
-        XCTAssertFalse(receivedEvents.isEmpty)
-        XCTAssertTrue(receivedEvents.allSatisfy { $0.keyCode == .arrowRight })
-        XCTAssertEqual(receivedHUDStates.first?.isVisible, true)
-        XCTAssertEqual(receivedHUDStates.last, .hidden)
-    }
-
-    @MainActor
-    func testResignFirstResponderClearsTrackpadHUDDuringActiveGesture() async {
-        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
-        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
-        window.rootViewController = UIViewController()
-        window.rootViewController?.view.addSubview(view)
-        window.makeKeyAndVisible()
-        defer {
-            view.removeFromSuperview()
-            window.isHidden = true
-            window.rootViewController = nil
-        }
-
-        var receivedHUDStates: [GhosttyKeyboardCursorTrackpad.HUDState] = []
-        view.update(
-            isEnabled: true,
-            wantsFirstResponder: true,
-            activationToken: 1,
-            sendText: { _ in true },
-            sendPaste: { _ in true },
-            sendKeyEvent: { _ in true },
-            onTrackpadStateChange: { state in
-                receivedHUDStates.append(state)
-            }
-        )
-        _ = await waitUntil { view.isFirstResponder }
-
-        view.beginFloatingCursor(at: .init(x: 0, y: 0))
-        view.updateFloatingCursor(at: .init(x: 18, y: 0))
-        XCTAssertTrue(receivedHUDStates.contains { $0.isVisible })
-
-        _ = view.resignFirstResponder()
-
-        XCTAssertEqual(receivedHUDStates.last, .hidden)
-    }
-
-    @MainActor
-    func testRemovingResponderFromWindowDuringTrackpadGestureClearsHUD() {
-        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
-        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
-        window.rootViewController = UIViewController()
-        window.rootViewController?.view.addSubview(view)
-        window.makeKeyAndVisible()
-        defer {
-            window.isHidden = true
-            window.rootViewController = nil
-        }
-
-        var receivedHUDStates: [GhosttyKeyboardCursorTrackpad.HUDState] = []
-        view.update(
-            isEnabled: true,
-            wantsFirstResponder: true,
-            activationToken: 1,
-            sendText: { _ in true },
-            sendPaste: { _ in true },
-            sendKeyEvent: { _ in true },
-            onTrackpadStateChange: { state in
-                receivedHUDStates.append(state)
-            }
-        )
-
-        view.beginFloatingCursor(at: .init(x: 0, y: 0))
-        view.updateFloatingCursor(at: .init(x: 18, y: 0))
-        XCTAssertTrue(receivedHUDStates.contains { $0.isVisible })
-
-        // SwiftUI representable removal flows through removeFromSuperview ->
-        // didMoveToWindow with window == nil. The HUD must reset to hidden so
-        // the parent SwiftUI state doesn't strand.
-        view.removeFromSuperview()
-
-        XCTAssertEqual(receivedHUDStates.last, .hidden)
-    }
-
-    @MainActor
-    func testDismantleRepresentableDuringTrackpadGestureClearsHUD() {
-        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
-        var receivedHUDStates: [GhosttyKeyboardCursorTrackpad.HUDState] = []
-
-        view.update(
-            isEnabled: true,
-            wantsFirstResponder: true,
-            activationToken: 1,
-            sendText: { _ in true },
-            sendPaste: { _ in true },
-            sendKeyEvent: { _ in true },
-            onTrackpadStateChange: { state in
-                receivedHUDStates.append(state)
-            }
-        )
-
-        view.beginFloatingCursor(at: .init(x: 0, y: 0))
-        view.updateFloatingCursor(at: .init(x: 18, y: 0))
-
-        GhosttyTerminalResponderRepresentable.dismantleUIView(view, coordinator: ())
-
-        XCTAssertEqual(receivedHUDStates.last, .hidden)
-    }
-
-    @MainActor
-    func testDisablingResponderDuringTrackpadGestureClearsHUD() {
-        let driver = GhosttyKeyboardCursorTrackpadDriver()
-        let view = GhosttyTerminalResponderUIView(trackpadDriver: driver)
-        var receivedHUDStates: [GhosttyKeyboardCursorTrackpad.HUDState] = []
-        var receivedEvents: [GhosttySurfaceKeyEvent] = []
+        var feedback: [GhosttyKeyboardCursorTrackpad.FeedbackState] = []
 
         view.update(
             isEnabled: true,
@@ -936,15 +783,87 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
                 receivedEvents.append($0)
                 return true
             },
-            onTrackpadStateChange: { state in
-                receivedHUDStates.append(state)
-            }
+            onTrackpadFeedbackChange: { feedback.append($0) }
         )
 
-        view.beginFloatingCursor(at: .init(x: 0, y: 0))
-        view.updateFloatingCursor(at: .init(x: 18, y: 0))
-        view.updateFloatingCursor(at: .init(x: 28, y: 0))
-        XCTAssertTrue(driver.isRepeatScheduled)
+        view.beginFloatingCursor(at: .zero)
+        view.updateFloatingCursor(at: .init(x: 36, y: 0))
+        view.endFloatingCursor()
+
+        XCTAssertEqual(receivedEvents.map(\.keyCode), [.arrowRight])
+        XCTAssertEqual(feedback, [
+            .active,
+            .init(
+                isVisible: true,
+                direction: .right,
+                committedTier: .one,
+                armingTier: nil,
+                armingProgress: 0
+            ),
+            .hidden,
+        ])
+    }
+
+    @MainActor
+    func testFloatingCursorPartialArmingSendsNothing() {
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: GhosttyKeyboardCursorTrackpadDriver())
+        var receivedEvents: [GhosttySurfaceKeyEvent] = []
+        var feedback: [GhosttyKeyboardCursorTrackpad.FeedbackState] = []
+
+        view.update(
+            isEnabled: true,
+            wantsFirstResponder: true,
+            activationToken: 1,
+            sendText: { _ in true },
+            sendPaste: { _ in true },
+            sendKeyEvent: {
+                receivedEvents.append($0)
+                return true
+            },
+            onTrackpadFeedbackChange: { feedback.append($0) }
+        )
+
+        view.beginFloatingCursor(at: .zero)
+        view.updateFloatingCursor(at: .init(x: 22, y: 0))
+        view.endFloatingCursor()
+
+        XCTAssertTrue(receivedEvents.isEmpty)
+        XCTAssertEqual(feedback, [
+            .active,
+            .init(
+                isVisible: true,
+                direction: .right,
+                committedTier: .neutral,
+                armingTier: .one,
+                armingProgress: 0.5
+            ),
+            .hidden,
+        ])
+    }
+
+    @MainActor
+    func testDisablingResponderCancelsActiveTrackpadGesture() {
+        let driver = GhosttyKeyboardCursorTrackpadDriver()
+        let view = GhosttyTerminalResponderUIView(trackpadDriver: driver)
+        var receivedEvents: [GhosttySurfaceKeyEvent] = []
+        var feedback: [GhosttyKeyboardCursorTrackpad.FeedbackState] = []
+
+        view.update(
+            isEnabled: true,
+            wantsFirstResponder: true,
+            activationToken: 1,
+            sendText: { _ in true },
+            sendPaste: { _ in true },
+            sendKeyEvent: {
+                receivedEvents.append($0)
+                return true
+            },
+            onTrackpadFeedbackChange: { feedback.append($0) }
+        )
+
+        view.beginFloatingCursor(at: .zero)
+        view.updateFloatingCursor(at: .init(x: 36, y: 0))
+        let eventCountBeforeDisable = receivedEvents.count
 
         view.update(
             isEnabled: false,
@@ -953,15 +872,11 @@ final class GhosttyTerminalResponderViewTests: XCTestCase {
             sendText: { _ in true },
             sendPaste: { _ in true },
             sendKeyEvent: { _ in true },
-            onTrackpadStateChange: { state in
-                receivedHUDStates.append(state)
-            }
+            onTrackpadFeedbackChange: { feedback.append($0) }
         )
 
-        XCTAssertEqual(receivedHUDStates.last, .hidden)
-        XCTAssertFalse(driver.isRepeatScheduled)
-        let eventCountAfterDisable = receivedEvents.count
+        XCTAssertEqual(feedback.last, .hidden)
         driver.repeatTick(at: .greatestFiniteMagnitude)
-        XCTAssertEqual(receivedEvents.count, eventCountAfterDisable)
+        XCTAssertEqual(receivedEvents.count, eventCountBeforeDisable)
     }
 }
