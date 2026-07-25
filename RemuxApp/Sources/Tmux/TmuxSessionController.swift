@@ -1,6 +1,14 @@
 import Foundation
 import GhosttyKit
 
+private func decodeTmuxString(_ bytes: ghostty_tmux_bytes_s) -> String {
+    guard let pointer = bytes.ptr, bytes.len > 0 else { return "" }
+    return String(
+        decoding: UnsafeBufferPointer(start: pointer, count: bytes.len),
+        as: UTF8.self
+    )
+}
+
 /// Queue-confined host for Ghostty's sans-I/O tmux control client.
 ///
 /// The SSH transport owns the wire. This type owns protocol parsing, copied
@@ -29,6 +37,7 @@ final class TmuxSessionController: @unchecked Sendable {
 
     struct WindowInfo: Equatable, Identifiable, Sendable {
         let id: TmuxWindowID
+        let name: String
         let active: Bool
         let zoomed: Bool
         let width: UInt32
@@ -394,7 +403,7 @@ final class TmuxSessionController: @unchecked Sendable {
             deferredNavigationIntent = nil
             successfulMutationRequiredAfterRevision = nil
             let exit = action.value.exit
-            let detail = Self.copyString(exit.detail)
+            let detail = decodeTmuxString(exit.detail)
             switch exit.reason {
             case GHOSTTY_TMUX_EXIT_UNSUPPORTED_VERSION:
                 publishState(.closed(.unsupportedVersion(detail)))
@@ -414,7 +423,7 @@ final class TmuxSessionController: @unchecked Sendable {
             handleCommandCompletion(action.value.command)
 
         case GHOSTTY_TMUX_ACTION_INPUT_FAILED:
-            _ = Self.copyString(action.value.input_failure)
+            _ = decodeTmuxString(action.value.input_failure)
             DispatchQueue.main.async { self.callbacks.onRequestFailed(.sendInput) }
 
         default:
@@ -442,7 +451,7 @@ final class TmuxSessionController: @unchecked Sendable {
         }
 
         let snapshot = TopologySnapshot(
-            sessionName: Self.copyString(action.session_name),
+            sessionName: decodeTmuxString(action.session_name),
             windows: accumulator.windows,
             panes: accumulator.panes,
             activeWindowID: accumulator.windows.first(where: \.active)?.id
@@ -581,7 +590,7 @@ final class TmuxSessionController: @unchecked Sendable {
         case GHOSTTY_TMUX_COMMAND_SKIPPED:
             break
         case GHOSTTY_TMUX_COMMAND_ERROR_BLOCK:
-            _ = Self.copyString(completion.body)
+            _ = decodeTmuxString(completion.body)
             DispatchQueue.main.async { self.callbacks.onRequestFailed(request) }
         default:
             DispatchQueue.main.async { self.callbacks.onRequestFailed(request) }
@@ -1317,7 +1326,7 @@ final class TmuxSessionController: @unchecked Sendable {
     ) -> Result<String, PaneCurrentDirectoryError> {
         switch completion.status {
         case GHOSTTY_TMUX_COMMAND_SUCCESS:
-            let path = Self.copyString(completion.body)
+            let path = decodeTmuxString(completion.body)
                 .trimmingCharacters(in: .newlines)
             guard path.hasPrefix("/"),
                   !path.contains("\0"),
@@ -1328,7 +1337,7 @@ final class TmuxSessionController: @unchecked Sendable {
         case GHOSTTY_TMUX_COMMAND_SKIPPED:
             return .failure(.commandSkipped)
         case GHOSTTY_TMUX_COMMAND_ERROR_BLOCK:
-            let detail = Self.copyString(completion.body)
+            let detail = decodeTmuxString(completion.body)
                 .trimmingCharacters(in: .newlines)
             return .failure(.commandFailed(detail))
         default:
@@ -1366,13 +1375,6 @@ final class TmuxSessionController: @unchecked Sendable {
         return topology.windows.first(where: { $0.id == windowID })?.activePaneID
     }
 
-    private static func copyString(_ bytes: ghostty_tmux_bytes_s) -> String {
-        guard let pointer = bytes.ptr, bytes.len > 0 else { return "" }
-        return String(
-            decoding: UnsafeBufferPointer(start: pointer, count: bytes.len),
-            as: UTF8.self
-        )
-    }
 }
 
 private struct TopologyAccumulator {
@@ -1385,6 +1387,7 @@ private struct TopologyAccumulator {
             let window = record.value.window
             windows.append(TmuxSessionController.WindowInfo(
                 id: TmuxWindowID(window.id),
+                name: decodeTmuxString(window.name),
                 active: window.active,
                 zoomed: window.zoomed,
                 width: Self.uint32(window.width),

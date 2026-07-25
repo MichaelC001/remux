@@ -45,10 +45,12 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         id: TmuxWindowID,
         active: Bool,
         paneID: TmuxPaneID?,
+        name: String = "",
         zoomed: Bool = true
     ) -> TmuxSessionController.WindowInfo {
         TmuxSessionController.WindowInfo(
             id: id,
+            name: name,
             active: active,
             zoomed: zoomed,
             width: 80,

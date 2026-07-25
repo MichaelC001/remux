@@ -155,6 +155,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
                 .map { identities.surfaceID(for: $0.id) }
             return GhosttyTopLevelSurface(
                 id: identities.surfaceID(for: window.id),
+                name: window.name,
                 leafIDs: paneIDs,
                 focusedLeafID: window.activePaneID.map { identities.surfaceID(for: $0) }
             )

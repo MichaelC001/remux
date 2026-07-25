@@ -885,7 +885,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             [
                 "display-message -p '#{version}'\n"
                     + "refresh-client -C 83x44\n"
-                    + "list-windows -F '#{session_id} #{window_id} #{window_active} #{pane_id} #{window_width} #{window_height} #{window_layout} #{window_visible_layout}'\n"
+                    + "list-windows -F '#{session_id} #{window_id} #{window_active} #{pane_id} #{window_width} #{window_height} #{window_layout} #{window_visible_layout} #{window_name}'\n"
             ]
         )
         controller.pump(Data(
