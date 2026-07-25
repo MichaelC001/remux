@@ -1,4 +1,7 @@
 enum SSHTmuxControlCommandBuilder {
+    static let tmuxNotFoundMarker = "remux: tmux executable not found"
+    static let tmuxNotExecutableMarker = "remux: tmux executable cannot be executed"
+
     private static let fallbackRemotePath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
     static func attachOrCreateControlSessionCommand(
@@ -6,19 +9,36 @@ enum SSHTmuxControlCommandBuilder {
         sessionName: String,
         initialViewport: TmuxControlViewport
     ) -> String {
-        let tmux = shellEscape(tmuxExecutable)
-        let session = shellEscape(sessionName)
-
-        // Single -C: pure control mode without the DCS 1000p envelope that
-        // -CC emits for in-terminal clients (and without -CC's hard tty
-        // requirement). The session channel is a bare exec stream feeding
-        // Ghostty's tmux session parser directly.
-        return """
-        export PATH="${PATH:+$PATH:}\(fallbackRemotePath)" TERM=xterm-256color; exec \(tmux) -C new-session -A -s \(session) -x \(initialViewport.columns) -y \(initialViewport.rows)
-        """
+        // The SSH login shell only parses this wrapper. /bin/sh owns the PATH
+        // expression so fish and csh do not need to understand POSIX syntax.
+        [
+            "exec /bin/sh -c '\(launchScript)' remux",
+            octalEncodedArgument(tmuxExecutable),
+            octalEncodedArgument(sessionName),
+            "\(initialViewport.columns)",
+            "\(initialViewport.rows)",
+        ].joined(separator: " ")
     }
 
-    private static func shellEscape(_ value: String) -> String {
-        "'\(value.replacingOccurrences(of: "'", with: "'\"'\"'"))'"
+    private static let launchScript = [
+        #"PATH="${PATH:+$PATH:}\#(fallbackRemotePath)""#,
+        "export PATH",
+        "TERM=xterm-256color",
+        "export TERM",
+        #"tmux=$(printf %b "$1")"#,
+        #"session=$(printf %b "$2")"#,
+        #"resolved=$(command -v "$tmux" 2> /dev/null)"#,
+        #"if [ -x "$resolved" ]; then exec "$resolved" -C new-session -A -s "$session" -x "$3" -y "$4"; fi"#,
+        #"if [ -e "$tmux" ]; then echo "\#(tmuxNotExecutableMarker): $tmux" >&2; exit 126; fi"#,
+        #"echo "\#(tmuxNotFoundMarker): $tmux" >&2"#,
+        "exit 127",
+    ].joined(separator: "; ")
+
+    private static func octalEncodedArgument(_ value: String) -> String {
+        let bytes = value.utf8.map { byte in
+            let digits = String(byte, radix: 8)
+            return "\\0" + String(repeating: "0", count: 3 - digits.count) + digits
+        }
+        return "'\(bytes.joined())'"
     }
 }
