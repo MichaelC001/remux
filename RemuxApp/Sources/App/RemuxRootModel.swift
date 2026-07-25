@@ -189,6 +189,7 @@ final class RemuxRootModel: ObservableObject {
 #endif
 
             terminalSettings = try await dependencies.settingsRepository.loadSettings()
+            dependencies.applyHostKeyPolicy(allowInsecureRSA: terminalSettings.allowInsecureRSAHostKeys)
             library = try await dependencies.profileRepository.loadSnapshot()
             state = .library
             scheduleLibrarySSHPrewarm(snapshot: library)
@@ -200,6 +201,7 @@ final class RemuxRootModel: ObservableObject {
     func showLibrary() async {
         do {
             terminalSettings = try await dependencies.settingsRepository.loadSettings()
+            dependencies.applyHostKeyPolicy(allowInsecureRSA: terminalSettings.allowInsecureRSAHostKeys)
             library = try await dependencies.profileRepository.loadSnapshot()
             state = .library
             scheduleLibrarySSHPrewarm(snapshot: library)
@@ -784,6 +786,7 @@ final class RemuxRootModel: ObservableObject {
             var updated = terminalSettings
             mutation(&updated)
             terminalSettings = updated
+            dependencies.applyHostKeyPolicy(allowInsecureRSA: updated.allowInsecureRSAHostKeys)
             try applyTerminalSettingsToActiveSessions(updated)
             try await dependencies.settingsRepository.saveSettings(updated)
         } catch {

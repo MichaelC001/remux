@@ -1,4 +1,5 @@
 @preconcurrency import Citadel
+@preconcurrency import Crypto
 import Foundation
 import NIO
 import NIOConcurrencyHelpers
@@ -1134,6 +1135,24 @@ private extension RemuxSSHPreparedRoot {
                 trace: trace
             )
         }
+    }
+}
+
+/// Registers RSA (`ssh-rsa`) host-key verification with NIOSSH so servers that
+/// present only an RSA host key can negotiate. `Insecure.RSA` is Citadel's
+/// namespace label for the type, not a comment on this usage: it verifies the
+/// server's host key via BoringSSL, is never used as our own key material, and
+/// host identity is pinned separately on first use (`TrustedHostStore`).
+enum RemuxSSHAlgorithmRegistration {
+    private static let registerOnce: Void = {
+        NIOSSHAlgorithms.register(
+            publicKey: Insecure.RSA.PublicKey.self,
+            signature: Insecure.RSA.Signature.self
+        )
+    }()
+
+    static func ensureRegistered() {
+        _ = registerOnce
     }
 }
 
