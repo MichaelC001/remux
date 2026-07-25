@@ -130,7 +130,8 @@ discards the password reference, and returns to the selected-key view.
 After a zero install exit status, Remux opens another fresh, dedicated
 connection with the private key and runs `exit 0`.
 
-- On success, show **Installed on host** and dismiss the password sheet.
+- On success, dismiss the install sheet and show **Installed on host** in the
+  selected-key view.
 - If key authentication is still rejected, report **The public key was
   written, but the server did not accept it**. Do not attempt an automatic
   rollback because Remux cannot safely distinguish the newly appended line
@@ -139,6 +140,26 @@ connection with the private key and runs `exit 0`.
 
 The normal **Connect** action remains separate. It saves the profile and
 opens the tmux workspace using the selected key as it does today.
+
+### Success presentation
+
+Both successful terminal outcomes return the user to the selected-key view
+instead of leaving a completed install sheet open:
+
+- a successful key-first preflight shows **Already installed**;
+- a successful password installation and key verification shows
+  **Installed on host**; and
+- the completed sheet is dismissed, so it never presents **Cancel** as the
+  only action after success.
+
+The selected-key view shows the result inline with **Install on Host**, using
+a green success indicator. The action remains available so the user can run
+the key-first check again.
+
+The inline result belongs to the exact installation target: host, port,
+username, and selected public key. It disappears if any of those values
+change or when the setup view ends. Failures and host-trust prompts remain in
+the install sheet.
 
 ## Host-Key Trust
 
@@ -379,7 +400,11 @@ Verify:
   trust snapshot;
 - canceling New Workspace or Edit Workspace preserves accepted trust;
 - the action's enablement depends only on valid endpoint and key inputs;
-- an already-installed key never presents the password sheet;
+- an already-installed key never presents the password field;
+- both successful terminal outcomes dismiss the install sheet and leave the
+  matching inline result in the selected-key view;
+- changing the host, port, username, or selected public key clears the inline
+  result;
 - password state is cleared after completion and cancellation; and
 - progress, success, and actionable failure states are accessible.
 
