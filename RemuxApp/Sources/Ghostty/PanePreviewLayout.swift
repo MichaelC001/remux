@@ -31,6 +31,7 @@ enum PanePreviewLayout {
     private static let defaultPreviewAspectRatio: CGFloat = 4.0 / 3.0
     private static let tilePadding: CGFloat = 8
     private static let captionHeight: CGFloat = 14
+    private static let windowCaptionHeight: CGFloat = 30
     private static let tileCaptionSpacing: CGFloat = 6
     private static let sheetChromeHeight: CGFloat = 162
     private static let maxSingleTileWidth: CGFloat = 390
@@ -118,7 +119,7 @@ enum PanePreviewLayout {
         )
         let previewWidth = max(1, tileWidth - tilePadding * 2)
         let previewHeight = ceil(previewWidth / defaultPreviewAspectRatio)
-        let tileHeight = previewHeight + tileCaptionSpacing + captionHeight + tilePadding * 2
+        let tileHeight = previewHeight + tileCaptionSpacing + windowCaptionHeight + tilePadding * 2
         let rowCount = Int(ceil(Double(cellCount) / Double(columnCount)))
         let gridHeight = CGFloat(rowCount) * tileHeight +
             CGFloat(max(rowCount - 1, 0)) * windowGridSpacing

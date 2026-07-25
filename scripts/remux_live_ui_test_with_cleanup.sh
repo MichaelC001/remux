@@ -283,6 +283,9 @@ for target in "${only_testing[@]}"; do
     *testLiveSSHTmuxActionCycleWhenConfigured)
       fixture_session="remux-latency-action-${stamp}"
       ;;
+    *testLiveWindowNamesAndRenameWhenConfigured)
+      fixture_session="remux-latency-window-names-${stamp}"
+      ;;
     *testLiveDenseMixedTopologySelectsDeepPaneWhenConfigured)
       fixture_name="dense-mixed"
       fixture_session="remux-latency-dense-mixed-${stamp}"
