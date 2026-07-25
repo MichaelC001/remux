@@ -728,30 +728,21 @@ private struct GhosttyWindowSelectionTile: View {
                 }
 
                 Spacer(minLength: 0)
-
-                if isSelected {
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(chromeStyle.accent)
-                            .frame(width: 6, height: 6)
-
-                        Text("active")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(chromeStyle.accent)
-                    }
-                }
             }
 
-            Text(paneCountLabel)
+            if paneCount > 1 {
+                HStack(spacing: 6) {
+                    Text("\(paneCount)")
+                        .monospacedDigit()
+
+                    Text("panes")
+                }
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(GhosttySheetPalette.secondary)
                 .lineLimit(1)
+            }
         }
         .padding(.horizontal, 2)
-    }
-
-    private var paneCountLabel: String {
-        "\(paneCount) \(paneCount == 1 ? "pane" : "panes")"
     }
 
     private var accessibilityLabel: String {
