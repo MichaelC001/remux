@@ -10,7 +10,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
     let sendText: (String) -> Bool
     let sendPaste: (String) -> Bool
     let sendKeyEvent: (GhosttySurfaceKeyEvent) -> Bool
-    let onTrackpadStateChange: (GhosttyKeyboardCursorTrackpad.HUDState) -> Void
+    let onTrackpadFeedbackChange: (GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void
     let onFirstResponderChange: (Bool) -> Void
 
     init(
@@ -22,7 +22,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
         sendText: @escaping (String) -> Bool,
         sendPaste: @escaping (String) -> Bool,
         sendKeyEvent: @escaping (GhosttySurfaceKeyEvent) -> Bool,
-        onTrackpadStateChange: @escaping (GhosttyKeyboardCursorTrackpad.HUDState) -> Void,
+        onTrackpadFeedbackChange: @escaping (GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void,
         onFirstResponderChange: @escaping (Bool) -> Void = { _ in }
     ) {
         self.isEnabled = isEnabled
@@ -33,7 +33,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
         self.sendText = sendText
         self.sendPaste = sendPaste
         self.sendKeyEvent = sendKeyEvent
-        self.onTrackpadStateChange = onTrackpadStateChange
+        self.onTrackpadFeedbackChange = onTrackpadFeedbackChange
         self.onFirstResponderChange = onFirstResponderChange
     }
 
@@ -53,7 +53,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
             sendText: { sendText(GhosttyTerminalInputNormalizer.normalize($0)) },
             sendPaste: sendPaste,
             sendKeyEvent: sendKeyEvent,
-            onTrackpadStateChange: onTrackpadStateChange,
+            onTrackpadFeedbackChange: onTrackpadFeedbackChange,
             onFirstResponderChange: onFirstResponderChange
         )
     }
@@ -61,8 +61,6 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
     static func dismantleUIView(_ uiView: GhosttyTerminalResponderUIView, coordinator: ()) {
         // SwiftUI is dropping this representable while a trackpad gesture may
         // still be live (surface revision, screen transition, disconnect).
-        // Make sure the floating-cursor HUD state observer downstream goes
-        // hidden so it doesn't strand on a parent view.
         uiView.cancelTrackpadGestureIfActive(reason: "dismantle")
     }
 }
@@ -97,9 +95,9 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
     private var sendTextHandler: ((String) -> Bool)?
     private var sendPasteHandler: ((String) -> Bool)?
     private var sendKeyEventHandler: ((GhosttySurfaceKeyEvent) -> Bool)?
+    private var trackpadFeedbackHandler: ((GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void)?
     private var firstResponderStateHandler: ((Bool) -> Void)?
     private var lastReportedFirstResponderState: Bool?
-    var trackpadStateHandler: ((GhosttyKeyboardCursorTrackpad.HUDState) -> Void)?
     private let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     lazy var floatingCursorTokenizer: UITextInputTokenizer =
         UITextInputStringTokenizer(textInput: self)
@@ -123,7 +121,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         sendText: @escaping (String) -> Bool,
         sendPaste: @escaping (String) -> Bool,
         sendKeyEvent: @escaping (GhosttySurfaceKeyEvent) -> Bool,
-        onTrackpadStateChange: @escaping (GhosttyKeyboardCursorTrackpad.HUDState) -> Void,
+        onTrackpadFeedbackChange: @escaping (GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void = { _ in },
         onFirstResponderChange: @escaping (Bool) -> Void = { _ in }
     ) {
         let wasInputEnabled = self.isInputEnabled
@@ -152,7 +150,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
         self.sendTextHandler = sendText
         self.sendPasteHandler = sendPaste
         self.sendKeyEventHandler = sendKeyEvent
-        self.trackpadStateHandler = onTrackpadStateChange
+        self.trackpadFeedbackHandler = onTrackpadFeedbackChange
         self.firstResponderStateHandler = onFirstResponderChange
 
         if isFirstResponder, previousKeyboardAppearance != keyboardAppearance {
@@ -283,8 +281,8 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
             sendKeyEvent: { [weak self] event in
                 self?.sendKeyEventHandler?(event) == true
             },
-            onHUDStateChange: { [weak self] state in
-                self?.trackpadStateHandler?(state)
+            onFeedbackChange: { [weak self] state in
+                self?.trackpadFeedbackHandler?(state)
             }
         )
         GhosttyRuntimeTrace.flowEventIfActive(
@@ -299,14 +297,7 @@ final class GhosttyTerminalResponderUIView: UIView, UIKeyInput, UITextInputTrait
 
     func updateFloatingCursor(at point: CGPoint) {
         guard isInputEnabled else { return }
-        let traceStart = GhosttyRuntimeTrace.nowNanos()
-        guard let outcome = trackpadDriver.update(owner: self, at: point) else { return }
-
-        if !outcome.steps.isEmpty || outcome.didLockAxis {
-            GhosttyRuntimeTrace.perf(
-                "input.trackpad.steps count=\(outcome.steps.count) intensity=\(String(format: "%.2f", Double(outcome.hud.intensity))) lockedAxis=\(outcome.didLockAxis) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: traceStart))"
-            )
-        }
+        _ = trackpadDriver.update(owner: self, at: point)
     }
 
     func endFloatingCursor() {
