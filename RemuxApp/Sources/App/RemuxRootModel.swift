@@ -166,6 +166,10 @@ final class RemuxRootModel: ObservableObject {
     @Published private(set) var activeSessions: [ActiveTerminalSession] = []
     @Published private(set) var isSetupActionInProgress = false
 
+    var setupSessionID: UUID? {
+        currentSetupID
+    }
+
     var activeTerminalScreenEntries: [ActiveTerminalScreenEntry] {
         activeSessions.map { session in
             let model = terminalScreenModel(for: session)
@@ -411,17 +415,21 @@ final class RemuxRootModel: ObservableObject {
     }
 
     func preflightPublicKeyInstallation(
-        _ draft: TmuxConnectionDraft
+        _ draft: TmuxConnectionDraft,
+        setupSessionID: UUID?
     ) async throws -> SSHPublicKeyPreflightOutcome {
-        try await dependencies.publicKeyInstaller.preflight(
+        try requireSetupInstallerAccess(setupSessionID)
+        return try await dependencies.publicKeyInstaller.preflight(
             publicKeyInstallTarget(for: draft)
         )
     }
 
     func appendPublicKey(
         _ draft: TmuxConnectionDraft,
-        password: String
+        password: String,
+        setupSessionID: UUID?
     ) async throws {
+        try requireSetupInstallerAccess(setupSessionID)
         try await dependencies.publicKeyInstaller.append(
             publicKeyInstallTarget(for: draft),
             password: password
@@ -429,15 +437,30 @@ final class RemuxRootModel: ObservableObject {
     }
 
     func verifyPublicKeyInstallation(
-        _ draft: TmuxConnectionDraft
+        _ draft: TmuxConnectionDraft,
+        setupSessionID: UUID?
     ) async throws {
+        try requireSetupInstallerAccess(setupSessionID)
         try await dependencies.publicKeyInstaller.verify(
             publicKeyInstallTarget(for: draft)
         )
     }
 
-    func trustSetupHostKey(_ challenge: SSHHostKeyTrustChallenge) throws {
+    func trustSetupHostKey(
+        _ challenge: SSHHostKeyTrustChallenge,
+        setupSessionID: UUID?
+    ) throws {
+        try requireSetupInstallerAccess(setupSessionID)
         try dependencies.trustedHostStore.trustHostKey(challenge)
+    }
+
+    private func requireSetupInstallerAccess(_ setupSessionID: UUID?) throws {
+        guard activeSetupAction == nil,
+              let setupSessionID,
+              currentSetupID == setupSessionID,
+              case .setup = state else {
+            throw CancellationError()
+        }
     }
 
     func cancelSetup() async {

@@ -152,6 +152,7 @@ private struct RemuxWorkspaceShell: View {
             libraryStack
 
         case .setup(let draft, let validation, let mode):
+            let setupSessionID = model.setupSessionID
             NavigationStack {
                 ConnectionSetupView(
                     draft: draft,
@@ -166,12 +167,31 @@ private struct RemuxWorkspaceShell: View {
                     canInstallPublicKey: { draft in
                         (try? model.publicKeyInstallTarget(for: draft)) != nil
                     },
-                    preflightPublicKeyInstallation: model.preflightPublicKeyInstallation,
-                    appendPublicKey: { draft, password in
-                        try await model.appendPublicKey(draft, password: password)
+                    preflightPublicKeyInstallation: { draft in
+                        try await model.preflightPublicKeyInstallation(
+                            draft,
+                            setupSessionID: setupSessionID
+                        )
                     },
-                    verifyPublicKeyInstallation: model.verifyPublicKeyInstallation,
-                    trustSetupHostKey: model.trustSetupHostKey,
+                    appendPublicKey: { draft, password in
+                        try await model.appendPublicKey(
+                            draft,
+                            password: password,
+                            setupSessionID: setupSessionID
+                        )
+                    },
+                    verifyPublicKeyInstallation: { draft in
+                        try await model.verifyPublicKeyInstallation(
+                            draft,
+                            setupSessionID: setupSessionID
+                        )
+                    },
+                    trustSetupHostKey: { challenge in
+                        try model.trustSetupHostKey(
+                            challenge,
+                            setupSessionID: setupSessionID
+                        )
+                    },
                     onCancel: {
                         Task { await model.cancelSetup() }
                     }
@@ -2062,7 +2082,7 @@ private struct ConnectionSetupView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(!canInstallPublicKey(draft))
+        .disabled(isActionInProgress || !canInstallPublicKey(draft))
         .accessibilityIdentifier("connection.private-key.install")
     }
 

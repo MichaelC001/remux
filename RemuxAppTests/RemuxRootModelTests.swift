@@ -109,7 +109,10 @@ final class RemuxRootModelTests: XCTestCase {
         harness.model.beginNewServer()
         let stateBefore = harness.model.state
 
-        let outcome = try await harness.model.preflightPublicKeyInstallation(draft)
+        let outcome = try await harness.model.preflightPublicKeyInstallation(
+            draft,
+            setupSessionID: harness.model.setupSessionID
+        )
 
         let recordedTargets = await recorder.recordedTargets()
         XCTAssertEqual(outcome, .alreadyInstalled)
@@ -130,7 +133,11 @@ final class RemuxRootModelTests: XCTestCase {
         }
         let stateBefore = harness.model.state
 
-        try await harness.model.appendPublicKey(draft, password: "one-use setup password")
+        try await harness.model.appendPublicKey(
+            draft,
+            password: "one-use setup password",
+            setupSessionID: harness.model.setupSessionID
+        )
 
         let storedCredentials = await harness.credentialStore.credentialsSnapshot()
         let installerCredentials = await recorder.recordedCredentials()
@@ -149,7 +156,10 @@ final class RemuxRootModelTests: XCTestCase {
         harness.model.beginNewServer()
         let stateBefore = harness.model.state
 
-        try await harness.model.verifyPublicKeyInstallation(draft)
+        try await harness.model.verifyPublicKeyInstallation(
+            draft,
+            setupSessionID: harness.model.setupSessionID
+        )
 
         let recordedTargets = await recorder.recordedTargets()
         let recordedCredentials = await recorder.recordedCredentials()
@@ -164,7 +174,10 @@ final class RemuxRootModelTests: XCTestCase {
         let draft = try setupDraft(from: harness.model.state)
         let challenge = makeHostKeyChallenge(serverID: draft.serverID, host: "setup.example.test")
 
-        try harness.model.trustSetupHostKey(challenge)
+        try harness.model.trustSetupHostKey(
+            challenge,
+            setupSessionID: harness.model.setupSessionID
+        )
 
         let identities = try loadTrustedHostIdentities(root: harness.trustedHostRoot)
         XCTAssertEqual(identities.count, 1)
@@ -180,12 +193,73 @@ final class RemuxRootModelTests: XCTestCase {
         harness.model.beginNewServer()
         let draft = try setupDraft(from: harness.model.state)
         try harness.model.trustSetupHostKey(
-            makeHostKeyChallenge(serverID: draft.serverID, host: "setup.example.test")
+            makeHostKeyChallenge(serverID: draft.serverID, host: "setup.example.test"),
+            setupSessionID: harness.model.setupSessionID
         )
 
         await harness.model.cancelSetup()
 
         XCTAssertEqual(harness.model.state, .library)
+        XCTAssertEqual(try loadTrustedHostIdentities(root: harness.trustedHostRoot), [])
+    }
+
+    func testNewServerRejectsCallbacksFromCancelledSetupSession() async throws {
+        let recorder = RootModelPublicKeyInstallerRecorder(
+            results: [.success(RemuxSSHExecResult(exitStatus: 0, stdout: Data(), stderr: Data()))]
+        )
+        let harness = makeHarness(
+            publicKeyInstaller: makePublicKeyInstaller(recorder: recorder)
+        )
+        await harness.model.load()
+        harness.model.beginNewServer()
+        let serverID = try setupDraft(from: harness.model.state).serverID
+        let generatedKey = SSHPrivateKeyInspector.generateEd25519()
+        var draft = TmuxConnectionDraft(serverID: serverID)
+        draft.host = "server.example.test"
+        draft.port = "22"
+        draft.username = "remux"
+        draft.privateKeyPEM = generatedKey.privateKeyPEM
+        harness.model.updateDraft { setupDraft in
+            setupDraft = draft
+        }
+        let cancelledSetupSessionID = harness.model.setupSessionID
+        try harness.model.trustSetupHostKey(
+            makeHostKeyChallenge(
+                serverID: draft.serverID,
+                host: draft.host
+            ),
+            setupSessionID: cancelledSetupSessionID
+        )
+
+        await harness.model.cancelSetup()
+        harness.model.beginNewServer()
+
+        do {
+            _ = try await harness.model.preflightPublicKeyInstallation(
+                draft,
+                setupSessionID: cancelledSetupSessionID
+            )
+            XCTFail("expected stale setup to reject install preflight")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+        do {
+            try harness.model.trustSetupHostKey(
+                makeHostKeyChallenge(
+                    serverID: draft.serverID,
+                    host: "stale.example.test"
+                ),
+                setupSessionID: cancelledSetupSessionID
+            )
+            XCTFail("expected stale setup to reject host trust")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+
+        let recordedTargets = await recorder.recordedTargets()
+        XCTAssertEqual(recordedTargets, [])
         XCTAssertEqual(try loadTrustedHostIdentities(root: harness.trustedHostRoot), [])
     }
 
@@ -216,7 +290,10 @@ final class RemuxRootModelTests: XCTestCase {
         )
 
         await harness.model.beginEditServer(serverID: pair.server.id)
-        try harness.model.trustSetupHostKey(updatedChallenge)
+        try harness.model.trustSetupHostKey(
+            updatedChallenge,
+            setupSessionID: harness.model.setupSessionID
+        )
         await harness.model.cancelSetup()
 
         XCTAssertEqual(harness.model.state, .library)
@@ -243,12 +320,99 @@ final class RemuxRootModelTests: XCTestCase {
             makeHostKeyChallenge(
                 serverID: pair.server.id,
                 host: "replacement.example.test"
-            )
+            ),
+            setupSessionID: harness.model.setupSessionID
         )
         await harness.model.cancelSetup()
 
         XCTAssertEqual(harness.model.state, .library)
         XCTAssertEqual(try loadTrustedHostIdentities(root: harness.trustedHostRoot), [])
+    }
+
+    func testCancelEditServerRejectsInstallAndTrustDuringLibraryReload() async throws {
+        let pair = makePasswordBackedServer()
+        let recorder = RootModelPublicKeyInstallerRecorder(
+            results: [.success(RemuxSSHExecResult(exitStatus: 0, stdout: Data(), stderr: Data()))]
+        )
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity],
+            publicKeyInstaller: makePublicKeyInstaller(recorder: recorder)
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("normal connection password"),
+            identityID: pair.identity.id
+        )
+        let originalIdentity = TrustedHostIdentity(
+            serverID: pair.server.id,
+            host: pair.server.host,
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 original-host-key",
+            trustedAt: Date(timeIntervalSince1970: 123)
+        )
+        try saveTrustedHostIdentity(originalIdentity, root: harness.trustedHostRoot)
+        await harness.model.load()
+        await harness.model.beginEditServer(serverID: pair.server.id)
+        let generatedKey = SSHPrivateKeyInspector.generateEd25519()
+        harness.model.updateDraft { draft in
+            draft.authenticationKind = .privateKey
+            draft.privateKeyPEM = generatedKey.privateKeyPEM
+        }
+        let draft = try setupDraft(from: harness.model.state)
+        let setupSessionID = harness.model.setupSessionID
+        try harness.model.trustSetupHostKey(
+            makeChangedHostKeyChallenge(
+                serverID: pair.server.id,
+                host: "replacement.example.test",
+                trustedIdentity: originalIdentity,
+                receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+            ),
+            setupSessionID: setupSessionID
+        )
+        await harness.profileRepository.suspendNextLoad(
+            thenThrow: ConnectionProfileRepositoryError.missingServer(pair.server.id)
+        )
+
+        let cancelTask = Task {
+            await harness.model.cancelSetup()
+        }
+        await harness.profileRepository.waitForSuspendedLoad()
+
+        do {
+            _ = try await harness.model.preflightPublicKeyInstallation(
+                draft,
+                setupSessionID: setupSessionID
+            )
+            XCTFail("expected cancellation to reject install preflight")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+        do {
+            try harness.model.trustSetupHostKey(
+                makeChangedHostKeyChallenge(
+                    serverID: pair.server.id,
+                    host: "stale.example.test",
+                    trustedIdentity: originalIdentity,
+                    receivedOpenSSHPublicKey: "ssh-ed25519 stale-host-key"
+                ),
+                setupSessionID: setupSessionID
+            )
+            XCTFail("expected cancellation to reject stale host trust")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+
+        let recordedTargets = await recorder.recordedTargets()
+        XCTAssertEqual(recordedTargets, [])
+        XCTAssertEqual(
+            try loadTrustedHostIdentities(root: harness.trustedHostRoot),
+            [originalIdentity]
+        )
+
+        await harness.profileRepository.resumeSuspendedLoad()
+        await cancelTask.value
     }
 
     func testEditServerSaveFailureRestoresExactPriorTrustAndPreservesUnrelatedTrust() async throws {
@@ -288,7 +452,8 @@ final class RemuxRootModelTests: XCTestCase {
                 host: "replacement.example.test",
                 trustedIdentity: originalIdentity,
                 receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
-            )
+            ),
+            setupSessionID: harness.model.setupSessionID
         )
         await harness.profileRepository.failNextSaveServer(
             with: ConnectionProfileRepositoryError.missingServer(pair.server.id)
@@ -330,7 +495,8 @@ final class RemuxRootModelTests: XCTestCase {
             makeHostKeyChallenge(
                 serverID: pair.server.id,
                 host: "replacement.example.test"
-            )
+            ),
+            setupSessionID: harness.model.setupSessionID
         )
         await harness.profileRepository.failNextSaveServer(
             with: ConnectionProfileRepositoryError.missingServer(pair.server.id)
@@ -372,13 +538,14 @@ final class RemuxRootModelTests: XCTestCase {
             await harness.model.beginEditServer(serverID: pair.server.id)
         }
         await harness.credentialStore.waitForSuspendedLoad()
-        let replacementChallenge = makeChangedHostKeyChallenge(
+        let replacementIdentity = TrustedHostIdentity(
             serverID: pair.server.id,
             host: "replacement.example.test",
-            trustedIdentity: originalIdentity,
-            receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 replacement-host-key",
+            trustedAt: Date(timeIntervalSince1970: 456)
         )
-        try harness.model.trustSetupHostKey(replacementChallenge)
+        try saveTrustedHostIdentity(replacementIdentity, root: harness.trustedHostRoot)
         await harness.credentialStore.resumeSuspendedLoad()
         await beginEditTask.value
 
@@ -387,11 +554,7 @@ final class RemuxRootModelTests: XCTestCase {
         let retainedIdentity = try XCTUnwrap(
             loadTrustedHostIdentities(root: harness.trustedHostRoot).first
         )
-        XCTAssertEqual(retainedIdentity.host, replacementChallenge.host)
-        XCTAssertEqual(
-            retainedIdentity.openSSHPublicKey,
-            replacementChallenge.receivedOpenSSHPublicKey
-        )
+        XCTAssertEqual(retainedIdentity, replacementIdentity)
     }
 
     func testSuccessfulEditServerRetainsAcceptedUpdatedTrust() async throws {
@@ -421,7 +584,10 @@ final class RemuxRootModelTests: XCTestCase {
         )
 
         await harness.model.beginEditServer(serverID: pair.server.id)
-        try harness.model.trustSetupHostKey(updatedChallenge)
+        try harness.model.trustSetupHostKey(
+            updatedChallenge,
+            setupSessionID: harness.model.setupSessionID
+        )
         await harness.model.saveAndConnect()
 
         XCTAssertEqual(harness.model.state, .library)
@@ -462,7 +628,10 @@ final class RemuxRootModelTests: XCTestCase {
             trustedIdentity: originalIdentity,
             receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
         )
-        try harness.model.trustSetupHostKey(replacementChallenge)
+        try harness.model.trustSetupHostKey(
+            replacementChallenge,
+            setupSessionID: harness.model.setupSessionID
+        )
         harness.model.updateDraft { draft in
             draft.host = replacementChallenge.host
         }
@@ -526,7 +695,10 @@ final class RemuxRootModelTests: XCTestCase {
             trustedIdentity: originalIdentity,
             receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
         )
-        try harness.model.trustSetupHostKey(replacementChallenge)
+        try harness.model.trustSetupHostKey(
+            replacementChallenge,
+            setupSessionID: harness.model.setupSessionID
+        )
         harness.model.updateDraft { draft in
             draft.host = replacementChallenge.host
         }
@@ -559,7 +731,10 @@ final class RemuxRootModelTests: XCTestCase {
                 trustedIdentity: currentIdentity,
                 receivedOpenSSHPublicKey: "ssh-ed25519 second-replacement-host-key"
             )
-            try harness.model.trustSetupHostKey(secondReplacementChallenge)
+            try harness.model.trustSetupHostKey(
+                secondReplacementChallenge,
+                setupSessionID: harness.model.setupSessionID
+            )
             latestAcceptedOpenSSHPublicKey = secondReplacementChallenge.receivedOpenSSHPublicKey
         }
 
@@ -613,7 +788,10 @@ final class RemuxRootModelTests: XCTestCase {
             trustedIdentity: originalIdentity,
             receivedOpenSSHPublicKey: "ssh-ed25519 new-workspace-host-key"
         )
-        try harness.model.trustSetupHostKey(newWorkspaceChallenge)
+        try harness.model.trustSetupHostKey(
+            newWorkspaceChallenge,
+            setupSessionID: harness.model.setupSessionID
+        )
         await harness.model.cancelSetup()
 
         let newWorkspaceIdentity = try XCTUnwrap(
@@ -629,7 +807,10 @@ final class RemuxRootModelTests: XCTestCase {
             trustedIdentity: newWorkspaceIdentity,
             receivedOpenSSHPublicKey: "ssh-ed25519 edit-workspace-host-key"
         )
-        try harness.model.trustSetupHostKey(editWorkspaceChallenge)
+        try harness.model.trustSetupHostKey(
+            editWorkspaceChallenge,
+            setupSessionID: harness.model.setupSessionID
+        )
         await harness.model.cancelSetup()
 
         XCTAssertEqual(harness.model.state, .library)
