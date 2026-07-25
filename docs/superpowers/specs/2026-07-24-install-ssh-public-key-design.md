@@ -149,12 +149,14 @@ life of the setup flow. The validator and eventual saved server use that same
 ID, so a host key accepted during preflight or installation remains the
 trusted identity when the user connects.
 
-For an existing server, installation uses its existing ID. Edit Server
-snapshots that ID's exact trust record, including the absence of a record,
-before setup begins. Explicitly accepted trust is persisted immediately so an
-interrupted phase can retry. Canceling Edit Server restores the snapshot;
-successfully saving the edit keeps the accepted trust. New Workspace and Edit
-Workspace cancellation preserve any accepted trust.
+For an existing server, installation uses its existing ID. After loading the
+saved credential, Edit Server snapshots that ID's exact trust record, including
+the absence of a record, immediately before setup begins. Explicitly accepted
+trust is persisted immediately so an interrupted phase can retry. Canceling
+Edit Server or failing before the updated server profile is committed restores
+the snapshot. Successfully saving the server discards the snapshot, so a later
+post-commit failure keeps the accepted trust. New Workspace and Edit Workspace
+cancellation preserve any accepted trust.
 
 For a new server, canceling setup removes any provisional trust record created
 by this flow. An abrupt process termination can leave an unreachable trust
@@ -358,6 +360,8 @@ Verify:
 - canceling new-server setup removes provisional trust;
 - canceling Edit Server restores the exact prior trust identity or its
   absence;
+- a pre-commit Edit Server save failure restores the exact prior trust without
+  changing unrelated identities;
 - saving Edit Server retains accepted updated trust;
 - canceling New Workspace or Edit Workspace preserves accepted trust;
 - the action's enablement depends only on valid endpoint and key inputs;

@@ -251,6 +251,149 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(try loadTrustedHostIdentities(root: harness.trustedHostRoot), [])
     }
 
+    func testEditServerSaveFailureRestoresExactPriorTrustAndPreservesUnrelatedTrust() async throws {
+        let pair = makePasswordBackedServer()
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity]
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("normal connection password"),
+            identityID: pair.identity.id
+        )
+        let originalIdentity = TrustedHostIdentity(
+            serverID: pair.server.id,
+            host: pair.server.host,
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 original-host-key",
+            trustedAt: Date(timeIntervalSince1970: 123)
+        )
+        let unrelatedIdentity = TrustedHostIdentity(
+            serverID: UUID(),
+            host: "unrelated.example.test",
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 unrelated-host-key",
+            trustedAt: Date(timeIntervalSince1970: 456)
+        )
+        try saveTrustedHostIdentities(
+            [originalIdentity, unrelatedIdentity],
+            root: harness.trustedHostRoot
+        )
+        await harness.model.load()
+
+        await harness.model.beginEditServer(serverID: pair.server.id)
+        try harness.model.trustSetupHostKey(
+            makeChangedHostKeyChallenge(
+                serverID: pair.server.id,
+                host: "replacement.example.test",
+                trustedIdentity: originalIdentity,
+                receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+            )
+        )
+        await harness.profileRepository.failNextSaveServer(
+            with: ConnectionProfileRepositoryError.missingServer(pair.server.id)
+        )
+
+        await harness.model.saveAndConnect()
+
+        guard case .failed = harness.model.state else {
+            return XCTFail("expected terminal save failure")
+        }
+        XCTAssertEqual(
+            try loadTrustedHostIdentities(root: harness.trustedHostRoot),
+            [originalIdentity, unrelatedIdentity]
+        )
+    }
+
+    func testEditServerSaveFailureRestoresTrustAbsenceAndPreservesUnrelatedTrust() async throws {
+        let pair = makePasswordBackedServer()
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity]
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("normal connection password"),
+            identityID: pair.identity.id
+        )
+        let unrelatedIdentity = TrustedHostIdentity(
+            serverID: UUID(),
+            host: "unrelated.example.test",
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 unrelated-host-key",
+            trustedAt: Date(timeIntervalSince1970: 456)
+        )
+        try saveTrustedHostIdentities([unrelatedIdentity], root: harness.trustedHostRoot)
+        await harness.model.load()
+
+        await harness.model.beginEditServer(serverID: pair.server.id)
+        try harness.model.trustSetupHostKey(
+            makeHostKeyChallenge(
+                serverID: pair.server.id,
+                host: "replacement.example.test"
+            )
+        )
+        await harness.profileRepository.failNextSaveServer(
+            with: ConnectionProfileRepositoryError.missingServer(pair.server.id)
+        )
+
+        await harness.model.saveAndConnect()
+
+        guard case .failed = harness.model.state else {
+            return XCTFail("expected terminal save failure")
+        }
+        XCTAssertEqual(
+            try loadTrustedHostIdentities(root: harness.trustedHostRoot),
+            [unrelatedIdentity]
+        )
+    }
+
+    func testBeginEditServerSnapshotsTrustAfterCredentialLoad() async throws {
+        let pair = makePasswordBackedServer()
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity]
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("normal connection password"),
+            identityID: pair.identity.id
+        )
+        let originalIdentity = TrustedHostIdentity(
+            serverID: pair.server.id,
+            host: pair.server.host,
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 original-host-key",
+            trustedAt: Date(timeIntervalSince1970: 123)
+        )
+        try saveTrustedHostIdentity(originalIdentity, root: harness.trustedHostRoot)
+        await harness.model.load()
+        await harness.credentialStore.suspendNextLoad()
+
+        let beginEditTask = Task {
+            await harness.model.beginEditServer(serverID: pair.server.id)
+        }
+        await harness.credentialStore.waitForSuspendedLoad()
+        let replacementChallenge = makeChangedHostKeyChallenge(
+            serverID: pair.server.id,
+            host: "replacement.example.test",
+            trustedIdentity: originalIdentity,
+            receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+        )
+        try harness.model.trustSetupHostKey(replacementChallenge)
+        await harness.credentialStore.resumeSuspendedLoad()
+        await beginEditTask.value
+
+        await harness.model.cancelSetup()
+
+        let retainedIdentity = try XCTUnwrap(
+            loadTrustedHostIdentities(root: harness.trustedHostRoot).first
+        )
+        XCTAssertEqual(retainedIdentity.host, replacementChallenge.host)
+        XCTAssertEqual(
+            retainedIdentity.openSSHPublicKey,
+            replacementChallenge.receivedOpenSSHPublicKey
+        )
+    }
+
     func testSuccessfulEditServerRetainsAcceptedUpdatedTrust() async throws {
         let pair = makePasswordBackedServer()
         let harness = makeHarness(
@@ -2487,8 +2630,15 @@ final class RemuxRootModelTests: XCTestCase {
     }
 
     private func saveTrustedHostIdentity(_ identity: TrustedHostIdentity, root: URL) throws {
+        try saveTrustedHostIdentities([identity], root: root)
+    }
+
+    private func saveTrustedHostIdentities(
+        _ identities: [TrustedHostIdentity],
+        root: URL
+    ) throws {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let data = try JSONEncoder().encode([identity])
+        let data = try JSONEncoder().encode(identities)
         try data.write(to: root.appendingPathComponent("trusted-hosts.json"), options: .atomic)
     }
 
@@ -3099,9 +3249,23 @@ private actor TestServerCredentialStore {
 
 private actor TestSSHCredentialStore: SSHCredentialStore {
     private var credentials: [UUID: SSHCredential] = [:]
+    private var shouldSuspendNextLoad = false
+    private var suspendedLoadContinuation: CheckedContinuation<Void, Never>?
+    private var suspendedLoadWaiters: [CheckedContinuation<Void, Never>] = []
 
     func loadCredential(identityID: UUID) async throws -> SSHCredential? {
-        credentials[identityID]
+        if shouldSuspendNextLoad {
+            shouldSuspendNextLoad = false
+            let waiters = suspendedLoadWaiters
+            suspendedLoadWaiters.removeAll()
+            await withCheckedContinuation { continuation in
+                suspendedLoadContinuation = continuation
+                for waiter in waiters {
+                    waiter.resume()
+                }
+            }
+        }
+        return credentials[identityID]
     }
 
     func saveCredential(_ credential: SSHCredential, identityID: UUID) async throws {
@@ -3114,5 +3278,21 @@ private actor TestSSHCredentialStore: SSHCredentialStore {
 
     func credentialsSnapshot() -> [UUID: SSHCredential] {
         credentials
+    }
+
+    func suspendNextLoad() {
+        shouldSuspendNextLoad = true
+    }
+
+    func waitForSuspendedLoad() async {
+        guard suspendedLoadContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            suspendedLoadWaiters.append(continuation)
+        }
+    }
+
+    func resumeSuspendedLoad() {
+        suspendedLoadContinuation?.resume()
+        suspendedLoadContinuation = nil
     }
 }

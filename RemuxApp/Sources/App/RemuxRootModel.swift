@@ -283,9 +283,7 @@ final class RemuxRootModel: ObservableObject {
 
         let identity: SSHIdentity
         let credential: SSHCredential
-        let trustedHostIdentity: TrustedHostIdentity?
         do {
-            trustedHostIdentity = try dependencies.trustedHostStore.identity(for: serverID)
             (identity, credential) = try await loadDraftIdentityCredential(for: server)
         } catch {
             transitionToFailed(error)
@@ -294,10 +292,15 @@ final class RemuxRootModel: ObservableObject {
         let workspace = reconnectWorkspaceID.flatMap { library.workspace(id: $0) }
             ?? library.workspaces(for: serverID).first
             ?? SavedWorkspace(serverID: serverID, sessionName: "")
-        editServerTrustSnapshot = EditServerTrustSnapshot(
-            serverID: serverID,
-            identity: trustedHostIdentity
-        )
+        do {
+            editServerTrustSnapshot = EditServerTrustSnapshot(
+                serverID: serverID,
+                identity: try dependencies.trustedHostStore.identity(for: serverID)
+            )
+        } catch {
+            transitionToFailed(error)
+            return
+        }
         state = .setup(
             TmuxConnectionDraft(
                 server: server,
@@ -401,17 +404,11 @@ final class RemuxRootModel: ObservableObject {
         case .setup(let draft, _, .newServer):
             try? dependencies.trustedHostStore.deleteIdentity(for: draft.serverID)
         case .setup(_, _, .editServer(let serverID, _)):
-            if let snapshot = editServerTrustSnapshot,
-               snapshot.serverID == serverID {
-                do {
-                    try dependencies.trustedHostStore.restoreIdentity(
-                        snapshot.identity,
-                        for: serverID
-                    )
-                } catch {
-                    transitionToFailed(error)
-                    return
-                }
+            do {
+                try restoreEditServerTrustSnapshot(for: serverID)
+            } catch {
+                transitionToFailed(error)
+                return
             }
         default:
             break
@@ -519,7 +516,7 @@ final class RemuxRootModel: ObservableObject {
                 state = .setup(draft, privateKeyValidation(from: error), mode)
                 return
             } catch {
-                transitionToFailed(error)
+                failEditServerSave(error, serverID: serverID)
                 return
             }
 
@@ -581,9 +578,36 @@ final class RemuxRootModel: ObservableObject {
                     sshAuth: updatedSSHAuth
                 )
             } catch {
-                transitionToFailed(error)
+                failEditServerSave(error, serverID: serverID)
             }
         }
+    }
+
+    private func failEditServerSave(
+        _ error: any Error,
+        serverID: SavedServer.ID
+    ) {
+        do {
+            try restoreEditServerTrustSnapshot(for: serverID)
+        } catch {
+            transitionToFailed(error)
+            return
+        }
+        transitionToFailed(error)
+    }
+
+    private func restoreEditServerTrustSnapshot(
+        for serverID: SavedServer.ID
+    ) throws {
+        guard let snapshot = editServerTrustSnapshot,
+              snapshot.serverID == serverID else {
+            return
+        }
+        try dependencies.trustedHostStore.restoreIdentity(
+            snapshot.identity,
+            for: serverID
+        )
+        editServerTrustSnapshot = nil
     }
 
     private func saveNewWorkspaceAndConnect(

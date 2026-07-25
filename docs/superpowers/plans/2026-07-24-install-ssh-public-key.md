@@ -796,6 +796,9 @@ func testTrustSetupHostKeyStoresChallengeForDraftServerID()
 func testCancelNewServerRemovesProvisionalTrust()
 func testCancelEditServerRestoresExactPriorTrustIdentity()
 func testCancelEditServerRestoresOriginalTrustAbsence()
+func testEditServerSaveFailureRestoresExactPriorTrustAndPreservesUnrelatedTrust()
+func testEditServerSaveFailureRestoresTrustAbsenceAndPreservesUnrelatedTrust()
+func testBeginEditServerSnapshotsTrustAfterCredentialLoad()
 func testSuccessfulEditServerRetainsAcceptedUpdatedTrust()
 func testWorkspaceSetupCancellationPreservesAcceptedTrust()
 ```
@@ -833,11 +836,14 @@ without copying the password into model fields.
 - [ ] **Step 4: Implement setup trust and cancellation cleanup**
 
 `trustSetupHostKey` delegates to `TrustedHostStore.trustHostKey`. When Edit
-Server begins, snapshot the exact `TrustedHostIdentity` for that server ID,
-including absence. Explicit trust remains persisted during setup so the
-interrupted phase can retry. On successful Edit Server save, discard the
-snapshot and keep the accepted trust. On Edit Server cancellation, restore the
-snapshot with the store's smallest exact replacement API.
+Server begins, load the credential first, then snapshot the exact
+`TrustedHostIdentity` for that server ID, including absence, immediately before
+entering setup. Explicit trust remains persisted during setup so the
+interrupted phase can retry. On Edit Server cancellation or a terminal save
+failure before the updated server is committed, restore the snapshot with the
+store's smallest exact replacement API. On successful server save, discard the
+snapshot and keep the accepted trust; any later post-commit failure must not
+roll it back.
 
 For `.newServer`, delete the provisional identity before returning to the
 library:
