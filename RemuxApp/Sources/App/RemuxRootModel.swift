@@ -109,8 +109,14 @@ final class RemuxRootModel: ObservableObject {
     private static let libraryPrewarmServerLimit = 3
 
     private struct EditServerTrustSnapshot {
+        let setupID: UUID
         let serverID: SavedServer.ID
         let identity: TrustedHostIdentity?
+    }
+
+    private struct SetupAction: Equatable {
+        let id: UUID
+        let setupID: UUID
     }
 
     typealias TerminalScreenModelFactory = @MainActor @Sendable (
@@ -158,6 +164,7 @@ final class RemuxRootModel: ObservableObject {
     @Published private(set) var library: ConnectionLibrarySnapshot = .empty
     @Published private(set) var terminalSettings: TerminalSettings = .default
     @Published private(set) var activeSessions: [ActiveTerminalSession] = []
+    @Published private(set) var isSetupActionInProgress = false
 
     var activeTerminalScreenEntries: [ActiveTerminalScreenEntry] {
         activeSessions.map { session in
@@ -179,6 +186,8 @@ final class RemuxRootModel: ObservableObject {
     private let terminalScreenModelFactory: TerminalScreenModelFactory
     private var terminalScreenModels: [TerminalRuntimeAttemptKey: TmuxScreenModel] = [:]
     private var currentAppLifecyclePhase: GhosttyAppLifecyclePhase?
+    private var currentSetupID: UUID?
+    private var activeSetupAction: SetupAction?
     private var editServerTrustSnapshot: EditServerTrustSnapshot?
 
     init(
@@ -210,39 +219,59 @@ final class RemuxRootModel: ObservableObject {
     }
 
     func load() async {
+        guard activeSetupAction == nil else { return }
+        let expectedSetupID = currentSetupID
         do {
 #if DEBUG || REMUX_LIVE_UI_TESTING
             try await dependencies.seedDebugConnectionIfRequested()
 #endif
 
-            terminalSettings = try await dependencies.settingsRepository.loadSettings()
-            library = try await dependencies.profileRepository.loadSnapshot()
+            let terminalSettings = try await dependencies.settingsRepository.loadSettings()
+            let library = try await dependencies.profileRepository.loadSnapshot()
+            guard activeSetupAction == nil, currentSetupID == expectedSetupID else { return }
+            self.terminalSettings = terminalSettings
+            self.library = library
+            finishSetupSession(expectedSetupID)
             state = .library
             scheduleLibrarySSHPrewarm(snapshot: library)
         } catch {
+            guard activeSetupAction == nil, currentSetupID == expectedSetupID else { return }
+            finishSetupSession(expectedSetupID)
             transitionToFailed(error)
         }
     }
 
     func showLibrary() async {
+        guard activeSetupAction == nil else { return }
+        let expectedSetupID = currentSetupID
         do {
-            terminalSettings = try await dependencies.settingsRepository.loadSettings()
-            library = try await dependencies.profileRepository.loadSnapshot()
+            let terminalSettings = try await dependencies.settingsRepository.loadSettings()
+            let library = try await dependencies.profileRepository.loadSnapshot()
+            guard activeSetupAction == nil, currentSetupID == expectedSetupID else { return }
+            self.terminalSettings = terminalSettings
+            self.library = library
+            finishSetupSession(expectedSetupID)
             state = .library
             scheduleLibrarySSHPrewarm(snapshot: library)
         } catch {
+            guard activeSetupAction == nil, currentSetupID == expectedSetupID else { return }
+            finishSetupSession(expectedSetupID)
             transitionToFailed(error)
         }
     }
 
     func beginNewServer() {
+        guard activeSetupAction == nil else { return }
+        currentSetupID = UUID()
         editServerTrustSnapshot = nil
         state = .setup(TmuxConnectionDraft(), .empty, .newServer)
     }
 
     func beginNewWorkspace(for serverID: SavedServer.ID) async {
+        guard activeSetupAction == nil else { return }
         guard let server = library.server(id: serverID) else { return }
 
+        currentSetupID = UUID()
         editServerTrustSnapshot = nil
         let workspace = SavedWorkspace(
             serverID: serverID,
@@ -279,25 +308,34 @@ final class RemuxRootModel: ObservableObject {
         serverID: SavedServer.ID,
         reconnectWorkspaceID: SavedWorkspace.ID?
     ) async {
+        guard activeSetupAction == nil else { return }
         guard let server = library.server(id: serverID) else { return }
+        let setupID = UUID()
+        currentSetupID = setupID
+        editServerTrustSnapshot = nil
 
         let identity: SSHIdentity
         let credential: SSHCredential
         do {
             (identity, credential) = try await loadDraftIdentityCredential(for: server)
         } catch {
+            guard activeSetupAction == nil, currentSetupID == setupID else { return }
+            finishSetupSession(setupID)
             transitionToFailed(error)
             return
         }
+        guard activeSetupAction == nil, currentSetupID == setupID else { return }
         let workspace = reconnectWorkspaceID.flatMap { library.workspace(id: $0) }
             ?? library.workspaces(for: serverID).first
             ?? SavedWorkspace(serverID: serverID, sessionName: "")
         do {
             editServerTrustSnapshot = EditServerTrustSnapshot(
+                setupID: setupID,
                 serverID: serverID,
                 identity: try dependencies.trustedHostStore.identity(for: serverID)
             )
         } catch {
+            finishSetupSession(setupID)
             transitionToFailed(error)
             return
         }
@@ -314,6 +352,7 @@ final class RemuxRootModel: ObservableObject {
     }
 
     func beginEditWorkspace(serverID: SavedServer.ID, workspaceID: SavedWorkspace.ID) async {
+        guard activeSetupAction == nil else { return }
         guard
             let server = library.server(id: serverID),
             let workspace = library.workspace(id: workspaceID)
@@ -321,6 +360,7 @@ final class RemuxRootModel: ObservableObject {
             return
         }
 
+        currentSetupID = UUID()
         editServerTrustSnapshot = nil
         state = .setup(
             TmuxConnectionDraft(server: server, workspace: workspace),
@@ -330,6 +370,7 @@ final class RemuxRootModel: ObservableObject {
     }
 
     func updateDraft(_ mutation: (inout TmuxConnectionDraft) -> Void) {
+        guard activeSetupAction == nil else { return }
         guard case .setup(var draft, let validation, let mode) = state else { return }
         mutation(&draft)
         state = .setup(draft, validation, mode)
@@ -400,29 +441,45 @@ final class RemuxRootModel: ObservableObject {
     }
 
     func cancelSetup() async {
+        guard case .setup = state else { return }
+        guard let action = beginSetupAction() else { return }
+        defer { finishSetupAction(action) }
+
         switch state {
         case .setup(let draft, _, .newServer):
             try? dependencies.trustedHostStore.deleteIdentity(for: draft.serverID)
         case .setup(_, _, .editServer(let serverID, _)):
             do {
-                try restoreEditServerTrustSnapshot(for: serverID)
+                try restoreEditServerTrustSnapshot(
+                    for: serverID,
+                    setupID: action.setupID
+                )
             } catch {
+                finishSetupSession(action.setupID)
                 transitionToFailed(error)
                 return
             }
         default:
             break
         }
-        editServerTrustSnapshot = nil
-        await showLibrary()
+        discardEditServerTrustSnapshot(setupID: action.setupID)
+        await showLibrary(after: action)
     }
 
     func saveAndConnect() async {
         guard case .setup(let draft, _, let mode) = state else { return }
+        guard let action = beginSetupAction() else { return }
+        defer { finishSetupAction(action) }
 
         switch mode {
         case .editServer(let serverID, let reconnectWorkspaceID):
-            await saveServer(draft, serverID: serverID, reconnectWorkspaceID: reconnectWorkspaceID, mode: mode)
+            await saveServer(
+                draft,
+                serverID: serverID,
+                reconnectWorkspaceID: reconnectWorkspaceID,
+                mode: mode,
+                action: action
+            )
 
         case .editWorkspace(let serverID, let workspaceID):
             await saveWorkspace(draft, serverID: serverID, workspaceID: workspaceID, mode: mode)
@@ -491,8 +548,10 @@ final class RemuxRootModel: ObservableObject {
         _ draft: TmuxConnectionDraft,
         serverID: SavedServer.ID,
         reconnectWorkspaceID: SavedWorkspace.ID?,
-        mode: SetupMode
+        mode: SetupMode,
+        action: SetupAction
     ) async {
+        guard isCurrentSetupAction(action) else { return }
         switch TmuxConnectionDraftValidator.validateServer(draft, existingServerID: serverID) {
         case .invalid(let validation):
             state = .setup(draft, validation, mode)
@@ -516,7 +575,7 @@ final class RemuxRootModel: ObservableObject {
                 state = .setup(draft, privateKeyValidation(from: error), mode)
                 return
             } catch {
-                failEditServerSave(error, serverID: serverID)
+                failEditServerSave(error, serverID: serverID, action: action)
                 return
             }
 
@@ -530,16 +589,33 @@ final class RemuxRootModel: ObservableObject {
                 let previousCredential = try await dependencies.credentialStore.loadCredential(
                     identityID: updatedIdentityCredential.identity.id
                 )
+                guard isCurrentSetupAction(action) else { return }
                 try await dependencies.credentialStore.saveCredential(
                     updatedIdentityCredential.credential,
                     identityID: updatedIdentityCredential.identity.id
                 )
+                guard isCurrentSetupAction(action) else {
+                    await restoreCredential(
+                        previousCredential,
+                        identityID: updatedIdentityCredential.identity.id
+                    )
+                    return
+                }
                 do {
                     try await dependencies.profileRepository.saveIdentity(
                         updatedIdentityCredential.identity
                     )
+                    guard isCurrentSetupAction(action) else {
+                        await restoreCredential(
+                            previousCredential,
+                            identityID: updatedIdentityCredential.identity.id
+                        )
+                        await restoreIdentity(previousIdentity)
+                        return
+                    }
                     try await dependencies.profileRepository.saveServer(server)
-                    editServerTrustSnapshot = nil
+                    guard isCurrentSetupAction(action) else { return }
+                    discardEditServerTrustSnapshot(setupID: action.setupID)
                 } catch {
                     await restoreCredential(
                         previousCredential,
@@ -548,8 +624,11 @@ final class RemuxRootModel: ObservableObject {
                     await restoreIdentity(previousIdentity)
                     throw error
                 }
-                library = try await dependencies.profileRepository.loadSnapshot()
+                let library = try await dependencies.profileRepository.loadSnapshot()
+                guard isCurrentSetupAction(action) else { return }
+                self.library = library
                 let updatedSSHAuth = try await resolveSSHAuth(for: server)
+                guard isCurrentSetupAction(action) else { return }
                 closePreparedTransports(forServerID: server.id)
                 dependencies.closeIdleSSHConnections(forServerID: server.id)
                 RemuxActiveSessionCollection.refreshServer(
@@ -560,46 +639,61 @@ final class RemuxRootModel: ObservableObject {
                 refreshDisconnectedTerminalScreenModels(serverID: server.id)
 
                 guard let reconnectWorkspaceID else {
+                    finishSetupSession(action.setupID)
                     state = .library
                     return
                 }
 
                 guard var workspace = library.workspace(id: reconnectWorkspaceID) else {
+                    finishSetupSession(action.setupID)
                     state = .library
                     return
                 }
 
                 workspace.lastOpenedAt = Date()
                 try await dependencies.profileRepository.saveWorkspace(workspace)
-                library = try await dependencies.profileRepository.loadSnapshot()
+                guard isCurrentSetupAction(action) else { return }
+                let reloadedLibrary = try await dependencies.profileRepository.loadSnapshot()
+                guard isCurrentSetupAction(action) else { return }
+                self.library = reloadedLibrary
+                finishSetupSession(action.setupID)
                 activate(
                     server: server,
                     workspace: workspace,
                     sshAuth: updatedSSHAuth
                 )
             } catch {
-                failEditServerSave(error, serverID: serverID)
+                failEditServerSave(error, serverID: serverID, action: action)
             }
         }
     }
 
     private func failEditServerSave(
         _ error: any Error,
-        serverID: SavedServer.ID
+        serverID: SavedServer.ID,
+        action: SetupAction
     ) {
+        guard isCurrentSetupAction(action) else { return }
         do {
-            try restoreEditServerTrustSnapshot(for: serverID)
+            try restoreEditServerTrustSnapshot(
+                for: serverID,
+                setupID: action.setupID
+            )
         } catch {
+            finishSetupSession(action.setupID)
             transitionToFailed(error)
             return
         }
+        finishSetupSession(action.setupID)
         transitionToFailed(error)
     }
 
     private func restoreEditServerTrustSnapshot(
-        for serverID: SavedServer.ID
+        for serverID: SavedServer.ID,
+        setupID: UUID
     ) throws {
         guard let snapshot = editServerTrustSnapshot,
+              snapshot.setupID == setupID,
               snapshot.serverID == serverID else {
             return
         }
@@ -608,6 +702,60 @@ final class RemuxRootModel: ObservableObject {
             for: serverID
         )
         editServerTrustSnapshot = nil
+    }
+
+    private func discardEditServerTrustSnapshot(setupID: UUID) {
+        guard editServerTrustSnapshot?.setupID == setupID else { return }
+        editServerTrustSnapshot = nil
+    }
+
+    private func beginSetupAction() -> SetupAction? {
+        guard activeSetupAction == nil, let currentSetupID else { return nil }
+        let action = SetupAction(id: UUID(), setupID: currentSetupID)
+        activeSetupAction = action
+        isSetupActionInProgress = true
+        return action
+    }
+
+    private func finishSetupAction(_ action: SetupAction) {
+        guard activeSetupAction == action else { return }
+        activeSetupAction = nil
+        isSetupActionInProgress = false
+        guard currentSetupID == action.setupID else { return }
+        guard case .setup = state else {
+            finishSetupSession(action.setupID)
+            return
+        }
+    }
+
+    private func isCurrentSetupAction(_ action: SetupAction) -> Bool {
+        activeSetupAction == action && currentSetupID == action.setupID
+    }
+
+    private func finishSetupSession(_ setupID: UUID?) {
+        guard currentSetupID == setupID else { return }
+        currentSetupID = nil
+        if editServerTrustSnapshot?.setupID == setupID {
+            editServerTrustSnapshot = nil
+        }
+    }
+
+    private func showLibrary(after action: SetupAction) async {
+        do {
+            let terminalSettings = try await dependencies.settingsRepository.loadSettings()
+            guard isCurrentSetupAction(action) else { return }
+            let library = try await dependencies.profileRepository.loadSnapshot()
+            guard isCurrentSetupAction(action) else { return }
+            self.terminalSettings = terminalSettings
+            self.library = library
+            finishSetupSession(action.setupID)
+            state = .library
+            scheduleLibrarySSHPrewarm(snapshot: library)
+        } catch {
+            guard isCurrentSetupAction(action) else { return }
+            finishSetupSession(action.setupID)
+            transitionToFailed(error)
+        }
     }
 
     private func saveNewWorkspaceAndConnect(

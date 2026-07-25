@@ -749,6 +749,7 @@ git commit -m "install public keys over dedicated SSH" \
 **Files:**
 - Modify: `RemuxApp/Sources/App/RemuxAppDependencies.swift`
 - Modify: `RemuxApp/Sources/App/RemuxRootModel.swift`
+- Modify: `RemuxApp/Sources/App/RootView.swift`
 - Modify: `RemuxApp/Sources/Persistence/TrustedHostStore.swift`
 - Modify: `RemuxAppTests/RemuxRootModelTests.swift`
 
@@ -800,6 +801,8 @@ func testEditServerSaveFailureRestoresExactPriorTrustAndPreservesUnrelatedTrust(
 func testEditServerSaveFailureRestoresTrustAbsenceAndPreservesUnrelatedTrust()
 func testBeginEditServerSnapshotsTrustAfterCredentialLoad()
 func testSuccessfulEditServerRetainsAcceptedUpdatedTrust()
+func testEditServerSaveSerializesConcurrentCancellation()
+func testPostCommitEditServerFailureCannotResumeAcrossConcurrentCancellation()
 func testWorkspaceSetupCancellationPreservesAcceptedTrust()
 ```
 
@@ -844,6 +847,16 @@ failure before the updated server is committed, restore the snapshot with the
 store's smallest exact replacement API. On successful server save, discard the
 snapshot and keep the accepted trust; any later post-commit failure must not
 roll it back.
+
+Give each setup presentation an in-memory identity and scope the Edit Server
+trust snapshot to that identity and server ID. Save and Cancel claim a
+model-owned single-flight action identity before awaiting persistence or
+library refresh. The first claimant retains ownership until completion;
+concurrent actions return without mutating setup or trust, and the setup
+toolbar disables Save and Cancel while the claim is active. Check the action
+identity after asynchronous Edit Server save boundaries before changing setup
+state or restoring trust, so a stale failure cannot consume a newer
+same-server snapshot.
 
 For `.newServer`, delete the provisional identity before returning to the
 library:

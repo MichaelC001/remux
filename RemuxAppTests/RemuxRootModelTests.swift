@@ -436,6 +436,154 @@ final class RemuxRootModelTests: XCTestCase {
         )
     }
 
+    func testEditServerSaveSerializesConcurrentCancellation() async throws {
+        let pair = makePasswordBackedServer()
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity]
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("normal connection password"),
+            identityID: pair.identity.id
+        )
+        let originalIdentity = TrustedHostIdentity(
+            serverID: pair.server.id,
+            host: pair.server.host,
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 original-host-key",
+            trustedAt: Date(timeIntervalSince1970: 123)
+        )
+        try saveTrustedHostIdentity(originalIdentity, root: harness.trustedHostRoot)
+        await harness.model.load()
+        await harness.model.beginEditServer(serverID: pair.server.id)
+        let replacementChallenge = makeChangedHostKeyChallenge(
+            serverID: pair.server.id,
+            host: "replacement.example.test",
+            trustedIdentity: originalIdentity,
+            receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+        )
+        try harness.model.trustSetupHostKey(replacementChallenge)
+        harness.model.updateDraft { draft in
+            draft.host = replacementChallenge.host
+        }
+        await harness.credentialStore.suspendNextLoad()
+
+        let saveTask = Task {
+            await harness.model.saveAndConnect()
+        }
+        await harness.credentialStore.waitForSuspendedLoad()
+        XCTAssertTrue(harness.model.isSetupActionInProgress)
+
+        await harness.model.cancelSetup()
+
+        guard case .setup = harness.model.state else {
+            await harness.credentialStore.resumeSuspendedLoad()
+            await saveTask.value
+            return XCTFail("expected save to retain ownership of setup")
+        }
+        XCTAssertEqual(
+            try loadTrustedHostIdentities(root: harness.trustedHostRoot)
+                .map(\.openSSHPublicKey),
+            [replacementChallenge.receivedOpenSSHPublicKey]
+        )
+
+        await harness.credentialStore.resumeSuspendedLoad()
+        await saveTask.value
+
+        XCTAssertFalse(harness.model.isSetupActionInProgress)
+        let snapshot = try await harness.profileRepository.loadSnapshot()
+        XCTAssertEqual(snapshot.server(id: pair.server.id)?.host, replacementChallenge.host)
+        XCTAssertEqual(
+            try loadTrustedHostIdentities(root: harness.trustedHostRoot)
+                .map(\.openSSHPublicKey),
+            [replacementChallenge.receivedOpenSSHPublicKey]
+        )
+    }
+
+    func testPostCommitEditServerFailureCannotResumeAcrossConcurrentCancellation() async throws {
+        let pair = makePasswordBackedServer()
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity]
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("normal connection password"),
+            identityID: pair.identity.id
+        )
+        let originalIdentity = TrustedHostIdentity(
+            serverID: pair.server.id,
+            host: pair.server.host,
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 original-host-key",
+            trustedAt: Date(timeIntervalSince1970: 123)
+        )
+        try saveTrustedHostIdentity(originalIdentity, root: harness.trustedHostRoot)
+        await harness.model.load()
+        await harness.model.beginEditServer(serverID: pair.server.id)
+        let replacementChallenge = makeChangedHostKeyChallenge(
+            serverID: pair.server.id,
+            host: "replacement.example.test",
+            trustedIdentity: originalIdentity,
+            receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+        )
+        try harness.model.trustSetupHostKey(replacementChallenge)
+        harness.model.updateDraft { draft in
+            draft.host = replacementChallenge.host
+        }
+        await harness.profileRepository.suspendNextLoad(
+            thenThrow: ConnectionProfileRepositoryError.missingServer(pair.server.id)
+        )
+
+        let saveTask = Task {
+            await harness.model.saveAndConnect()
+        }
+        await harness.profileRepository.waitForSuspendedLoad()
+        XCTAssertTrue(harness.model.isSetupActionInProgress)
+
+        await harness.model.cancelSetup()
+        let cancellationReplacedSetup: Bool
+        if case .library = harness.model.state {
+            cancellationReplacedSetup = true
+        } else {
+            cancellationReplacedSetup = false
+        }
+        var latestAcceptedOpenSSHPublicKey = replacementChallenge.receivedOpenSSHPublicKey
+        if cancellationReplacedSetup {
+            await harness.model.beginEditServer(serverID: pair.server.id)
+            let currentIdentity = try XCTUnwrap(
+                loadTrustedHostIdentities(root: harness.trustedHostRoot).first
+            )
+            let secondReplacementChallenge = makeChangedHostKeyChallenge(
+                serverID: pair.server.id,
+                host: "second-replacement.example.test",
+                trustedIdentity: currentIdentity,
+                receivedOpenSSHPublicKey: "ssh-ed25519 second-replacement-host-key"
+            )
+            try harness.model.trustSetupHostKey(secondReplacementChallenge)
+            latestAcceptedOpenSSHPublicKey = secondReplacementChallenge.receivedOpenSSHPublicKey
+        }
+
+        await harness.profileRepository.resumeSuspendedLoad()
+        await saveTask.value
+
+        XCTAssertFalse(harness.model.isSetupActionInProgress)
+        XCTAssertFalse(
+            cancellationReplacedSetup,
+            "a suspended save must retain ownership of its setup session"
+        )
+        guard case .failed = harness.model.state else {
+            return XCTFail("expected the post-commit refresh failure")
+        }
+        let snapshot = try await harness.profileRepository.loadSnapshot()
+        XCTAssertEqual(snapshot.server(id: pair.server.id)?.host, replacementChallenge.host)
+        XCTAssertEqual(
+            try loadTrustedHostIdentities(root: harness.trustedHostRoot)
+                .map(\.openSSHPublicKey),
+            [latestAcceptedOpenSSHPublicKey],
+            "an older save failure must not consume a newer same-server trust snapshot"
+        )
+    }
+
     func testWorkspaceSetupCancellationPreservesAcceptedTrust() async throws {
         let pair = makePasswordBackedServer()
         let workspace = SavedWorkspace(serverID: pair.server.id, sessionName: "base")
@@ -3067,6 +3215,9 @@ private actor TestConnectionProfileRepository: ConnectionProfileRepository {
     private var workspaces: [SavedWorkspace]
     private var identities: [SSHIdentity]
     private var saveServerError: Error?
+    private var suspendedLoadError: Error?
+    private var suspendedLoadContinuation: CheckedContinuation<Void, Never>?
+    private var suspendedLoadWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(
         servers: [SavedServer] = [],
@@ -3087,6 +3238,18 @@ private actor TestConnectionProfileRepository: ConnectionProfileRepository {
     }
 
     func loadSnapshot() async throws -> ConnectionLibrarySnapshot {
+        if let suspendedLoadError {
+            self.suspendedLoadError = nil
+            let waiters = suspendedLoadWaiters
+            suspendedLoadWaiters.removeAll()
+            await withCheckedContinuation { continuation in
+                suspendedLoadContinuation = continuation
+                for waiter in waiters {
+                    waiter.resume()
+                }
+            }
+            throw suspendedLoadError
+        }
         let serverIDs = Set(servers.map(\.id))
         return ConnectionLibrarySnapshot(
             servers: servers.sorted {
@@ -3113,6 +3276,22 @@ private actor TestConnectionProfileRepository: ConnectionProfileRepository {
 
     func failNextSaveServer(with error: Error) {
         saveServerError = error
+    }
+
+    func suspendNextLoad(thenThrow error: Error) {
+        suspendedLoadError = error
+    }
+
+    func waitForSuspendedLoad() async {
+        guard suspendedLoadContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            suspendedLoadWaiters.append(continuation)
+        }
+    }
+
+    func resumeSuspendedLoad() {
+        suspendedLoadContinuation?.resume()
+        suspendedLoadContinuation = nil
     }
 
     func saveWorkspace(_ workspace: SavedWorkspace) async throws {

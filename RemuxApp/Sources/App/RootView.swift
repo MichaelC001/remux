@@ -158,6 +158,7 @@ private struct RemuxWorkspaceShell: View {
                     validation: validation,
                     mode: mode,
                     terminalTheme: model.terminalSettings.theme,
+                    isActionInProgress: model.isSetupActionInProgress,
                     onChange: model.updateDraft,
                     onConnect: {
                         Task { await model.saveAndConnect() }
@@ -1370,6 +1371,7 @@ private struct ConnectionSetupView: View {
     let validation: TmuxConnectionDraftValidation
     let mode: RemuxRootModel.SetupMode
     let terminalTheme: TerminalTheme
+    let isActionInProgress: Bool
     let onChange: ((inout TmuxConnectionDraft) -> Void) -> Void
     let onConnect: () -> Void
     let canInstallPublicKey: (TmuxConnectionDraft) -> Bool
@@ -1523,6 +1525,7 @@ private struct ConnectionSetupView: View {
                 }
                 .accessibilityLabel("Cancel")
                 .accessibilityIdentifier("connection.cancel")
+                .disabled(isActionInProgress)
             }
 
             ToolbarItem(placement: .confirmationAction) {
@@ -1530,7 +1533,7 @@ private struct ConnectionSetupView: View {
                     submitIfPossible()
                 }
                 .fontWeight(.semibold)
-                .disabled(!canSubmit)
+                .disabled(!canSubmit || isActionInProgress)
                 .accessibilityIdentifier("connection.save")
             }
 

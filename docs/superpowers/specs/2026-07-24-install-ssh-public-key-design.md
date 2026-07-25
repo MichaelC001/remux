@@ -158,6 +158,16 @@ the snapshot. Successfully saving the server discards the snapshot, so a later
 post-commit failure keeps the accepted trust. New Workspace and Edit Workspace
 cancellation preserve any accepted trust.
 
+Each setup presentation also owns an in-memory session identity. Save and
+Cancel claim a model-owned single-flight action identity before their first
+await; whichever action claims the setup first retains ownership until it
+finishes. A concurrent action is ignored, and both toolbar actions are disabled
+while that claim is active. Trust snapshots are scoped to the originating
+setup identity as well as the server ID, and asynchronous save continuations
+verify that their action remains current before changing setup state or trust.
+An older save can therefore neither commit after Cancel rolled back its setup
+nor consume a newer same-server edit's trust snapshot.
+
 For a new server, canceling setup removes any provisional trust record created
 by this flow. An abrupt process termination can leave an unreachable trust
 record, but the random provisional ID is never reused and therefore cannot
@@ -363,6 +373,10 @@ Verify:
 - a pre-commit Edit Server save failure restores the exact prior trust without
   changing unrelated identities;
 - saving Edit Server retains accepted updated trust;
+- Save and Cancel are single-flight model actions, so concurrent taps cannot
+  pair a committed profile with rolled-back trust;
+- an older post-commit save failure cannot consume a newer same-server setup's
+  trust snapshot;
 - canceling New Workspace or Edit Workspace preserves accepted trust;
 - the action's enablement depends only on valid endpoint and key inputs;
 - an already-installed key never presents the password sheet;
