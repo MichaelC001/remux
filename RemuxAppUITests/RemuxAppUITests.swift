@@ -131,6 +131,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertFalse(app.navigationBars["Install on Host"].exists)
         XCTAssertFalse(app.buttons["connection.private-key.install-cancel"].exists)
         XCTAssertTrue(app.buttons["connection.private-key.install"].exists)
+        XCTAssertTrue(app.buttons["connection.private-key.install"].isEnabled)
 
         let host = app.textFields["connection.host"]
         host.tap()
@@ -165,6 +166,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertFalse(app.navigationBars["Install on Host"].exists)
         XCTAssertFalse(app.buttons["connection.private-key.install-cancel"].exists)
         XCTAssertTrue(app.buttons["connection.private-key.install"].exists)
+        XCTAssertTrue(app.buttons["connection.private-key.install"].isEnabled)
         XCTAssertFalse(app.secureTextFields["connection.private-key.install-password"].exists)
     }
 
