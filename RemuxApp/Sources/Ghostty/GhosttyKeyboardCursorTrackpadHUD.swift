@@ -1,29 +1,32 @@
 import SwiftUI
 
-/// Floating compass overlay shown while the spacebar long-press cursor
-/// trackpad gesture is active. The active arrow saturates from a soft accent
-/// to a vivid one as the user pushes further from the lock point — matching
-/// the analog acceleration model so users see directly how committed their
-/// finger is. A perimeter ring fills with the same intensity as a secondary
-/// signal.
+/// Displays either the stable committed rate or the complete shape currently
+/// being armed. The repeat scheduler remains driven only by `committedTier`.
 struct GhosttyKeyboardCursorTrackpadHUD: View {
     @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
 
-    let state: GhosttyKeyboardCursorTrackpad.HUDState
+    let state: GhosttyKeyboardCursorTrackpad.FeedbackState
 
     private let cornerRadius: CGFloat = 14
     private let dimensions: CGFloat = 64
+    private let maximumArmingFill: CGFloat = 0.82
 
     var body: some View {
         ZStack {
-            arrow(for: .up)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            arrow(for: .down)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-            arrow(for: .left)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            arrow(for: .right)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+            ForEach(DirectionPlacement.allCases, id: \.self) { placement in
+                Group {
+                    if state.direction == placement.direction {
+                        tierIndicator(for: placement.direction)
+                    } else {
+                        baseArrow(for: placement.direction)
+                    }
+                }
+                .frame(
+                    maxWidth: .infinity,
+                    maxHeight: .infinity,
+                    alignment: placement.alignment
+                )
+            }
         }
         .padding(8)
         .frame(width: dimensions, height: dimensions)
@@ -33,50 +36,174 @@ struct GhosttyKeyboardCursorTrackpadHUD: View {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .stroke(Color.white.opacity(0.10), lineWidth: 1)
         )
-        .overlay(
-            intensityRing
-        )
         .shadow(color: Color.black.opacity(0.28), radius: 6, y: 2)
         .opacity(state.isVisible ? 1 : 0)
         .scaleEffect(state.isVisible ? 1 : 0.94)
         .animation(.spring(response: 0.22, dampingFraction: 0.78), value: state.isVisible)
-        .animation(.easeOut(duration: 0.10), value: state.activeDirection)
-        .animation(.easeOut(duration: 0.08), value: state.intensity)
         .accessibilityHidden(true)
         .allowsHitTesting(false)
     }
 
-    private var intensityRing: some View {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .trim(from: 0, to: max(0.001, state.intensity))
-            .stroke(
-                chromeStyle.accent.opacity(0.45 + 0.55 * state.intensity),
-                style: StrokeStyle(lineWidth: 2, lineCap: .round)
-            )
-            .opacity(state.intensity > 0 ? 1 : 0)
+    private func baseArrow(for direction: GhosttyKeyboardCursorTrackpad.Direction) -> some View {
+        Image(systemName: arrowSymbol(for: direction))
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(Color.white.opacity(0.42))
     }
 
     @ViewBuilder
-    private func arrow(for direction: GhosttyKeyboardCursorTrackpad.Direction) -> some View {
-        let active = state.activeDirection == direction
-        Image(systemName: symbolName(for: direction))
-            .font(.system(size: active ? 13 + 2 * state.intensity : 11, weight: .bold))
-            .foregroundStyle(arrowColor(active: active))
-            .scaleEffect(active ? 1 + 0.08 * state.intensity : 1)
+    private func tierIndicator(
+        for direction: GhosttyKeyboardCursorTrackpad.Direction
+    ) -> some View {
+        let displayedTier = state.armingTier ?? state.committedTier
+        let progress: CGFloat = state.armingTier == nil
+            ? 1
+            : state.armingProgress * maximumArmingFill
+
+        switch displayedTier {
+        case .neutral:
+            baseArrow(for: direction)
+        case .one:
+            progressivelyFilledSymbol(
+                arrowSymbol(for: direction),
+                direction: direction,
+                progress: progress,
+                size: 13
+            )
+        case .two, .three:
+            chevronGroup(
+                direction: direction,
+                count: displayedTier.rawValue,
+                progress: progress
+            )
+        }
     }
 
-    private func arrowColor(active: Bool) -> Color {
-        guard active else { return Color.white.opacity(0.45) }
-        let baseAlpha: CGFloat = 0.55
-        return chromeStyle.accent.opacity(baseAlpha + (1 - baseAlpha) * state.intensity)
+    @ViewBuilder
+    private func chevronGroup(
+        direction: GhosttyKeyboardCursorTrackpad.Direction,
+        count: Int,
+        progress: CGFloat
+    ) -> some View {
+        if direction.isHorizontal {
+            HStack(spacing: -2) {
+                chevrons(direction: direction, count: count, progress: progress)
+            }
+        } else {
+            VStack(spacing: -2) {
+                chevrons(direction: direction, count: count, progress: progress)
+            }
+        }
     }
 
-    private func symbolName(for direction: GhosttyKeyboardCursorTrackpad.Direction) -> String {
+    @ViewBuilder
+    private func chevrons(
+        direction: GhosttyKeyboardCursorTrackpad.Direction,
+        count: Int,
+        progress: CGFloat
+    ) -> some View {
+        ForEach(0..<count, id: \.self) { index in
+            let fillIndex = fillsFromTrailingEdge(direction)
+                ? count - index - 1
+                : index
+            progressivelyFilledSymbol(
+                chevronSymbol(for: direction),
+                direction: direction,
+                progress: max(0, min(1, progress * CGFloat(count) - CGFloat(fillIndex))),
+                size: 12
+            )
+        }
+    }
+
+    private func fillsFromTrailingEdge(
+        _ direction: GhosttyKeyboardCursorTrackpad.Direction
+    ) -> Bool {
+        direction == .left || direction == .up
+    }
+
+    private func progressivelyFilledSymbol(
+        _ symbol: String,
+        direction: GhosttyKeyboardCursorTrackpad.Direction,
+        progress: CGFloat,
+        size: CGFloat
+    ) -> some View {
+        ZStack {
+            Image(systemName: symbol)
+                .foregroundStyle(Color.white.opacity(0.42))
+            Image(systemName: symbol)
+                .foregroundStyle(chromeStyle.accent)
+                .mask {
+                    GeometryReader { proxy in
+                        Rectangle()
+                            .frame(
+                                width: direction.isHorizontal
+                                    ? proxy.size.width * progress
+                                    : proxy.size.width,
+                                height: direction.isHorizontal
+                                    ? proxy.size.height
+                                    : proxy.size.height * progress
+                            )
+                            .frame(
+                                maxWidth: .infinity,
+                                maxHeight: .infinity,
+                                alignment: fillAlignment(for: direction)
+                            )
+                    }
+                }
+        }
+        .font(.system(size: size, weight: .bold))
+    }
+
+    private func fillAlignment(
+        for direction: GhosttyKeyboardCursorTrackpad.Direction
+    ) -> Alignment {
         switch direction {
-        case .up: return "arrow.up"
-        case .down: return "arrow.down"
-        case .left: return "arrow.left"
-        case .right: return "arrow.right"
+        case .right: .leading
+        case .left: .trailing
+        case .down: .top
+        case .up: .bottom
+        }
+    }
+
+    private func arrowSymbol(for direction: GhosttyKeyboardCursorTrackpad.Direction) -> String {
+        switch direction {
+        case .up: "arrow.up"
+        case .down: "arrow.down"
+        case .left: "arrow.left"
+        case .right: "arrow.right"
+        }
+    }
+
+    private func chevronSymbol(for direction: GhosttyKeyboardCursorTrackpad.Direction) -> String {
+        switch direction {
+        case .up: "chevron.up"
+        case .down: "chevron.down"
+        case .left: "chevron.left"
+        case .right: "chevron.right"
+        }
+    }
+
+    private enum DirectionPlacement: CaseIterable, Hashable {
+        case up
+        case down
+        case left
+        case right
+
+        var direction: GhosttyKeyboardCursorTrackpad.Direction {
+            switch self {
+            case .up: .up
+            case .down: .down
+            case .left: .left
+            case .right: .right
+            }
+        }
+
+        var alignment: Alignment {
+            switch self {
+            case .up: .top
+            case .down: .bottom
+            case .left: .leading
+            case .right: .trailing
+            }
         }
     }
 }

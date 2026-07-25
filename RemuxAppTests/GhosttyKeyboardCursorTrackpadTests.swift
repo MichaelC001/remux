@@ -3,391 +3,390 @@ import XCTest
 @testable import Remux
 
 final class GhosttyKeyboardCursorTrackpadTests: XCTestCase {
-    private final class GestureOwner {}
-
     private let configuration = GhosttyKeyboardCursorTrackpad.Configuration(
-        horizontalStep: 10,
-        verticalStep: 18,
-        lockDeadband: 12,
-        lateSwitchRatio: 3,
-        rampStartDisplacement: 30,
-        rampEndDisplacement: 100,
-        maxAccelMultiplier: 3,
-        maxStepsPerUpdate: 6
+        neutralRadius: 2,
+        armingDistance: 8,
+        tierPlateauDistance: 4,
+        oneXRepeatInterval: 0.2,
+        twoXRepeatInterval: 0.1,
+        threeXRepeatInterval: 0.05,
+        directionSwitchRatio: 1.25,
+        tierReleaseHysteresis: 2
     )
 
-    func testBeginReturnsVisibleZeroIntensityHUD() {
-        var trackpad = GhosttyKeyboardCursorTrackpad(configuration: configuration)
-        let hud = trackpad.begin(at: .init(x: 50, y: 50))
-        XCTAssertEqual(hud.intensity, 0)
-        XCTAssertEqual(hud.activeDirection, nil)
-        XCTAssertTrue(hud.isVisible)
+    func testRadialZonesSeparateArmingFromStableCommittedTiers() {
+        var trackpad = makeTrackpad()
+
+        XCTAssertEqual(trackpad.update(at: .init(x: 1, y: 0)), .active)
+        assertFeedback(
+            trackpad.update(at: .init(x: 6, y: 0)),
+            direction: .right,
+            committedTier: .neutral,
+            armingTier: .one,
+            armingProgress: 0.5
+        )
+        assertFeedback(
+            trackpad.update(at: .init(x: 10, y: 0)),
+            direction: .right,
+            committedTier: .one
+        )
+        assertFeedback(
+            trackpad.update(at: .init(x: 12, y: 0)),
+            direction: .right,
+            committedTier: .one
+        )
+        assertFeedback(
+            trackpad.update(at: .init(x: 18, y: 0)),
+            direction: .right,
+            committedTier: .one,
+            armingTier: .two,
+            armingProgress: 0.5
+        )
+        assertFeedback(
+            trackpad.update(at: .init(x: 22, y: 0)),
+            direction: .right,
+            committedTier: .two
+        )
+        assertFeedback(
+            trackpad.update(at: .init(x: 24, y: 0)),
+            direction: .right,
+            committedTier: .two
+        )
+        assertFeedback(
+            trackpad.update(at: .init(x: 30, y: 0)),
+            direction: .right,
+            committedTier: .two,
+            armingTier: .three,
+            armingProgress: 0.5
+        )
+        assertFeedback(
+            trackpad.update(at: .init(x: 34, y: 0)),
+            direction: .right,
+            committedTier: .three
+        )
     }
 
-    func testFirstUpdateAfterBeginEmitsNothing() {
-        var trackpad = GhosttyKeyboardCursorTrackpad(configuration: configuration)
-        _ = trackpad.begin(at: .init(x: 50, y: 50))
-        let outcome = trackpad.update(at: .init(x: 50, y: 50))
-        XCTAssertEqual(outcome.steps, [])
-        XCTAssertFalse(outcome.didLockAxis)
+    func testTierProgressUsesRadiusFromOrigin() {
+        var trackpad = makeTrackpad()
+
+        assertFeedback(
+            trackpad.update(at: .init(x: 6, y: 8)),
+            direction: .down,
+            committedTier: .one
+        )
     }
 
-    func testHorizontalDragBelowDeadbandEmitsNothing() {
-        var trackpad = GhosttyKeyboardCursorTrackpad(configuration: configuration)
-        _ = trackpad.begin(at: .init(x: 0, y: 0))
-        let outcome = trackpad.update(at: .init(x: 6, y: 0))
-        XCTAssertEqual(outcome.steps, [])
-        XCTAssertFalse(outcome.didLockAxis)
-        XCTAssertEqual(outcome.hud.intensity, 0)
+    func testMovingInwardPastReleaseHysteresisLowersCommittedTier() {
+        var trackpad = makeTrackpad()
+        XCTAssertEqual(trackpad.update(at: .init(x: 24, y: 0)).committedTier, .two)
+
+        assertFeedback(
+            trackpad.update(at: .init(x: 19, y: 0)),
+            direction: .right,
+            committedTier: .one,
+            armingTier: .two,
+            armingProgress: 0.625
+        )
     }
 
-    func testCrossingDeadbandLocksAxisWithoutEmission() {
-        var trackpad = GhosttyKeyboardCursorTrackpad(configuration: configuration)
-        _ = trackpad.begin(at: .init(x: 0, y: 0))
-        let outcome = trackpad.update(at: .init(x: 15, y: 0))
-        XCTAssertEqual(outcome.steps, [])
-        XCTAssertTrue(outcome.didLockAxis)
-        XCTAssertEqual(outcome.hud.activeDirection, nil)
-        XCTAssertEqual(outcome.hud.intensity, 0)
+    func testCommittedTierDoesNotChatterAtReleaseBoundary() {
+        var trackpad = makeTrackpad()
+        XCTAssertEqual(trackpad.update(at: .init(x: 22, y: 0)).committedTier, .two)
+
+        assertFeedback(
+            trackpad.update(at: .init(x: 21, y: 0)),
+            direction: .right,
+            committedTier: .two
+        )
+        assertFeedback(
+            trackpad.update(at: .init(x: 19, y: 0)),
+            direction: .right,
+            committedTier: .one,
+            armingTier: .two,
+            armingProgress: 0.625
+        )
     }
 
-    func testHorizontalLockEmitsRightStepsAtBaseStepSize() {
-        var trackpad = GhosttyKeyboardCursorTrackpad(configuration: configuration)
-        _ = trackpad.begin(at: .init(x: 0, y: 0))
-        _ = trackpad.update(at: .init(x: 15, y: 0))
-        // Displacement after this update is 10pt, well below rampStart (30) so
-        // the multiplier is 1x and one 10pt step crossing emits exactly one
-        // .right key event.
-        let outcome = trackpad.update(at: .init(x: 25, y: 0))
-        XCTAssertEqual(outcome.steps.count, 1)
-        XCTAssertEqual(outcome.steps.first?.direction, .right)
-        XCTAssertEqual(outcome.steps.first?.intensity, 0)
+    func testReturningInsideNeutralCircleClearsDirectionAndStopsSteering() {
+        var trackpad = makeTrackpad()
+        _ = trackpad.update(at: .init(x: 22, y: 0))
+
+        XCTAssertEqual(trackpad.update(at: .init(x: 1, y: 0)), .active)
     }
 
-    func testIntensityIsZeroBelowRampStart() {
-        var trackpad = GhosttyKeyboardCursorTrackpad(configuration: configuration)
-        _ = trackpad.begin(at: .init(x: 0, y: 0))
-        _ = trackpad.update(at: .init(x: 15, y: 0))
-        let outcome = trackpad.update(at: .init(x: 35, y: 0))
-        XCTAssertEqual(outcome.hud.intensity, 0)
+    func testFixedOriginMapsAllCardinalDirections() {
+        let samples: [(CGPoint, GhosttyKeyboardCursorTrackpad.Direction)] = [
+            (.init(x: 10, y: 0), .right),
+            (.init(x: -10, y: 0), .left),
+            (.init(x: 0, y: -10), .up),
+            (.init(x: 0, y: 10), .down),
+        ]
+
+        for (point, direction) in samples {
+            var trackpad = makeTrackpad()
+            assertFeedback(
+                trackpad.update(at: point),
+                direction: direction,
+                committedTier: .one
+            )
+        }
     }
 
-    func testIntensityRampsLinearlyBetweenStartAndEnd() {
-        var trackpad = GhosttyKeyboardCursorTrackpad(configuration: configuration)
-        _ = trackpad.begin(at: .init(x: 0, y: 0))
-        _ = trackpad.update(at: .init(x: 15, y: 0))
-        // Displacement of 65pt past the lock point sits halfway between
-        // rampStart (30) and rampEnd (100), so intensity = 0.5.
-        let outcome = trackpad.update(at: .init(x: 80, y: 0))
-        XCTAssertEqual(outcome.hud.intensity, 0.5, accuracy: 0.01)
+    func testAxisHysteresisPreventsDirectionFlickerNearDiagonal() {
+        var trackpad = makeTrackpad()
+        XCTAssertEqual(trackpad.update(at: .init(x: 20, y: 10)).direction, .right)
+
+        XCTAssertEqual(trackpad.update(at: .init(x: 20, y: 24)).direction, .right)
+        XCTAssertEqual(trackpad.update(at: .init(x: 20, y: 25)).direction, .down)
     }
 
-    func testIntensityClampsToOneAboveRampEnd() {
-        var trackpad = GhosttyKeyboardCursorTrackpad(configuration: configuration)
-        _ = trackpad.begin(at: .init(x: 0, y: 0))
-        _ = trackpad.update(at: .init(x: 15, y: 0))
-        let outcome = trackpad.update(at: .init(x: 250, y: 0))
-        XCTAssertEqual(outcome.hud.intensity, 1)
+    func testCrossingOriginReversesImmediatelyOnSameAxis() {
+        var trackpad = makeTrackpad()
+        XCTAssertEqual(trackpad.update(at: .init(x: 10, y: 0)).direction, .right)
+
+        XCTAssertEqual(trackpad.update(at: .init(x: -10, y: 0)).direction, .left)
     }
 
-    func testFullIntensityHitsMaxStepsPerUpdateCap() {
-        var trackpad = GhosttyKeyboardCursorTrackpad(configuration: configuration)
-        _ = trackpad.begin(at: .init(x: 0, y: 0))
-        _ = trackpad.update(at: .init(x: 15, y: 0))
-        // 135pt of locked-axis travel past the lock at maxAccelMultiplier=3
-        // yields effective step ≈ 3.33pt, ≈40 raw crossings, capped at
-        // maxStepsPerUpdate (6).
-        let outcome = trackpad.update(at: .init(x: 150, y: 0))
-        XCTAssertEqual(outcome.steps.count, configuration.maxStepsPerUpdate)
-        XCTAssertEqual(outcome.steps.first?.intensity, 1)
+    func testStationaryPointKeepsSameCommittedState() {
+        var trackpad = makeTrackpad()
+        let point = CGPoint(x: 18, y: 0)
+        let first = trackpad.update(at: point)
+
+        XCTAssertEqual(trackpad.update(at: point), first)
     }
 
-    func testEmissionDensityScalesWithIntensity() {
-        // Two parallel runs: one at intensity 0 (low displacement), one near
-        // intensity 1 (large displacement). Same incremental movement, expect
-        // the high-intensity run to emit more steps per pt of finger travel.
-        var slow = GhosttyKeyboardCursorTrackpad(configuration: configuration)
-        _ = slow.begin(at: .init(x: 0, y: 0))
-        _ = slow.update(at: .init(x: 15, y: 0))
-        let slowOutcome = slow.update(at: .init(x: 35, y: 0))
+    func testRepeatIntervalsAreExplicitForEachTier() {
+        let trackpad = GhosttyKeyboardCursorTrackpad(configuration: configuration)
 
-        var fast = GhosttyKeyboardCursorTrackpad(configuration: configuration)
-        _ = fast.begin(at: .init(x: 0, y: 0))
-        _ = fast.update(at: .init(x: 15, y: 0))
-        _ = fast.update(at: .init(x: 200, y: 0))
-        let fastOutcome = fast.update(at: .init(x: 220, y: 0))
-
-        XCTAssertGreaterThan(fastOutcome.steps.count, slowOutcome.steps.count)
+        XCTAssertNil(trackpad.repeatInterval(for: .neutral))
+        XCTAssertEqual(trackpad.repeatInterval(for: .one)!, 0.2, accuracy: 0.000_001)
+        XCTAssertEqual(trackpad.repeatInterval(for: .two)!, 0.1, accuracy: 0.000_001)
+        XCTAssertEqual(trackpad.repeatInterval(for: .three)!, 0.05, accuracy: 0.000_001)
     }
 
-    func testReversingDirectionUnwindsDisplacementAndDecreasesIntensity() {
-        var trackpad = GhosttyKeyboardCursorTrackpad(configuration: configuration)
-        _ = trackpad.begin(at: .init(x: 0, y: 0))
-        _ = trackpad.update(at: .init(x: 15, y: 0))
-        let pushed = trackpad.update(at: .init(x: 130, y: 0))
-        XCTAssertEqual(pushed.hud.intensity, 1)
+    func testDefaultCadencesMatchPrecisionAndTraversalRoles() {
+        let trackpad = GhosttyKeyboardCursorTrackpad()
 
-        // Pull back 80pt. New displacement ≈ 35 -> intensity ≈ (35-30)/70 = 0.07.
-        let pulled = trackpad.update(at: .init(x: 50, y: 0))
-        XCTAssertLessThan(pulled.hud.intensity, 0.2)
+        XCTAssertEqual(trackpad.repeatInterval(for: .one)!, 0.45, accuracy: 0.000_001)
+        XCTAssertEqual(trackpad.repeatInterval(for: .two)!, 0.225, accuracy: 0.000_001)
+        XCTAssertEqual(trackpad.repeatInterval(for: .three)!, 0.12, accuracy: 0.000_001)
     }
 
-    func testReversalEmitsOppositeDirection() {
-        var trackpad = GhosttyKeyboardCursorTrackpad(configuration: configuration)
-        _ = trackpad.begin(at: .init(x: 100, y: 0))
-        _ = trackpad.update(at: .init(x: 85, y: 0))
-        let outcome = trackpad.update(at: .init(x: 65, y: 0))
-        XCTAssertEqual(outcome.steps.count, 2)
-        XCTAssertTrue(outcome.steps.allSatisfy { $0.direction == .left })
-    }
+    func testDefaultGeometryKeepsAllTiersWithinOneHundredTwentyPoints() {
+        var trackpad = GhosttyKeyboardCursorTrackpad()
+        _ = trackpad.begin(at: .zero)
 
-    func testVerticalLockEmitsDownStepsAtVerticalThreshold() {
-        var trackpad = GhosttyKeyboardCursorTrackpad(configuration: configuration)
-        _ = trackpad.begin(at: .init(x: 0, y: 0))
-        _ = trackpad.update(at: .init(x: 0, y: 15))
-        let outcome = trackpad.update(at: .init(x: 0, y: 38))
-        XCTAssertEqual(outcome.steps.count, 1)
-        XCTAssertEqual(outcome.steps.first?.direction, .down)
-    }
-
-    func testTinyOrthogonalJitterAfterLockDoesNotSwitchAxis() {
-        var trackpad = GhosttyKeyboardCursorTrackpad(configuration: configuration)
-        _ = trackpad.begin(at: .init(x: 0, y: 0))
-        _ = trackpad.update(at: .init(x: 15, y: 0))
-
-        // Real-finger noise: a few sub-deadband vertical wobbles. These must
-        // not flip the axis lock away from horizontal.
-        let firstJitter = trackpad.update(at: .init(x: 15, y: 3))
-        XCTAssertFalse(firstJitter.didLockAxis)
-        let secondJitter = trackpad.update(at: .init(x: 15, y: 6))
-        XCTAssertFalse(secondJitter.didLockAxis)
-        let thirdJitter = trackpad.update(at: .init(x: 15, y: 4))
-        XCTAssertFalse(thirdJitter.didLockAxis)
-
-        // A subsequent horizontal commit should still emit a right arrow,
-        // proving the axis lock survived the jitter.
-        let horizontalCommit = trackpad.update(at: .init(x: 25, y: 4))
-        XCTAssertEqual(horizontalCommit.steps.first?.direction, .right)
-    }
-
-    func testLateAxisSwitchResetsDisplacement() {
-        var trackpad = GhosttyKeyboardCursorTrackpad(configuration: configuration)
-        _ = trackpad.begin(at: .init(x: 0, y: 0))
-        _ = trackpad.update(at: .init(x: 15, y: 0))
-        // Build up horizontal displacement well above rampStart.
-        let pushed = trackpad.update(at: .init(x: 90, y: 0))
-        XCTAssertGreaterThan(pushed.hud.intensity, 0.5)
-
-        // Sharp downward sweep flips lock to vertical and resets the
-        // displacement counter.
-        let switchOutcome = trackpad.update(at: .init(x: 90, y: 250))
-        XCTAssertTrue(switchOutcome.didLockAxis)
-        // The 250pt downward update on the new vertical axis with displacement
-        // counter starting fresh from 0 puts displacement at 250 -> intensity 1.
-        XCTAssertEqual(switchOutcome.hud.intensity, 1)
-        XCTAssertTrue(switchOutcome.steps.allSatisfy { $0.direction == .down })
-    }
-
-    func testCappedUpdatePreservesBacklogForNextCallback() {
-        var trackpad = GhosttyKeyboardCursorTrackpad(configuration: configuration)
-        _ = trackpad.begin(at: .init(x: 0, y: 0))
-        _ = trackpad.update(at: .init(x: 15, y: 0))
-
-        // Coalesced 200pt update at clamped intensity emits the cap and leaves
-        // a substantial residual in the accumulator.
-        let big = trackpad.update(at: .init(x: 215, y: 0))
-        XCTAssertEqual(big.steps.count, configuration.maxStepsPerUpdate)
-
-        // No new finger movement on the next callback. The residual still has
-        // enough travel to fire more arrows. With the previous (uncapped)
-        // consumption policy this would be empty.
-        let drain = trackpad.update(at: .init(x: 215, y: 0))
-        XCTAssertGreaterThan(drain.steps.count, 0)
-        XCTAssertTrue(drain.steps.allSatisfy { $0.direction == .right })
-    }
-
-    func testEndReturnsHiddenHUDState() {
-        var trackpad = GhosttyKeyboardCursorTrackpad(configuration: configuration)
-        _ = trackpad.begin(at: .init(x: 0, y: 0))
-        _ = trackpad.update(at: .init(x: 25, y: 0))
-        let hud = trackpad.end()
-        XCTAssertEqual(hud, .hidden)
-    }
-
-    func testResidualTravelAccumulatesAcrossUpdates() {
-        var trackpad = GhosttyKeyboardCursorTrackpad(configuration: configuration)
-        _ = trackpad.begin(at: .init(x: 0, y: 0))
-        _ = trackpad.update(at: .init(x: 15, y: 0))
-        // Two below-threshold updates of 6pt each accumulate to one step.
-        let first = trackpad.update(at: .init(x: 21, y: 0))
-        XCTAssertEqual(first.steps, [])
-        let second = trackpad.update(at: .init(x: 27, y: 0))
-        XCTAssertEqual(second.steps.count, 1)
-        XCTAssertEqual(second.steps.first?.direction, .right)
+        XCTAssertEqual(trackpad.update(at: .init(x: 7, y: 0)), .active)
+        assertFeedback(
+            trackpad.update(at: .init(x: 22, y: 0)),
+            direction: .right,
+            committedTier: .neutral,
+            armingTier: .one,
+            armingProgress: 0.5
+        )
+        XCTAssertEqual(trackpad.update(at: .init(x: 36, y: 0)).committedTier, .one)
+        XCTAssertEqual(trackpad.update(at: .init(x: 78, y: 0)).committedTier, .two)
+        XCTAssertEqual(trackpad.update(at: .init(x: 120, y: 0)).committedTier, .three)
     }
 
     @MainActor
-    func testDriverStartsClockOnlyAfterImmediateMovementAndHonorsInitialDelay() {
-        let driver = GhosttyKeyboardCursorTrackpadDriver()
-        let owner = GestureOwner()
-        var events: [GhosttySurfaceKeyEvent.KeyCode] = []
+    func testDriverDoesNotEmitDuringInitialArming() {
+        let harness = DriverHarness(configuration: configuration)
+        defer { harness.driver.cancel(owner: harness.owner) }
 
-        driver.begin(
-            owner: owner,
-            at: .zero,
-            sendKeyEvent: {
-                events.append($0.keyCode)
-                return true
-            },
-            onHUDStateChange: { _ in }
+        let feedback = harness.driver.update(owner: harness.owner, at: .init(x: 6, y: 0), now: 0)
+
+        XCTAssertTrue(harness.keyCodes.isEmpty)
+        assertFeedback(
+            feedback!,
+            direction: .right,
+            committedTier: .neutral,
+            armingTier: .one,
+            armingProgress: 0.5
         )
-        XCTAssertFalse(driver.isRepeatScheduled)
-
-        _ = driver.update(owner: owner, at: .init(x: 15, y: 0), now: 0)
-        XCTAssertFalse(driver.isRepeatScheduled)
-        XCTAssertTrue(events.isEmpty)
-
-        _ = driver.update(owner: owner, at: .init(x: 25, y: 0), now: 0)
-        XCTAssertEqual(events, [.arrowRight])
-        XCTAssertTrue(driver.isRepeatScheduled)
-
-        driver.repeatTick(at: GhosttyKeyboardCursorTrackpadDriver.initialRepeatDelay - 0.001)
-        XCTAssertEqual(events.count, 1)
-        driver.repeatTick(at: GhosttyKeyboardCursorTrackpadDriver.initialRepeatDelay)
-        XCTAssertEqual(events, [.arrowRight, .arrowRight])
     }
 
     @MainActor
-    func testDriverUsesThreeRepeatGearsWithoutCatchUp() {
-        let driver = GhosttyKeyboardCursorTrackpadDriver()
-        let owner = GestureOwner()
-        var events: [GhosttySurfaceKeyEvent.KeyCode] = []
-        driver.begin(
-            owner: owner,
-            at: .zero,
-            sendKeyEvent: {
-                events.append($0.keyCode)
-                return true
-            },
-            onHUDStateChange: { _ in }
-        )
-        _ = driver.update(owner: owner, at: .init(x: 15, y: 0), now: 0)
-        _ = driver.update(owner: owner, at: .init(x: 25, y: 0), now: 0)
+    func testDriverRepeatsCommittedDirectionWhileFingerIsStill() {
+        let harness = DriverHarness(configuration: configuration)
+        defer { harness.driver.cancel(owner: harness.owner) }
+        _ = harness.driver.update(owner: harness.owner, at: .init(x: 10, y: 0), now: 0)
 
-        driver.repeatTick(at: GhosttyKeyboardCursorTrackpadDriver.initialRepeatDelay)
-        let afterFirstSlowRepeat = events.count
-        driver.repeatTick(
-            at: GhosttyKeyboardCursorTrackpadDriver.initialRepeatDelay +
-                GhosttyKeyboardCursorTrackpadDriver.slowRepeatInterval - 0.001
-        )
-        XCTAssertEqual(events.count, afterFirstSlowRepeat)
-        let slowDeadline = GhosttyKeyboardCursorTrackpadDriver.initialRepeatDelay +
-            GhosttyKeyboardCursorTrackpadDriver.slowRepeatInterval
-        driver.repeatTick(at: slowDeadline)
-        XCTAssertEqual(events.count, afterFirstSlowRepeat + 1)
+        XCTAssertEqual(harness.keyCodes, [.arrowRight])
+        harness.driver.repeatTick(at: 0.19)
+        XCTAssertEqual(harness.keyCodes, [.arrowRight])
+        harness.driver.repeatTick(at: 0.20)
+        harness.driver.repeatTick(at: 0.39)
+        harness.driver.repeatTick(at: 0.40)
 
-        _ = driver.update(owner: owner, at: .init(x: 80, y: 0), now: slowDeadline)
-        driver.repeatTick(at: slowDeadline + GhosttyKeyboardCursorTrackpadDriver.slowRepeatInterval)
-        let afterFirstMediumRepeat = events.count
-        driver.repeatTick(
-            at: slowDeadline + GhosttyKeyboardCursorTrackpadDriver.slowRepeatInterval +
-                GhosttyKeyboardCursorTrackpadDriver.mediumRepeatInterval
-        )
-        XCTAssertEqual(events.count, afterFirstMediumRepeat + 1)
-
-        let mediumDeadline = slowDeadline + GhosttyKeyboardCursorTrackpadDriver.slowRepeatInterval +
-            GhosttyKeyboardCursorTrackpadDriver.mediumRepeatInterval
-        _ = driver.update(owner: owner, at: .init(x: 130, y: 0), now: mediumDeadline)
-        driver.repeatTick(at: mediumDeadline + GhosttyKeyboardCursorTrackpadDriver.mediumRepeatInterval)
-        let afterFirstFastRepeat = events.count
-        driver.repeatTick(
-            at: mediumDeadline + GhosttyKeyboardCursorTrackpadDriver.mediumRepeatInterval +
-                GhosttyKeyboardCursorTrackpadDriver.fastRepeatInterval
-        )
-        XCTAssertEqual(events.count, afterFirstFastRepeat + 1)
-
-        driver.repeatTick(at: 100)
-        XCTAssertEqual(events.count, afterFirstFastRepeat + 2, "a delayed frame emits only one repeat")
+        XCTAssertEqual(harness.keyCodes, [.arrowRight, .arrowRight, .arrowRight])
+        XCTAssertEqual(harness.driver.end(owner: harness.owner), true)
     }
 
     @MainActor
-    func testDriverNeutralAndDirectionChangesResetRepeatDelay() {
-        let driver = GhosttyKeyboardCursorTrackpadDriver()
-        let owner = GestureOwner()
-        var events: [GhosttySurfaceKeyEvent.KeyCode] = []
-        driver.begin(
-            owner: owner,
-            at: .zero,
-            sendKeyEvent: {
-                events.append($0.keyCode)
-                return true
-            },
-            onHUDStateChange: { _ in }
+    func testDriverKeepsCurrentRateWhileNextTierIsArming() {
+        let harness = DriverHarness(configuration: configuration)
+        defer { harness.driver.cancel(owner: harness.owner) }
+        _ = harness.driver.update(owner: harness.owner, at: .init(x: 10, y: 0), now: 0)
+
+        let feedback = harness.driver.update(owner: harness.owner, at: .init(x: 18, y: 0), now: 0.1)
+        harness.driver.repeatTick(at: 0.20)
+
+        assertFeedback(
+            feedback!,
+            direction: .right,
+            committedTier: .one,
+            armingTier: .two,
+            armingProgress: 0.5
         )
-        _ = driver.update(owner: owner, at: .init(x: 15, y: 0), now: 0)
-        _ = driver.update(owner: owner, at: .init(x: 25, y: 0), now: 0)
-        XCTAssertTrue(driver.isRepeatScheduled)
-
-        _ = driver.update(owner: owner, at: .init(x: 15, y: 0), now: 0.1)
-        XCTAssertFalse(driver.isRepeatScheduled)
-        let neutralEventCount = events.count
-        driver.repeatTick(at: 1)
-        XCTAssertEqual(events.count, neutralEventCount)
-
-        _ = driver.update(owner: owner, at: .init(x: 5, y: 0), now: 1)
-        XCTAssertTrue(driver.isRepeatScheduled)
-        let leftMovementEventCount = events.count
-        driver.repeatTick(at: 1 + GhosttyKeyboardCursorTrackpadDriver.initialRepeatDelay - 0.001)
-        XCTAssertEqual(events.count, leftMovementEventCount)
-        driver.repeatTick(at: 1 + GhosttyKeyboardCursorTrackpadDriver.initialRepeatDelay)
-        XCTAssertEqual(events.last, .arrowLeft)
-        XCTAssertEqual(events.count, leftMovementEventCount + 1)
+        XCTAssertEqual(harness.keyCodes, [.arrowRight, .arrowRight])
     }
 
     @MainActor
-    func testDriverInputRejectionStopsClockAndPreservesSteeredResult() {
-        let driver = GhosttyKeyboardCursorTrackpadDriver()
-        let owner = GestureOwner()
-        var sendAttempts = 0
-        var hudStates: [GhosttyKeyboardCursorTrackpad.HUDState] = []
+    func testDriverUsesFasterCadenceOnlyAfterTierCommits() {
+        let harness = DriverHarness(configuration: configuration)
+        defer { harness.driver.cancel(owner: harness.owner) }
+        _ = harness.driver.update(owner: harness.owner, at: .init(x: 10, y: 0), now: 0)
+
+        _ = harness.driver.update(owner: harness.owner, at: .init(x: 22, y: 0), now: 0.1)
+        harness.driver.repeatTick(at: 0.19)
+        XCTAssertEqual(harness.keyCodes, [.arrowRight, .arrowRight])
+        harness.driver.repeatTick(at: 0.20)
+
+        XCTAssertEqual(harness.keyCodes, [.arrowRight, .arrowRight, .arrowRight])
+        XCTAssertEqual(harness.hapticCues, [.tierChanged, .tierChanged])
+    }
+
+    @MainActor
+    func testDriverDoesNotEmitExtraCommandWhenMovingToSlowerTier() {
+        let harness = DriverHarness(configuration: configuration)
+        defer { harness.driver.cancel(owner: harness.owner) }
+        _ = harness.driver.update(owner: harness.owner, at: .init(x: 22, y: 0), now: 0)
+        XCTAssertEqual(harness.keyCodes, [.arrowRight])
+
+        _ = harness.driver.update(owner: harness.owner, at: .init(x: 19, y: 0), now: 0.1)
+
+        XCTAssertEqual(harness.keyCodes, [.arrowRight])
+        XCTAssertEqual(harness.hapticCues, [.tierChanged, .tierChanged])
+    }
+
+    @MainActor
+    func testDriverStopsImmediatelyInsideNeutralZone() {
+        let harness = DriverHarness(configuration: configuration)
+        defer { harness.driver.cancel(owner: harness.owner) }
+        _ = harness.driver.update(owner: harness.owner, at: .init(x: 10, y: 0), now: 0)
+
+        _ = harness.driver.update(owner: harness.owner, at: .init(x: 1, y: 0), now: 0.1)
+        harness.driver.repeatTick(at: 1)
+
+        XCTAssertEqual(harness.keyCodes, [.arrowRight])
+        XCTAssertEqual(harness.hapticCues, [.tierChanged, .neutralEntered])
+    }
+
+    @MainActor
+    func testDriverDirectionChangeEmitsNewDirectionAndCancelsOldRepeat() {
+        let harness = DriverHarness(configuration: configuration)
+        defer { harness.driver.cancel(owner: harness.owner) }
+        _ = harness.driver.update(owner: harness.owner, at: .init(x: 10, y: 0), now: 0)
+
+        _ = harness.driver.update(owner: harness.owner, at: .init(x: -10, y: 0), now: 0.1)
+        harness.driver.repeatTick(at: 0.299)
+        harness.driver.repeatTick(at: 0.301)
+
+        XCTAssertEqual(harness.keyCodes, [.arrowRight, .arrowLeft, .arrowLeft])
+    }
+
+    @MainActor
+    func testDriverRejectsUpdatesFromAnotherOwner() {
+        let harness = DriverHarness(configuration: configuration)
+        let otherOwner = NSObject()
+        defer { harness.driver.cancel(owner: harness.owner) }
+
+        XCTAssertNil(harness.driver.update(owner: otherOwner, at: .init(x: 10, y: 0)))
+        XCTAssertNil(harness.driver.end(owner: otherOwner))
+        XCTAssertEqual(harness.driver.end(owner: harness.owner), false)
+    }
+
+    @MainActor
+    func testDriverCancelsGestureWhenKeyPathRejectsInput() {
+        let driver = GhosttyKeyboardCursorTrackpadDriver(configuration: configuration)
+        let owner = NSObject()
+        var feedback: [GhosttyKeyboardCursorTrackpad.FeedbackState] = []
+        var attempts = 0
         driver.begin(
             owner: owner,
             at: .zero,
             sendKeyEvent: { _ in
-                sendAttempts += 1
+                attempts += 1
                 return false
             },
-            onHUDStateChange: { hudStates.append($0) }
+            onFeedbackChange: { feedback.append($0) }
         )
-        _ = driver.update(owner: owner, at: .init(x: 15, y: 0), now: 0)
-        _ = driver.update(owner: owner, at: .init(x: 25, y: 0), now: 0)
 
-        XCTAssertEqual(sendAttempts, 1)
-        XCTAssertFalse(driver.isRepeatScheduled)
-        XCTAssertEqual(hudStates.last, .hidden)
-        driver.repeatTick(at: 10)
-        _ = driver.update(owner: owner, at: .init(x: 50, y: 0), now: 10)
-        XCTAssertEqual(sendAttempts, 1)
-        XCTAssertEqual(driver.end(owner: owner), true)
+        _ = driver.update(owner: owner, at: .init(x: 10, y: 0), now: 0)
+
+        XCTAssertEqual(attempts, 1)
+        XCTAssertEqual(feedback, [.active, .hidden])
+        XCTAssertNil(driver.update(owner: owner, at: .init(x: 22, y: 0)))
+        XCTAssertNil(driver.end(owner: owner))
     }
 
-    @MainActor
-    func testDriverEndCancelsClockAndHidesHUD() {
-        let driver = GhosttyKeyboardCursorTrackpadDriver()
-        let owner = GestureOwner()
-        var hudStates: [GhosttyKeyboardCursorTrackpad.HUDState] = []
+    private func makeTrackpad() -> GhosttyKeyboardCursorTrackpad {
+        var trackpad = GhosttyKeyboardCursorTrackpad(configuration: configuration)
+        trackpad.begin(at: .zero)
+        return trackpad
+    }
+
+    private func assertFeedback(
+        _ feedback: GhosttyKeyboardCursorTrackpad.FeedbackState,
+        direction: GhosttyKeyboardCursorTrackpad.Direction,
+        committedTier: GhosttyKeyboardCursorTrackpad.SpeedTier,
+        armingTier: GhosttyKeyboardCursorTrackpad.SpeedTier? = nil,
+        armingProgress: CGFloat = 0,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertTrue(feedback.isVisible, file: file, line: line)
+        XCTAssertEqual(feedback.direction, direction, file: file, line: line)
+        XCTAssertEqual(feedback.committedTier, committedTier, file: file, line: line)
+        XCTAssertEqual(feedback.armingTier, armingTier, file: file, line: line)
+        XCTAssertEqual(feedback.armingProgress, armingProgress, accuracy: 0.000_001, file: file, line: line)
+    }
+}
+
+@MainActor
+private final class DriverHarness {
+    let driver: GhosttyKeyboardCursorTrackpadDriver
+    let owner = NSObject()
+    let hapticRecorder: HapticRecorder
+    private(set) var keyCodes: [GhosttySurfaceKeyEvent.KeyCode] = []
+
+    var hapticCues: [GhosttyKeyboardCursorTrackpadDriver.HapticCue] {
+        hapticRecorder.cues
+    }
+
+    init(configuration: GhosttyKeyboardCursorTrackpad.Configuration) {
+        let hapticRecorder = HapticRecorder()
+        self.hapticRecorder = hapticRecorder
+        driver = GhosttyKeyboardCursorTrackpadDriver(
+            configuration: configuration,
+            playHaptic: { [hapticRecorder] cue in
+                hapticRecorder.cues.append(cue)
+            }
+        )
         driver.begin(
             owner: owner,
             at: .zero,
-            sendKeyEvent: { _ in true },
-            onHUDStateChange: { hudStates.append($0) }
+            sendKeyEvent: { [weak self] event in
+                self?.keyCodes.append(event.keyCode)
+                return true
+            },
+            onFeedbackChange: { _ in }
         )
-        _ = driver.update(owner: owner, at: .init(x: 15, y: 0), now: 0)
-        _ = driver.update(owner: owner, at: .init(x: 25, y: 0), now: 0)
-
-        XCTAssertEqual(driver.end(owner: owner), true)
-        XCTAssertFalse(driver.isRepeatScheduled)
-        XCTAssertEqual(hudStates.last, .hidden)
-        XCTAssertNil(driver.end(owner: owner))
     }
+}
+
+@MainActor
+private final class HapticRecorder {
+    var cues: [GhosttyKeyboardCursorTrackpadDriver.HapticCue] = []
 }

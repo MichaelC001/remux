@@ -41,25 +41,6 @@ final class GhosttyTerminalDisconnectReasonClassifierTests: XCTestCase {
         )
         XCTAssertEqual(
             GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
-                SSHTmuxControlTransportError.remoteExit(127)
-            ).kind,
-            .tmuxUnavailable
-        )
-        let missingPathDiagnostics = SSHTmuxStartupDiagnostics(
-            stdoutByteCount: 0,
-            stderrByteCount: 45,
-            extendedDataByteCount: 0,
-            stderrPreview: "sh: /missing/tmux: No such file or directory\\x0A",
-            extendedDataPreview: nil
-        )
-        XCTAssertEqual(
-            GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
-                SSHTmuxControlTransportError.remoteExit(126, diagnostics: missingPathDiagnostics)
-            ).kind,
-            .tmuxUnavailable
-        )
-        XCTAssertEqual(
-            GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
                 SSHTmuxControlTransportError.channelRequestFailed(.exec)
             ).kind,
             .profile
@@ -93,6 +74,57 @@ final class GhosttyTerminalDisconnectReasonClassifierTests: XCTestCase {
                 SSHTmuxControlTransportError.controlSessionNoResponse(.seconds(15))
             ).kind,
             .profile
+        )
+    }
+
+    func testTmuxUnavailableRequiresLauncherMarker() {
+        let cases = [
+            (
+                127,
+                SSHTmuxControlCommandBuilder.tmuxNotFoundMarker,
+                "Install tmux on this server or update Executable Path."
+            ),
+            (
+                126,
+                SSHTmuxControlCommandBuilder.tmuxNotExecutableMarker,
+                "Check the tmux executable and its permissions, then try again."
+            ),
+        ]
+
+        for (status, marker, message) in cases {
+            let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
+                SSHTmuxControlTransportError.remoteExit(
+                    status,
+                    diagnostics: diagnostics(stderr: "\(marker): /usr/bin/tmux\\x0A")
+                )
+            )
+            XCTAssertEqual(reason.kind, .tmuxUnavailable)
+            XCTAssertEqual(reason.message, message)
+        }
+    }
+
+    func testShellFailuresAreNotReportedAsTmuxUnavailable() {
+        for (status, stderr) in [
+            (127, "fish: Unknown command: export\\x0A"),
+            (126, "fish: exec: /bin/sh: Permission denied\\x0A"),
+        ] {
+            let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
+                SSHTmuxControlTransportError.remoteExit(
+                    status,
+                    diagnostics: diagnostics(stderr: stderr)
+                )
+            )
+            XCTAssertEqual(reason.kind, .remoteExit)
+        }
+    }
+
+    private func diagnostics(stderr: String) -> SSHTmuxStartupDiagnostics {
+        SSHTmuxStartupDiagnostics(
+            stdoutByteCount: 0,
+            stderrByteCount: stderr.utf8.count,
+            extendedDataByteCount: 0,
+            stderrPreview: stderr,
+            extendedDataPreview: nil
         )
     }
 
