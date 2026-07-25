@@ -1,39 +1,38 @@
 import SwiftUI
 
-enum SSHPublicKeyInstallPhase: Equatable {
-    case idle
-    case preflighting
-    case passwordRequired
-    case appending
-    case verifying
-    case alreadyInstalled
-    case installed
-    case failed(String)
-}
-
 struct SSHPublicKeyInstallSheet: View {
-    let draft: TmuxConnectionDraft
-    let onPreflight: (TmuxConnectionDraft) async throws -> SSHPublicKeyPreflightOutcome
-    let onAppend: (TmuxConnectionDraft, String) async throws -> Void
-    let onVerify: (TmuxConnectionDraft) async throws -> Void
-    let onTrustHostKey: (SSHHostKeyTrustChallenge) throws -> Void
     let onCancel: () -> Void
 
-    @State private var password = ""
-    @State private var phase: SSHPublicKeyInstallPhase = .idle
-    @State private var pendingTrust: PendingTrust?
-    @State private var passwordError: String?
+    @StateObject private var coordinator: SSHPublicKeyInstallCoordinator
     @State private var operationTask: Task<Void, Never>?
 
-    private struct PendingTrust {
-        enum Phase: Equatable {
-            case preflight
-            case append
-            case verify
-        }
-
-        let challenge: SSHHostKeyTrustChallenge
-        let phase: Phase
+    init(
+        draft: TmuxConnectionDraft,
+        onPreflight: @escaping @MainActor (
+            TmuxConnectionDraft
+        ) async throws -> SSHPublicKeyPreflightOutcome,
+        onAppend: @escaping @MainActor (
+            TmuxConnectionDraft,
+            String
+        ) async throws -> Void,
+        onVerify: @escaping @MainActor (
+            TmuxConnectionDraft
+        ) async throws -> Void,
+        onTrustHostKey: @escaping @MainActor (
+            SSHHostKeyTrustChallenge
+        ) throws -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.onCancel = onCancel
+        _coordinator = StateObject(
+            wrappedValue: SSHPublicKeyInstallCoordinator(
+                draft: draft,
+                onPreflight: onPreflight,
+                onAppend: onAppend,
+                onVerify: onVerify,
+                onTrustHostKey: onTrustHostKey
+            )
+        )
     }
 
     var body: some View {
@@ -53,13 +52,14 @@ struct SSHPublicKeyInstallSheet: View {
             }
         }
         .onAppear {
-            start(.preflight)
+            start {
+                await coordinator.preflight()
+            }
         }
         .onDisappear {
             operationTask?.cancel()
             operationTask = nil
-            password = ""
-            pendingTrust = nil
+            coordinator.cancel()
         }
         .alert(
             hostTrustTitle,
@@ -71,7 +71,7 @@ struct SSHPublicKeyInstallSheet: View {
             .accessibilityIdentifier("connection.private-key.host-trust-confirm")
 
             Button("Cancel", role: .cancel) {
-                rejectHostTrust()
+                coordinator.rejectHostTrust()
             }
         } message: {
             Text(hostTrustMessage)
@@ -80,7 +80,7 @@ struct SSHPublicKeyInstallSheet: View {
 
     @ViewBuilder
     private var phaseContent: some View {
-        switch phase {
+        switch coordinator.phase {
         case .idle, .preflighting:
             ProgressView("Checking public key")
 
@@ -89,23 +89,25 @@ struct SSHPublicKeyInstallSheet: View {
                 Text("Enter the server password once to install this public key.")
                     .foregroundStyle(.secondary)
 
-                SecureField("Server password", text: $password)
+                SecureField("Server password", text: $coordinator.password)
                     .textContentType(.password)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .accessibilityIdentifier("connection.private-key.install-password")
 
-                if let passwordError {
+                if let passwordError = coordinator.passwordError {
                     Text(passwordError)
                         .font(.footnote)
                         .foregroundStyle(.red)
                 }
 
                 Button("Install Public Key") {
-                    start(.append)
+                    start {
+                        await coordinator.submitPassword()
+                    }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(password.isEmpty)
+                .disabled(coordinator.password.isEmpty)
                 .accessibilityIdentifier("connection.private-key.install-confirm")
             }
             .padding(.vertical, 4)
@@ -139,92 +141,28 @@ struct SSHPublicKeyInstallSheet: View {
         }
     }
 
-    private func start(_ requestedPhase: PendingTrust.Phase) {
+    private func start(
+        _ operation: @escaping @MainActor () async -> Void
+    ) {
         operationTask?.cancel()
         operationTask = Task { @MainActor in
-            await retry(requestedPhase)
+            await operation()
         }
-    }
-
-    @MainActor
-    private func retry(_ requestedPhase: PendingTrust.Phase) async {
-        pendingTrust = nil
-        var submittedPassword: String?
-
-        do {
-            switch requestedPhase {
-            case .preflight:
-                phase = .preflighting
-                let outcome = try await onPreflight(draft)
-                try Task.checkCancellation()
-
-                switch outcome {
-                case .alreadyInstalled:
-                    password = ""
-                    phase = .alreadyInstalled
-                case .passwordRequired:
-                    passwordError = nil
-                    phase = .passwordRequired
-                }
-
-            case .append:
-                phase = .appending
-                submittedPassword = password
-                password = ""
-                try await onAppend(draft, submittedPassword ?? "")
-                try Task.checkCancellation()
-                submittedPassword = nil
-                passwordError = nil
-                await retry(.verify)
-
-            case .verify:
-                phase = .verifying
-                try await onVerify(draft)
-                try Task.checkCancellation()
-                password = ""
-                phase = .installed
-            }
-        } catch is CancellationError {
-            return
-        } catch TrustedHostStoreError.hostKeyTrustRequired(let challenge) {
-            if requestedPhase == .append, let submittedPassword {
-                password = submittedPassword
-            }
-            pendingTrust = PendingTrust(
-                challenge: challenge,
-                phase: requestedPhase
-            )
-        } catch {
-            handleFailure(error, during: requestedPhase)
-        }
-    }
-
-    private func handleFailure(_ error: Error, during failedPhase: PendingTrust.Phase) {
-        if failedPhase == .append {
-            password = ""
-            if error as? SSHPublicKeyInstallerError == .passwordRejected {
-                passwordError = error.localizedDescription
-                phase = .passwordRequired
-                return
-            }
-        }
-
-        phase = .failed(error.localizedDescription)
     }
 
     private var hostTrustIsPresented: Binding<Bool> {
         Binding(
-            get: { pendingTrust != nil },
+            get: { coordinator.pendingTrust != nil },
             set: { isPresented in
-                if !isPresented, pendingTrust != nil {
-                    rejectHostTrust()
+                if !isPresented, coordinator.pendingTrust != nil {
+                    coordinator.rejectHostTrust()
                 }
             }
         )
     }
 
     private var hostTrustTitle: String {
-        guard let challenge = pendingTrust?.challenge else {
+        guard let challenge = coordinator.pendingTrust?.challenge else {
             return "Verify Server"
         }
 
@@ -237,14 +175,14 @@ struct SSHPublicKeyInstallSheet: View {
     }
 
     private var hostTrustActionTitle: String {
-        guard pendingTrust?.challenge.kind == .changed else {
+        guard coordinator.pendingTrust?.challenge.kind == .changed else {
             return "Trust Server"
         }
         return "Update Trust"
     }
 
     private var hostTrustMessage: String {
-        guard let challenge = pendingTrust?.challenge else {
+        guard let challenge = coordinator.pendingTrust?.challenge else {
             return ""
         }
 
@@ -261,35 +199,18 @@ struct SSHPublicKeyInstallSheet: View {
     }
 
     private func confirmHostTrust() {
-        guard let pendingTrust else { return }
-
-        do {
-            try onTrustHostKey(pendingTrust.challenge)
-            self.pendingTrust = nil
-            start(pendingTrust.phase)
-        } catch {
-            if pendingTrust.phase == .append {
-                password = ""
-            }
-            self.pendingTrust = nil
-            phase = .failed(error.localizedDescription)
+        guard let retryPhase = coordinator.trustPendingHostKey() else {
+            return
         }
-    }
-
-    private func rejectHostTrust() {
-        guard let pendingTrust else { return }
-        if pendingTrust.phase == .append {
-            password = ""
+        start {
+            await coordinator.retryTrustedPhase(retryPhase)
         }
-        self.pendingTrust = nil
-        phase = .failed("Server identity was not trusted.")
     }
 
     private func cancel() {
         operationTask?.cancel()
         operationTask = nil
-        password = ""
-        pendingTrust = nil
+        coordinator.cancel()
         onCancel()
     }
 }

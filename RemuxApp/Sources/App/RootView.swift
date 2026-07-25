@@ -1373,12 +1373,12 @@ private struct ConnectionSetupView: View {
     let onChange: ((inout TmuxConnectionDraft) -> Void) -> Void
     let onConnect: () -> Void
     let canInstallPublicKey: (TmuxConnectionDraft) -> Bool
-    let preflightPublicKeyInstallation: (
+    let preflightPublicKeyInstallation: @MainActor (
         TmuxConnectionDraft
     ) async throws -> SSHPublicKeyPreflightOutcome
-    let appendPublicKey: (TmuxConnectionDraft, String) async throws -> Void
-    let verifyPublicKeyInstallation: (TmuxConnectionDraft) async throws -> Void
-    let trustSetupHostKey: (SSHHostKeyTrustChallenge) throws -> Void
+    let appendPublicKey: @MainActor (TmuxConnectionDraft, String) async throws -> Void
+    let verifyPublicKeyInstallation: @MainActor (TmuxConnectionDraft) async throws -> Void
+    let trustSetupHostKey: @MainActor (SSHHostKeyTrustChallenge) throws -> Void
     let onCancel: () -> Void
 
     enum Field: Hashable {
