@@ -164,8 +164,8 @@ private struct RemuxWorkspaceShell: View {
                     onConnect: {
                         Task { await model.saveAndConnect() }
                     },
-                    canInstallPublicKey: { draft in
-                        (try? model.publicKeyInstallTarget(for: draft)) != nil
+                    publicKeyInstallTarget: { draft in
+                        try? model.publicKeyInstallTarget(for: draft)
                     },
                     preflightPublicKeyInstallation: { draft in
                         try await model.preflightPublicKeyInstallation(
@@ -1394,7 +1394,7 @@ private struct ConnectionSetupView: View {
     let isActionInProgress: Bool
     let onChange: ((inout TmuxConnectionDraft) -> Void) -> Void
     let onConnect: () -> Void
-    let canInstallPublicKey: (TmuxConnectionDraft) -> Bool
+    let publicKeyInstallTarget: (TmuxConnectionDraft) -> SSHPublicKeyInstallTarget?
     let preflightPublicKeyInstallation: @MainActor (
         TmuxConnectionDraft
     ) async throws -> SSHPublicKeyPreflightOutcome
@@ -1417,6 +1417,7 @@ private struct ConnectionSetupView: View {
     @State private var privateKeyImportError: String?
     @State private var publicKeyCopyMessage: String?
     @State private var isPublicKeyInstallPresented = false
+    @State private var publicKeyInstallConfirmation: SSHPublicKeyInstallConfirmation?
     @FocusState private var focusedField: Field?
 
     var body: some View {
@@ -1580,6 +1581,15 @@ private struct ConnectionSetupView: View {
                 onAppend: appendPublicKey,
                 onVerify: verifyPublicKeyInstallation,
                 onTrustHostKey: trustSetupHostKey,
+                onSuccess: { success in
+                    if let target = publicKeyInstallTarget(draft) {
+                        publicKeyInstallConfirmation = SSHPublicKeyInstallConfirmation(
+                            success: success,
+                            target: target
+                        )
+                    }
+                    isPublicKeyInstallPresented = false
+                },
                 onCancel: {
                     isPublicKeyInstallPresented = false
                 }
@@ -2077,12 +2087,21 @@ private struct ConnectionSetupView: View {
                 }
 
                 Spacer(minLength: 12)
+
+                if let confirmation = publicKeyInstallConfirmation,
+                   let target = publicKeyInstallTarget(draft),
+                   confirmation.matches(target) {
+                    Label(confirmation.success.message, systemImage: "checkmark.circle.fill")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.green)
+                        .accessibilityIdentifier("connection.private-key.install-status")
+                }
             }
             .foregroundStyle(Color.accentColor)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(isActionInProgress || !canInstallPublicKey(draft))
+        .disabled(isActionInProgress || publicKeyInstallTarget(draft) == nil)
         .accessibilityIdentifier("connection.private-key.install")
     }
 

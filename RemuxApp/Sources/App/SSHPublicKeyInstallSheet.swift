@@ -1,10 +1,12 @@
 import SwiftUI
 
 struct SSHPublicKeyInstallSheet: View {
+    let onSuccess: (SSHPublicKeyInstallSuccess) -> Void
     let onCancel: () -> Void
 
     @StateObject private var coordinator: SSHPublicKeyInstallCoordinator
     @State private var operationTask: Task<Void, Never>?
+    @State private var didComplete = false
 
     init(
         draft: TmuxConnectionDraft,
@@ -21,8 +23,10 @@ struct SSHPublicKeyInstallSheet: View {
         onTrustHostKey: @escaping @MainActor (
             SSHHostKeyTrustChallenge
         ) throws -> Void,
+        onSuccess: @escaping (SSHPublicKeyInstallSuccess) -> Void,
         onCancel: @escaping () -> Void
     ) {
+        self.onSuccess = onSuccess
         self.onCancel = onCancel
         _coordinator = StateObject(
             wrappedValue: SSHPublicKeyInstallCoordinator(
@@ -45,9 +49,11 @@ struct SSHPublicKeyInstallSheet: View {
             .navigationTitle("Install on Host")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: cancel)
-                        .accessibilityIdentifier("connection.private-key.install-cancel")
+                if !hasTerminalSuccess {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel", action: cancel)
+                            .accessibilityIdentifier("connection.private-key.install-cancel")
+                    }
                 }
             }
         }
@@ -60,6 +66,16 @@ struct SSHPublicKeyInstallSheet: View {
             operationTask?.cancel()
             operationTask = nil
             coordinator.cancel()
+        }
+        .onChange(of: coordinator.phase) { _, phase in
+            switch phase {
+            case .alreadyInstalled:
+                complete(.alreadyInstalled)
+            case .installed:
+                complete(.installed)
+            default:
+                break
+            }
         }
         .alert(
             hostTrustTitle,
@@ -148,6 +164,21 @@ struct SSHPublicKeyInstallSheet: View {
         operationTask = Task { @MainActor in
             await operation()
         }
+    }
+
+    private var hasTerminalSuccess: Bool {
+        switch coordinator.phase {
+        case .alreadyInstalled, .installed:
+            true
+        default:
+            false
+        }
+    }
+
+    private func complete(_ success: SSHPublicKeyInstallSuccess) {
+        guard !didComplete else { return }
+        didComplete = true
+        onSuccess(success)
     }
 
     private var hostTrustIsPresented: Binding<Bool> {

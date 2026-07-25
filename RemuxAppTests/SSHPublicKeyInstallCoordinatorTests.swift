@@ -4,6 +4,31 @@ import XCTest
 
 @MainActor
 final class SSHPublicKeyInstallCoordinatorTests: XCTestCase {
+    func testInstallConfirmationMatchesOnlyItsNonSecretTargetIdentity() {
+        let target = makeInstallTarget(
+            host: "example.test",
+            port: 22,
+            username: "remux",
+            publicKeyLine: "ssh-ed25519 AAAA-current"
+        )
+        let confirmation = SSHPublicKeyInstallConfirmation(
+            success: .installed,
+            target: target
+        )
+
+        XCTAssertTrue(confirmation.matches(target))
+        XCTAssertFalse(confirmation.matches(makeInstallTarget(host: "other.test")))
+        XCTAssertFalse(confirmation.matches(makeInstallTarget(port: 2222)))
+        XCTAssertFalse(confirmation.matches(makeInstallTarget(username: "other")))
+        XCTAssertFalse(
+            confirmation.matches(
+                makeInstallTarget(publicKeyLine: "ssh-ed25519 AAAA-other")
+            )
+        )
+        XCTAssertEqual(SSHPublicKeyInstallSuccess.alreadyInstalled.message, "Already installed")
+        XCTAssertEqual(SSHPublicKeyInstallSuccess.installed.message, "Installed on host")
+    }
+
     func testCancelledAppendIgnoresLateHostKeyFailure() async {
         let gate = AsyncGate()
         let draft = TmuxConnectionDraft()
@@ -360,6 +385,25 @@ final class SSHPublicKeyInstallCoordinatorTests: XCTestCase {
             onAppend: append,
             onVerify: verify,
             onTrustHostKey: trust
+        )
+    }
+
+    private func makeInstallTarget(
+        host: String = "example.test",
+        port: Int = 22,
+        username: String = "remux",
+        publicKeyLine: String = "ssh-ed25519 AAAA-current"
+    ) -> SSHPublicKeyInstallTarget {
+        SSHPublicKeyInstallTarget(
+            serverID: UUID(),
+            host: host,
+            port: port,
+            username: username,
+            privateKey: SSHPrivateKeyCredential(
+                privateKeyPEM: "PRIVATE-KEY-NOT-RETAINED",
+                passphrase: "PASSPHRASE-NOT-RETAINED"
+            ),
+            publicKeyLine: publicKeyLine
         )
     }
 

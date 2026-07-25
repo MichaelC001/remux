@@ -125,14 +125,18 @@ final class RemuxAppUITests: XCTestCase {
         password.typeText("one-time-password")
         app.buttons["connection.private-key.install-confirm"].tap()
 
-        XCTAssertTrue(
-            app.staticTexts["connection.private-key.install-status"]
-                .waitForExistence(timeout: 5)
-        )
-        XCTAssertEqual(
-            app.staticTexts["connection.private-key.install-status"].label,
-            "Installed on host"
-        )
+        let inlineStatus = app.staticTexts["connection.private-key.install-status"]
+        XCTAssertTrue(inlineStatus.waitForExistence(timeout: 5))
+        XCTAssertEqual(inlineStatus.label, "Installed on host")
+        XCTAssertFalse(app.navigationBars["Install on Host"].exists)
+        XCTAssertFalse(app.buttons["connection.private-key.install-cancel"].exists)
+        XCTAssertTrue(app.buttons["connection.private-key.install"].exists)
+
+        let host = app.textFields["connection.host"]
+        host.tap()
+        host.typeText(".changed")
+        XCTAssertFalse(inlineStatus.exists)
+
         XCTAssertTrue(app.buttons["connection.private-key.change"].waitForExistence(timeout: 2))
         XCTAssertFalse(app.staticTexts["Ready"].exists)
         XCTAssertFalse(app.staticTexts["Add the public key to your server"].exists)
@@ -155,14 +159,12 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(install.waitForExistence(timeout: 2))
         install.tap()
 
-        XCTAssertTrue(
-            app.staticTexts["connection.private-key.install-status"]
-                .waitForExistence(timeout: 5)
-        )
-        XCTAssertEqual(
-            app.staticTexts["connection.private-key.install-status"].label,
-            "Already installed"
-        )
+        let inlineStatus = app.staticTexts["connection.private-key.install-status"]
+        XCTAssertTrue(inlineStatus.waitForExistence(timeout: 5))
+        XCTAssertEqual(inlineStatus.label, "Already installed")
+        XCTAssertFalse(app.navigationBars["Install on Host"].exists)
+        XCTAssertFalse(app.buttons["connection.private-key.install-cancel"].exists)
+        XCTAssertTrue(app.buttons["connection.private-key.install"].exists)
         XCTAssertFalse(app.secureTextFields["connection.private-key.install-password"].exists)
     }
 

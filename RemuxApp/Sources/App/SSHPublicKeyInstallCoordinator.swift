@@ -12,6 +12,43 @@ enum SSHPublicKeyInstallPhase: Equatable {
     case failed(String)
 }
 
+enum SSHPublicKeyInstallSuccess: Equatable {
+    case alreadyInstalled
+    case installed
+
+    var message: String {
+        switch self {
+        case .alreadyInstalled:
+            "Already installed"
+        case .installed:
+            "Installed on host"
+        }
+    }
+}
+
+struct SSHPublicKeyInstallConfirmation: Equatable {
+    let success: SSHPublicKeyInstallSuccess
+    private let host: String
+    private let port: Int
+    private let username: String
+    private let publicKeyLine: String
+
+    init(success: SSHPublicKeyInstallSuccess, target: SSHPublicKeyInstallTarget) {
+        self.success = success
+        host = target.host
+        port = target.port
+        username = target.username
+        publicKeyLine = target.publicKeyLine
+    }
+
+    func matches(_ target: SSHPublicKeyInstallTarget) -> Bool {
+        host == target.host
+            && port == target.port
+            && username == target.username
+            && publicKeyLine == target.publicKeyLine
+    }
+}
+
 struct SSHPublicKeyInstallPendingTrust: Equatable {
     enum Phase: Equatable {
         case preflight
