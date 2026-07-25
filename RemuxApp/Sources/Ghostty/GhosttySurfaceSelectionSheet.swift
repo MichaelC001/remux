@@ -826,19 +826,12 @@ private struct GhosttyPaneSelectionTile: View {
 
     private var captionRow: some View {
         HStack(spacing: 6) {
+            Text("\(displayIndex)")
+                .font(.system(size: 11, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(GhosttySheetPalette.tertiary)
+
             Spacer(minLength: 0)
-
-            if isSelected {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(chromeStyle.accent)
-                        .frame(width: 6, height: 6)
-
-                    Text("active")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(chromeStyle.accent)
-                }
-            }
         }
         .padding(.horizontal, 2)
     }
