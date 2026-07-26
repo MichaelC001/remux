@@ -28,7 +28,7 @@ enum SSHTmuxControlCommandBuilder {
         #"tmux=$(printf %b "$1")"#,
         #"session=$(printf %b "$2")"#,
         #"resolved=$(command -v "$tmux" 2> /dev/null)"#,
-        #"if [ -x "$resolved" ]; then exec "$resolved" -C new-session -A -s "$session" -x "$3" -y "$4"; fi"#,
+        #"if [ -x "$resolved" ]; then exec "$resolved" -u -C new-session -A -s "$session" -x "$3" -y "$4"; fi"#,
         #"if [ -e "$tmux" ]; then echo "\#(tmuxNotExecutableMarker): $tmux" >&2; exit 126; fi"#,
         #"echo "\#(tmuxNotFoundMarker): $tmux" >&2"#,
         "exit 127",

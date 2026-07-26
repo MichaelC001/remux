@@ -767,6 +767,80 @@ final class RemuxAppUITests: XCTestCase {
         recordLiveTmuxWindowCaptureExpectation(sessionName: sessionName, windowIndex: 10, marker: marker)
     }
 
+    func testLiveWindowNamesAndRenameWhenConfigured() throws {
+        let sessionName: String
+        if let override = liveSessionNameOverride() {
+            guard override.range(
+                of: #"^remux-latency-[A-Za-z0-9._-]+$"#,
+                options: .regularExpression
+            ) != nil else {
+                throw LiveSSHCleanupHarnessError(
+                    description: "Refusing unsafe window-name fixture session \(override)."
+                )
+            }
+            sessionName = override
+        } else {
+            sessionName = try generatedLiveLatencySessionName("window-names")
+        }
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 90)
+
+        sendTerminalCommand(
+            "tmux rename-window 'editor workspace'; tmux new-window -d -n 'build logs'"
+        )
+        hideKeyboardIfPresent()
+
+        openWindowsSheet()
+        let firstWindow = app.buttons["terminal.window.tile.1"]
+        let secondWindow = app.buttons["terminal.window.tile.2"]
+        XCTAssertTrue(firstWindow.waitForExistence(timeout: 10))
+        XCTAssertTrue(secondWindow.waitForExistence(timeout: 10))
+        wait(
+            for: [
+                expectation(
+                    for: NSPredicate(format: "label CONTAINS %@", "editor workspace"),
+                    evaluatedWith: firstWindow
+                ),
+                expectation(
+                    for: NSPredicate(format: "label CONTAINS %@", "build logs"),
+                    evaluatedWith: secondWindow
+                ),
+            ],
+            timeout: 20
+        )
+        attach(name: "live-window-names-initial")
+
+        dismissTopSheetIfPresent()
+        waitForLiveTerminalReady(timeout: 30)
+        sendTerminalCommand("tmux rename-window 'déploy-漢字'")
+        hideKeyboardIfPresent()
+
+        openWindowsSheet()
+        let renamedWindow = app.buttons["terminal.window.tile.1"]
+        XCTAssertTrue(renamedWindow.waitForExistence(timeout: 10))
+        wait(
+            for: [
+                expectation(
+                    for: NSPredicate(format: "label CONTAINS %@", "déploy-漢字"),
+                    evaluatedWith: renamedWindow
+                ),
+            ],
+            timeout: 20
+        )
+        XCTAssertTrue(
+            app.buttons["terminal.window.tile.2"].label.contains("build logs"),
+            "Renaming one window should preserve the other window's name."
+        )
+        attach(name: "live-window-name-unicode-renamed")
+
+        recordLiveTmuxWindowCountExpectation(sessionName: sessionName, expectedCount: 2)
+    }
+
     func testLiveDenseMixedTopologySelectsDeepPaneWhenConfigured() throws {
         try requireLivePreparedFixture("dense-mixed")
 

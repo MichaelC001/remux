@@ -1311,7 +1311,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
 
         XCTAssertTrue(command.hasPrefix("exec /bin/sh -c '"))
         XCTAssertTrue(command.contains(#"PATH="${PATH:+$PATH:}/opt/homebrew/bin"#))
-        XCTAssertTrue(command.contains(#"exec "$resolved" -C new-session -A"#))
+        XCTAssertTrue(command.contains(#"exec "$resolved" -u -C new-session -A"#))
         XCTAssertTrue(command.hasSuffix(" 45 37"))
     }
 

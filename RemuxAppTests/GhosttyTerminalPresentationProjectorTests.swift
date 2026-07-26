@@ -464,6 +464,30 @@ final class GhosttyTerminalPresentationProjectorTests: XCTestCase {
         XCTAssertNotEqual(projection.viewport.surfaceID, paneID)
     }
 
+    func testWindowSelectionProjectionRemovesControlScalarsOnceAndPreservesUnicode() throws {
+        let windowID = UUID()
+        let paneID = UUID()
+        let snapshot = GhosttyRuntimeSurfaceTopologySnapshot(
+            topLevels: [
+                GhosttyTopLevelSurface(
+                    id: windowID,
+                    name: "dé\u{0001}ploy\n-漢字",
+                    leafIDs: [paneID],
+                    focusedLeafID: paneID
+                ),
+            ],
+            selectedTopLevelID: windowID
+        )
+
+        let projection = GhosttyTerminalPresentationProjector
+            .windowSelectionSheetRenderProjection(snapshot: snapshot)
+
+        XCTAssertEqual(
+            try XCTUnwrap(projection.windows.first).displayName,
+            "déploy-漢字"
+        )
+    }
+
     func testTerminalReadyTraceFieldsPreserveExistingKeysAndAddRawReadinessFacts() throws {
         let workspaceID = try XCTUnwrap(UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
         let selectedLeafID = try XCTUnwrap(UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))
