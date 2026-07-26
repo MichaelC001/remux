@@ -72,7 +72,6 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         ).utf8))
         let currentDirectory = try await query.value
         XCTAssertEqual(currentDirectory, "/Users/macbook/scratchpad")
-        await shutDown(harness.controller)
     }
 
     func testPaneCurrentDirectoryReturnsCommandFailureWithoutRequestFailureUI() async throws {
@@ -107,7 +106,6 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             )
         }
         await fulfillment(of: [requestFailure], timeout: 0.05)
-        await shutDown(harness.controller)
     }
 
     func testShutdownResumesOutstandingPaneCurrentDirectoryQuery() async throws {
@@ -201,7 +199,6 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             command: "select-pane -Z -t %2",
             paneID: 2,
         )
-        await shutDown(harness.controller)
     }
 
     func testPaneNavigationWaitsWhenCommandEndsBeforeTopology() async throws {
@@ -253,7 +250,6 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         ))
         await drain(harness.controller)
         XCTAssertTrue(harness.recorder.takeStrings().isEmpty)
-        await shutDown(harness.controller)
     }
 
     func testPaneNavigationUsesTopologyThatArrivedBeforeCompletion() async throws {
@@ -293,7 +289,6 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             command: "select-pane -Z -t %2",
             paneID: 2,
         )
-        await shutDown(harness.controller)
     }
 
     func testPaneNavigationWaitsWhenSubmittedAfterCompletionBeforeTopology() async throws {
@@ -335,7 +330,6 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             command: "select-pane -Z -t %2",
             paneID: 2,
         )
-        await shutDown(harness.controller)
     }
 
     func testPaneNavigationReevaluatesImmediatelyAfterCommandError() async throws {
@@ -363,7 +357,6 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             command: "select-pane -Z -t %2",
             paneID: 2,
         )
-        await shutDown(harness.controller)
     }
 
     func testFailedPresentationRetryKeepsSameTargetRefreshAfterInFlightCompletion() async throws {
@@ -415,7 +408,6 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         ))
         await drain(harness.controller)
         XCTAssertTrue(harness.recorder.takeStrings().isEmpty)
-        await shutDown(harness.controller)
     }
 
     func testRepeatedCrossWindowUnzoomedSelectionDoesNotQueueSecondToggle() async throws {
@@ -449,7 +441,6 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             harness.recorder.takeStrings().isEmpty,
             "the repeated intent must re-evaluate as zero after the first group zooms"
         )
-        await shutDown(harness.controller)
     }
 
     func testDeferredZoomDoesNotToggleAfterWindowSelectionAlreadyZooms() async throws {
@@ -483,7 +474,6 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             harness.recorder.takeStrings().isEmpty,
             "the deferred zoom must re-evaluate to a no-op after the selection group zooms"
         )
-        await shutDown(harness.controller)
     }
 
     func testWindowNavigationCoalescesRollbackToLatestWindow() async throws {
@@ -504,7 +494,6 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         ))
         await drain(harness.controller)
         XCTAssertEqual(harness.recorder.takeStrings(), ["select-window -t @0\n"])
-        await shutDown(harness.controller)
     }
 
     func testColdSplitSelectionEnqueuesPresentationThenRefreshInOneWrite() async throws {
@@ -521,7 +510,6 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             command: "resize-pane -Z -t %2",
             paneID: 2,
         )
-        await shutDown(harness.controller)
     }
 
     func testRefreshCompletionReleasesReadinessWithoutSecondTerminalHandoff() async throws {
@@ -558,7 +546,6 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         }
 
         XCTAssertEqual(lifecycle.terminalPaneIDs, initialTerminalPaneIDs)
-        await shutDown(harness.controller)
     }
 
     func testTopBottomRoundTripRefreshesEachFullToSplitGridChange() async throws {
@@ -594,7 +581,6 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             command: "select-pane -Z -t %0",
             paneID: 0,
         )
-        await shutDown(harness.controller)
     }
 
     func testClientSizeRefreshesForRowOrColumnChangesInOneWrite() async throws {
@@ -637,7 +623,6 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             write.hasPrefix("refresh-client -C 100x40\ndisplay-message -p -t %0 ")
         )
         XCTAssertEqual(write.components(separatedBy: "capture-pane").count - 1, 4)
-        await shutDown(harness.controller)
     }
 
     func testInFlightGridRefreshFollowsViewportRevertExactlyOnce() async throws {
@@ -684,7 +669,6 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         ))
         await drain(harness.controller)
         XCTAssertTrue(harness.recorder.takeStrings().isEmpty)
-        await shutDown(harness.controller)
     }
 
     func testNewWindowAndSplitCommandsDoNotGainRefreshWork() async throws {
@@ -704,7 +688,6 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         harness.controller.requestSplit(paneID: 0, direction: .right, zoom: true)
         await drain(harness.controller)
         XCTAssertEqual(harness.recorder.takeStrings(), ["split-window -h -Z -t %0\n"])
-        await shutDown(harness.controller)
     }
 
     func testNotReadyRefreshRetriesOnceAndDrainsAfterInitialPaneChanged() async throws {
@@ -733,7 +716,6 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         let write = try XCTUnwrap(writes.first)
         XCTAssertTrue(write.hasPrefix("display-message -p -t %1 "))
         XCTAssertEqual(write.components(separatedBy: "capture-pane").count - 1, 4)
-        await shutDown(harness.controller)
     }
 
     func testTopologyRemovalClearsDeferredPaneRefresh() async throws {
@@ -761,7 +743,6 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             [],
             "a removed pane must not retry its deferred refresh"
         )
-        await shutDown(harness.controller)
     }
 
     func testDetachedRequestReportsImmediateFailure() async throws {
@@ -869,6 +850,11 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         let runtime = try GhosttyKitRuntime()
         let recorder = ControllerOutboundRecorder()
         let controller = TmuxSessionController(callbacks: callbacks)
+        addTeardownBlock {
+            await withCheckedContinuation { continuation in
+                controller.shutdown { continuation.resume() }
+            }
+        }
         controller.setOutboundSink { recorder.append($0) }
         await drain(controller)
         try await withCheckedThrowingContinuation { continuation in
@@ -1011,33 +997,85 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTFail(failureMessage)
     }
 
-    private static let threePaneZoomedWindow =
-        "$42 @0 1 %0 83 44 "
-        + "85ff,83x44,0,0{27x44,0,0,0,27x44,28,0,1,27x44,56,0,2} "
-        + "b7dd,83x44,0,0,0\n"
+    private static let threePaneZoomedWindow = windowRecord(
+        id: 0,
+        active: true,
+        paneID: 0,
+        layout: "85ff,83x44,0,0{27x44,0,0,0,27x44,28,0,1,27x44,56,0,2}",
+        visibleLayout: "b7dd,83x44,0,0,0",
+        name: "window-0"
+    )
 
-    private static let splitTargetWindow =
-        "$42 @0 1 %0 83 44 b7dd,83x44,0,0,0 b7dd,83x44,0,0,0\n"
-        + "$42 @1 0 %1 83 44 "
-        + "9c1f,83x44,0,0{41x44,0,0,1,41x44,42,0,2} "
-        + "9c1f,83x44,0,0{41x44,0,0,1,41x44,42,0,2}\n"
+    private static let splitTargetWindow = windowRecord(
+        id: 0,
+        active: true,
+        paneID: 0,
+        layout: "b7dd,83x44,0,0,0",
+        visibleLayout: "b7dd,83x44,0,0,0",
+        name: "window-0"
+    ) + windowRecord(
+        id: 1,
+        active: false,
+        paneID: 1,
+        layout: "9c1f,83x44,0,0{41x44,0,0,1,41x44,42,0,2}",
+        visibleLayout: "9c1f,83x44,0,0{41x44,0,0,1,41x44,42,0,2}",
+        name: "window-1"
+    )
 
-    private static let twoSinglePaneWindows =
-        "$42 @0 1 %0 83 44 b7dd,83x44,0,0,0 b7dd,83x44,0,0,0\n"
-        + "$42 @1 0 %1 83 44 b7de,83x44,0,0,1 b7de,83x44,0,0,1\n"
+    private static let twoSinglePaneWindows = windowRecord(
+        id: 0,
+        active: true,
+        paneID: 0,
+        layout: "b7dd,83x44,0,0,0",
+        visibleLayout: "b7dd,83x44,0,0,0",
+        name: "window-0"
+    ) + windowRecord(
+        id: 1,
+        active: false,
+        paneID: 1,
+        layout: "b7de,83x44,0,0,1",
+        visibleLayout: "b7de,83x44,0,0,1",
+        name: "window-1"
+    )
 
-    private static let onePaneWindow =
-        "$42 @0 1 %0 83 44 b7dd,83x44,0,0,0 b7dd,83x44,0,0,0\n"
+    private static let onePaneWindow = windowRecord(
+        id: 0,
+        active: true,
+        paneID: 0,
+        layout: "b7dd,83x44,0,0,0",
+        visibleLayout: "b7dd,83x44,0,0,0",
+        name: "window-0"
+    )
 
-    private static let twoPaneUnzoomedWindow =
-        "$42 @1 1 %1 83 44 "
-        + "9c1f,83x44,0,0{41x44,0,0,1,41x44,42,0,2} "
-        + "9c1f,83x44,0,0{41x44,0,0,1,41x44,42,0,2}\n"
+    private static let twoPaneUnzoomedWindow = windowRecord(
+        id: 1,
+        active: true,
+        paneID: 1,
+        layout: "9c1f,83x44,0,0{41x44,0,0,1,41x44,42,0,2}",
+        visibleLayout: "9c1f,83x44,0,0{41x44,0,0,1,41x44,42,0,2}",
+        name: "window-1"
+    )
 
-    private static let twoPaneSameColumnZoomedWindow =
-        "$42 @0 1 %0 83 44 "
-        + "607b,83x44,0,0[83x22,0,0,0,83x21,0,23,1] "
-        + "b7dd,83x44,0,0,0\n"
+    private static let twoPaneSameColumnZoomedWindow = windowRecord(
+        id: 0,
+        active: true,
+        paneID: 0,
+        layout: "607b,83x44,0,0[83x22,0,0,0,83x21,0,23,1]",
+        visibleLayout: "b7dd,83x44,0,0,0",
+        name: "window-0"
+    )
+
+    private static func windowRecord(
+        id: Int,
+        active: Bool,
+        paneID: Int,
+        layout: String,
+        visibleLayout: String,
+        name: String
+    ) -> String {
+        "$42 @\(id) \(active ? 1 : 0) %\(paneID) 83 44 "
+            + "\(layout) \(visibleLayout) \(name)\n"
+    }
 }
 
 private actor RequestFailureRecorder {
