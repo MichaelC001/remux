@@ -195,6 +195,7 @@ struct GhosttyWindowSelectionSheet: View {
                 } label: {
                     GhosttyWindowSelectionTile(
                         displayIndex: window.displayIndex,
+                        displayName: window.displayName,
                         totalCount: window.totalCount,
                         paneCount: window.paneCount,
                         isSelected: window.isSelected,
@@ -657,6 +658,7 @@ private struct GhosttyRenderedPreviewSurface: View {
 
 private struct GhosttyWindowSelectionTile: View {
     let displayIndex: Int
+    let displayName: String
     let totalCount: Int
     let paneCount: Int
     let isSelected: Bool
@@ -667,7 +669,7 @@ private struct GhosttyWindowSelectionTile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             previewSurface
-            captionRow
+            caption
         }
         .padding(layout.tilePadding)
         .frame(
@@ -709,46 +711,48 @@ private struct GhosttyWindowSelectionTile: View {
         }
     }
 
-    private var captionRow: some View {
-        HStack(spacing: 6) {
-            Text("\(displayIndex)")
-                .font(.system(size: 11, weight: .semibold))
-                .monospacedDigit()
-                .foregroundStyle(GhosttySheetPalette.tertiary)
+    private var caption: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text("\(displayIndex)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(GhosttySheetPalette.tertiary)
 
-            Text(paneCountLabel)
+                if !displayName.isEmpty {
+                    Text(displayName)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(GhosttySheetPalette.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            if paneCount > 1 {
+                HStack(spacing: 6) {
+                    Text("\(paneCount)")
+                        .monospacedDigit()
+
+                    Text("panes")
+                }
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(GhosttySheetPalette.secondary)
                 .lineLimit(1)
-
-            Spacer(minLength: 0)
-
-            if isSelected {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(chromeStyle.accent)
-                        .frame(width: 6, height: 6)
-
-                    Text("active")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(chromeStyle.accent)
-                }
             }
         }
         .padding(.horizontal, 2)
     }
 
-    private var paneCountLabel: String {
-        "\(paneCount) \(paneCount == 1 ? "pane" : "panes")"
-    }
-
     private var accessibilityLabel: String {
         let paneText = "\(paneCount) \(paneCount == 1 ? "pane" : "panes")"
         let positional = "Window \(displayIndex) of \(totalCount)"
+        let named = displayName.isEmpty ? positional : "\(positional), \(displayName)"
         if isSelected {
-            return "\(positional), \(paneText), active"
+            return "\(named), \(paneText), active"
         }
-        return "\(positional), \(paneText)"
+        return "\(named), \(paneText)"
     }
 }
 
@@ -822,19 +826,12 @@ private struct GhosttyPaneSelectionTile: View {
 
     private var captionRow: some View {
         HStack(spacing: 6) {
+            Text("\(displayIndex)")
+                .font(.system(size: 11, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(GhosttySheetPalette.tertiary)
+
             Spacer(minLength: 0)
-
-            if isSelected {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(chromeStyle.accent)
-                        .frame(width: 6, height: 6)
-
-                    Text("active")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(chromeStyle.accent)
-                }
-            }
         }
         .padding(.horizontal, 2)
     }

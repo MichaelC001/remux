@@ -1297,7 +1297,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         XCTAssertNoThrow(try promise.futureResult.wait())
     }
 
-    func testControlSessionCommandAttachesOrCreatesNamedSession() {
+    func testControlSessionCommandDelegatesStartupToPOSIXShell() {
         let command = SSHTmuxControlCommandBuilder.attachOrCreateControlSessionCommand(
             tmuxExecutable: "tmux",
             sessionName: "base",
@@ -1309,16 +1309,18 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(
-            command,
-            "export PATH=\"${PATH:+$PATH:}/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\" TERM=xterm-256color; exec 'tmux' -C new-session -A -s 'base' -x 45 -y 37"
-        )
+        XCTAssertTrue(command.hasPrefix("exec /bin/sh -c '"))
+        XCTAssertTrue(command.contains(#"PATH="${PATH:+$PATH:}/opt/homebrew/bin"#))
+        XCTAssertTrue(command.contains(#"exec "$resolved" -u -C new-session -A"#))
+        XCTAssertTrue(command.hasSuffix(" 45 37"))
     }
 
-    func testControlSessionCommandShellEscapesValues() {
+    func testControlSessionCommandKeepsValuesOutOfLoginShellSyntax() {
+        let tmuxExecutable = "/home/owner's tools/tmux"
+        let sessionName = "owner's bäse! back\\slash"
         let command = SSHTmuxControlCommandBuilder.attachOrCreateControlSessionCommand(
-            tmuxExecutable: "/home/owner's tools/tmux",
-            sessionName: "owner's base",
+            tmuxExecutable: tmuxExecutable,
+            sessionName: sessionName,
             initialViewport: TmuxControlViewport(
                 columns: 120,
                 rows: 40,
@@ -1327,10 +1329,11 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(
-            command,
-            "export PATH=\"${PATH:+$PATH:}/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\" TERM=xterm-256color; exec '/home/owner'\"'\"'s tools/tmux' -C new-session -A -s 'owner'\"'\"'s base' -x 120 -y 40"
-        )
+        XCTAssertFalse(command.contains(tmuxExecutable))
+        XCTAssertFalse(command.contains(sessionName))
+        XCTAssertFalse(command.contains("\n"))
+        XCTAssertFalse(command.contains("!"))
+        XCTAssertTrue(command.hasSuffix(" 120 40"))
     }
 
     func testSendAfterCloseFailsInsteadOfQueueingBytes() async {

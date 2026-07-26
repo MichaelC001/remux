@@ -252,6 +252,7 @@ struct GhosttyPaneSelectionSheetTopologyProjection: Equatable, Sendable {
 struct GhosttyWindowSelectionSheetRenderProjection: Equatable, Sendable {
     struct Window: Identifiable, Equatable, Sendable {
         let id: UUID
+        let displayName: String
         let displayIndex: Int
         let totalCount: Int
         let paneCount: Int
@@ -475,6 +476,7 @@ enum GhosttyTerminalPresentationProjector {
         let windows = topLevels.enumerated().map { index, topLevel in
             GhosttyWindowSelectionSheetRenderProjection.Window(
                 id: topLevel.id,
+                displayName: displaySafeWindowName(topLevel.name),
                 displayIndex: index + 1,
                 totalCount: totalCount,
                 paneCount: topLevel.leafIDs.count,
@@ -489,6 +491,13 @@ enum GhosttyTerminalPresentationProjector {
             previewLeafIDs: windows.compactMap(\.focusedPreviewPaneID),
             cellCount: totalCount
         )
+    }
+
+    private static func displaySafeWindowName(_ name: String) -> String {
+        name.unicodeScalars.reduce(into: "") { result, scalar in
+            guard scalar.properties.generalCategory != .control else { return }
+            result.unicodeScalars.append(scalar)
+        }
     }
 
     static func paneSelectionSheetRenderProjection(

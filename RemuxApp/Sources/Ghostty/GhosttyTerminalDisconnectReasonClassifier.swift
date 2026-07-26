@@ -65,15 +65,17 @@ enum GhosttyTerminalDisconnectReasonClassifier {
             return nil
         }
 
-        let stderr = diagnostics?.stderrPreview?.lowercased() ?? ""
-        let tmuxWasNotFound = stderr.contains("command not found") ||
-            stderr.contains("no such file or directory")
-
-        if status == 127 || tmuxWasNotFound {
+        let stderr = diagnostics?.stderrPreview ?? ""
+        if status == 127,
+           stderr.localizedCaseInsensitiveContains(SSHTmuxControlCommandBuilder.tmuxNotFoundMarker) {
             return "Install tmux on this server or update Executable Path."
         }
 
-        return "Check the tmux executable and its permissions, then try again."
+        if status == 126,
+           stderr.localizedCaseInsensitiveContains(SSHTmuxControlCommandBuilder.tmuxNotExecutableMarker) {
+            return "Check the tmux executable and its permissions, then try again."
+        }
+        return nil
     }
 
     private static func isServerUnreachable(_ error: any Error) -> Bool {

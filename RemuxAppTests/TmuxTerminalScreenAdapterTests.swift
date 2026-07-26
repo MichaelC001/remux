@@ -45,10 +45,12 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         id: TmuxWindowID,
         active: Bool,
         paneID: TmuxPaneID?,
+        name: String = "",
         zoomed: Bool = true
     ) -> TmuxSessionController.WindowInfo {
         TmuxSessionController.WindowInfo(
             id: id,
+            name: name,
             active: active,
             zoomed: zoomed,
             width: 80,
@@ -86,8 +88,8 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let twoWindows = TmuxSessionController.TopologySnapshot(
             sessionName: "fresh-test",
             windows: [
-                window(id: 1, active: true, paneID: 10),
-                window(id: 2, active: false, paneID: 20)
+                window(id: 1, active: true, paneID: 10, name: "editor"),
+                window(id: 2, active: false, paneID: 20, name: "logs")
             ],
             panes: [pane(id: 10, windowID: 1), pane(id: 20, windowID: 2)],
             activeWindowID: 1
@@ -99,12 +101,13 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
             first.windows.count, 2,
             "the first emitted topology must project immediately, not lag one update behind"
         )
+        XCTAssertEqual(first.windows.map(\.displayName), ["editor", "logs"])
         let firstPaneSurfaceID = try XCTUnwrap(first.previewLeafIDs.first)
         XCTAssertEqual(adapter.tmuxPaneID(for: firstPaneSurfaceID), 10)
 
         let oneWindow = TmuxSessionController.TopologySnapshot(
             sessionName: "fresh-test",
-            windows: [window(id: 1, active: true, paneID: 10)],
+            windows: [window(id: 1, active: true, paneID: 10, name: "renamed")],
             panes: [pane(id: 10, windowID: 1)],
             activeWindowID: 1
         )
@@ -116,7 +119,58 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
             "removing a non-current window must drop its tile on the same topology update"
         )
         XCTAssertEqual(second.windows.first?.totalCount, 1)
+        XCTAssertEqual(second.windows.first?.displayName, "renamed")
         XCTAssertEqual(second.cellCount, 1)
+
+        await session.shutdown()
+    }
+
+    func testNameOnlyTopologyUpdatePreservesSurfaceIdentityAndPanePreview() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let session = makeSession(runtime: runtime)
+        let adapter = TmuxTerminalScreenAdapter()
+        adapter.activate(
+            session: session,
+            initialViewportHandler: { _, _ in },
+            clientSizeHandler: { _ in },
+            viewportStabilityHandler: { _ in }
+        )
+
+        let initial = TmuxSessionController.TopologySnapshot(
+            sessionName: "rename-test",
+            windows: [window(id: 1, active: true, paneID: 10, name: "editor")],
+            panes: [pane(id: 10, windowID: 1)],
+            activeWindowID: 1
+        )
+        session.handleTopology(initial)
+        let before = adapter.windowSelectionSheetRenderProjection()
+        let beforeWindowID = try XCTUnwrap(before.windows.first?.id)
+        let beforePaneID = try XCTUnwrap(before.previewLeafIDs.first)
+
+        let image = try makeImage(width: 4, height: 4)
+        var cache = TmuxPanePreviewImageCache(byteLimit: 1_024)
+        cache.store(preview(image), for: 10)
+        let initialByteCost = cache.totalByteCost
+
+        let renamed = TmuxSessionController.TopologySnapshot(
+            sessionName: "rename-test",
+            windows: [window(id: 1, active: true, paneID: 10, name: "déploy-漢字")],
+            panes: [pane(id: 10, windowID: 1)],
+            activeWindowID: 1
+        )
+        session.handleTopology(renamed)
+        let after = adapter.windowSelectionSheetRenderProjection()
+
+        XCTAssertEqual(after.windows.first?.displayName, "déploy-漢字")
+        XCTAssertEqual(after.windows.first?.id, beforeWindowID)
+        XCTAssertEqual(after.previewLeafIDs.first, beforePaneID)
+        XCTAssertEqual(
+            cache.retainOnly(Set(renamed.panes.map(\.id))),
+            [],
+            "a name-only topology update must not evict any pane preview"
+        )
+        XCTAssertTrue(cache.preview(for: 10)?.image === image)
+        XCTAssertEqual(cache.totalByteCost, initialByteCost)
 
         await session.shutdown()
     }

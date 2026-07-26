@@ -214,6 +214,7 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
     ) -> TmuxSessionController.WindowInfo {
         .init(
             id: id,
+            name: "",
             active: active,
             zoomed: zoomed,
             width: 80,
