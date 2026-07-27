@@ -10,7 +10,7 @@ struct GhosttyComposeBar: View {
     let onKeyboardFocusChange: (Bool) -> Void
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
+        HStack(alignment: .bottom, spacing: 2) {
             composeButton(
                 systemName: "plus",
                 accessibilityLabel: "Add attachment",
@@ -19,59 +19,49 @@ struct GhosttyComposeBar: View {
                 action: {}
             )
 
-            HStack(alignment: .bottom, spacing: 4) {
-                ZStack(alignment: .topLeading) {
-                    if text.isEmpty {
-                        Text("Compose…")
-                            .foregroundStyle(.secondary)
-                            .padding(.leading, 4)
-                            .padding(.top, 8)
-                            .allowsHitTesting(false)
-                            .accessibilityHidden(true)
-                    }
-
-                    GhosttyComposerTextView(
-                        text: $text,
-                        wantsFirstResponder: wantsKeyboardFocus,
-                        activationToken: keyboardActivationToken,
-                        onFirstResponderChange: onKeyboardFocusChange
-                    )
+            ZStack(alignment: .topLeading) {
+                if text.isEmpty {
+                    Text("Compose…")
+                        .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
+                        .padding(.leading, 4)
+                        .padding(.top, 8)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
                 }
 
-                composeButton(
-                    systemName: "mic.fill",
-                    accessibilityLabel: "Start dictation",
-                    accessibilityIdentifier: "terminal.composer.mic",
-                    isEnabled: false,
-                    size: 36,
-                    action: {}
+                GhosttyComposerTextView(
+                    text: $text,
+                    wantsFirstResponder: wantsKeyboardFocus,
+                    activationToken: keyboardActivationToken,
+                    onFirstResponderChange: onKeyboardFocusChange
                 )
             }
-            .padding(.leading, 16)
-            .padding(.trailing, 4)
-            .padding(.vertical, 4)
-            .frame(minHeight: 44)
-            .background(.regularMaterial, in: composeFieldShape)
-            .overlay {
-                composeFieldShape
-                    .strokeBorder(Color.primary.opacity(0.11), lineWidth: 0.75)
-            }
+
+            composeButton(
+                systemName: "mic.fill",
+                accessibilityLabel: "Start dictation",
+                accessibilityIdentifier: "terminal.composer.mic",
+                isEnabled: false,
+                size: 40,
+                action: {}
+            )
 
             composeButton(
                 systemName: "arrow.up",
                 accessibilityLabel: "Send",
                 accessibilityIdentifier: "terminal.composer.send",
                 isEnabled: false,
+                size: 40,
                 usesAccentFill: true,
                 action: {}
             )
         }
+        .padding(6)
+        .padding(.leading, 2)
+        .frame(minHeight: 54)
         .frame(maxWidth: 560)
+        .ghosttyComposerSurface()
         .accessibilityElement(children: .contain)
-    }
-
-    private var composeFieldShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 22, style: .continuous)
     }
 
     private func composeButton(
@@ -99,19 +89,57 @@ struct GhosttyComposeBar: View {
                 .background(
                     usesAccentFill
                         ? chromeStyle.accent
-                        : Color(uiColor: .secondarySystemBackground).opacity(0.88),
+                        : Color.clear,
                     in: Circle()
                 )
-                .overlay {
-                    Circle()
-                        .strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.75)
-                }
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.38)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityIdentifier(accessibilityIdentifier)
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func ghosttyComposerSurface() -> some View {
+        let shape = RoundedRectangle(cornerRadius: 28, style: .continuous)
+
+        if #available(iOS 26.0, *) {
+            self
+                .glassEffect(
+                    .regular
+                        .tint(GhosttyPhoneChromePalette.toolbarGlassTint)
+                        .interactive(),
+                    in: shape
+                )
+                .overlay {
+                    shape.strokeBorder(
+                        GhosttyPhoneChromePalette.toolbarGlassStroke,
+                        lineWidth: 0.75
+                    )
+                }
+                .shadow(
+                    color: GhosttyPhoneChromePalette.toolbarGlassShadow,
+                    radius: 13,
+                    y: 7
+                )
+        } else {
+            self
+                .background(GhosttyPhoneChromePalette.toolbarFallbackFill, in: shape)
+                .overlay {
+                    shape.strokeBorder(
+                        GhosttyPhoneChromePalette.toolbarStroke,
+                        lineWidth: 1
+                    )
+                }
+                .shadow(
+                    color: GhosttyPhoneChromePalette.toolbarShadow,
+                    radius: 8,
+                    y: 4
+                )
+        }
     }
 }
 
