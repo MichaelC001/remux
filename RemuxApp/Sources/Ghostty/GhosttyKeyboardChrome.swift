@@ -108,6 +108,7 @@ struct GhosttyKeyboardChrome: View {
 
     let keyboardMode: GhosttyKeyboardChromeMode
     let isEnabled: Bool
+    let isInteractionLocked: Bool
     let isCompact: Bool
     let isControlArmed: Bool
     let selectedWindowIndex: Int?
@@ -167,7 +168,7 @@ struct GhosttyKeyboardChrome: View {
                     accessibilityHint: "Return to the Remux session library.",
                     accessibilityIdentifier: "terminal.home",
                     isActive: false,
-                    isEnabled: true,
+                    isEnabled: !isInteractionLocked,
                     action: onShowHome
                 )
 
@@ -179,7 +180,7 @@ struct GhosttyKeyboardChrome: View {
                     accessibilityHint: windowDetail,
                     accessibilityIdentifier: "terminal.windows",
                     isActive: false,
-                    isEnabled: isEnabled && windowCount > 0,
+                    isEnabled: isEnabled && !isInteractionLocked && windowCount > 0,
                     action: onShowWindows
                 )
 
@@ -191,7 +192,7 @@ struct GhosttyKeyboardChrome: View {
                     accessibilityHint: paneDetail,
                     accessibilityIdentifier: "terminal.panes",
                     isActive: false,
-                    isEnabled: isEnabled && paneCount > 0,
+                    isEnabled: isEnabled && !isInteractionLocked && paneCount > 0,
                     action: onShowPanes
                 )
             }
@@ -233,7 +234,7 @@ struct GhosttyKeyboardChrome: View {
                         : "Prepare an editable message before sending it to the terminal.",
                     accessibilityIdentifier: "terminal.composer.toggle",
                     isActive: isComposerPresented,
-                    isEnabled: true,
+                    isEnabled: !isInteractionLocked,
                     action: onToggleComposer
                 )
 
@@ -274,7 +275,7 @@ struct GhosttyKeyboardChrome: View {
             width: GhosttyKeyboardChromeSizing.dockButtonWidth,
             height: GhosttyKeyboardChromeSizing.dockButtonHeight,
             isActive: isActive,
-            isEnabled: isEnabled,
+            isEnabled: isEnabled && !isInteractionLocked,
             onLongPress: onLongPress,
             action: action
         )

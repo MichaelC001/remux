@@ -2,6 +2,87 @@ import XCTest
 @testable import Remux
 
 final class GhosttyComposerSubmissionControllerTests: XCTestCase {
+    func testComposerMessagePlacesAttachmentReferencesAfterDraft() {
+        XCTAssertEqual(
+            GhosttyComposerMessageFormatter.message(
+                draft: "Review these files",
+                attachmentText: "~/first.txt ~/second.txt"
+            ),
+            "Review these files\n~/first.txt ~/second.txt"
+        )
+    }
+
+    func testComposerMessageSupportsAttachmentOnlySubmission() {
+        XCTAssertEqual(
+            GhosttyComposerMessageFormatter.message(
+                draft: "",
+                attachmentText: "~/photo.png"
+            ),
+            "~/photo.png"
+        )
+    }
+
+    func testComposerSessionRequiresEveryAttachmentToBeReady() {
+        var session = GhosttyComposerSessionState()
+        session.attachments = [.pasteboardImagePlaceholder()]
+
+        XCTAssertTrue(session.hasContent)
+        XCTAssertFalse(session.areAttachmentsReady)
+
+        session.attachments = [.file(url: URL(fileURLWithPath: "/tmp/report.txt"))]
+        XCTAssertTrue(session.areAttachmentsReady)
+    }
+
+    func testUploadedAttachmentAndDraftBecomeOnePasteThenOneEnter() {
+        let sourceID = UUID()
+        let transferResult = GhosttyAttachmentTransferResult(
+            transferID: UUID(),
+            items: [
+                .remoteFile(
+                    sourceID: sourceID,
+                    path: GhosttyRemoteAttachmentPath(
+                        sourceID: sourceID,
+                        filename: "report.txt",
+                        remoteDirectory: ".cache/remux/attachments/job",
+                        remoteTemporaryPath: ".cache/remux/attachments/job/.report.txt.part",
+                        remoteFinalPath: ".cache/remux/attachments/job/report.txt",
+                        terminalPath: "~/.cache/remux/attachments/job/report.txt"
+                    )
+                ),
+            ]
+        )
+        let message = GhosttyComposerMessageFormatter.message(
+            draft: "Summarize this report",
+            attachmentText: GhosttyAttachmentTerminalInsertionFormatter.insertionText(
+                for: transferResult
+            )
+        )
+        var controller = GhosttyComposerSubmissionController()
+        var calls: [String] = []
+
+        let result = controller.submitDraft(
+            message,
+            to: UUID(),
+            sendPaste: {
+                calls.append("paste:\($0)")
+                return true
+            },
+            sendEnter: {
+                calls.append("enter")
+                return true
+            }
+        )
+
+        XCTAssertEqual(result, .submitted)
+        XCTAssertEqual(
+            calls,
+            [
+                "paste:Summarize this report\n~/.cache/remux/attachments/job/report.txt",
+                "enter",
+            ]
+        )
+    }
+
     func testSuccessfulSubmissionPastesBeforeEnterAndReturnsIdle() {
         var controller = GhosttyComposerSubmissionController()
         let surfaceID = UUID()

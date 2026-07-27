@@ -1,6 +1,27 @@
 import SwiftUI
 import UIKit
 
+struct GhosttyComposerSessionState: Equatable {
+    var draft = ""
+    var attachments: [GhosttyPendingAttachment] = []
+
+    var hasContent: Bool {
+        !draft.isEmpty || !attachments.isEmpty
+    }
+
+    var areAttachmentsReady: Bool {
+        attachments.allSatisfy { $0.transferSource != nil }
+    }
+}
+
+enum GhosttyComposerMessageFormatter {
+    static func message(draft: String, attachmentText: String) -> String {
+        guard !draft.isEmpty else { return attachmentText }
+        guard !attachmentText.isEmpty else { return draft }
+        return draft + "\n" + attachmentText
+    }
+}
+
 enum GhosttyComposeBarSubmissionState: Equatable {
     case composing(canSend: Bool)
     case sending
@@ -33,69 +54,88 @@ enum GhosttyComposeBarSubmissionState: Equatable {
 
 struct GhosttyComposeBar: View {
     @Binding var text: String
+    @Binding var attachments: [GhosttyPendingAttachment]
 
     let wantsKeyboardFocus: Bool
     let keyboardActivationToken: Int
     let submissionState: GhosttyComposeBarSubmissionState
     let statusMessage: String?
+    let attachmentUploadCount: Int
+    let attachmentTransferProgress: GhosttyAttachmentTransferProgress?
     let onKeyboardFocusChange: (Bool) -> Void
+    let onChoosePhotos: () -> Void
+    let onChooseFiles: () -> Void
+    let onOpenAttachments: () -> Void
+    let onRemoveAttachment: (GhosttyPendingAttachment.ID) -> Void
+    let onPasteAttachment: () -> Bool
     let onSend: () -> Void
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 2) {
-            utilityButton(
-                systemName: "plus",
-                accessibilityLabel: "Add attachment",
-                accessibilityIdentifier: "terminal.composer.attachments",
-                symbolSize: 22,
-                symbolWeight: .regular,
-                isEnabled: submissionState.allowsComposerInput,
-                action: {}
-            )
+        VStack(spacing: attachments.isEmpty ? 0 : 6) {
+            if !attachments.isEmpty {
+                GhosttyComposerAttachmentStrip(
+                    attachments: attachments,
+                    isEnabled: submissionState.allowsComposerInput,
+                    onOpen: onOpenAttachments,
+                    onRemove: onRemoveAttachment
+                )
 
-            VStack(alignment: .leading, spacing: 0) {
-                if let statusMessage {
-                    Text(statusMessage)
-                        .font(.caption)
-                        .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
-                        .padding(.leading, 4)
-                        .accessibilityIdentifier("terminal.composer.status")
-                }
-
-                ZStack(alignment: .topLeading) {
-                    if text.isEmpty {
-                        Text(composerPlaceholder)
-                            .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
-                            .padding(.leading, 4)
-                            .padding(.top, 8)
-                            .allowsHitTesting(false)
-                            .accessibilityHidden(submissionState != .awaitingSubmit)
-                    }
-
-                    GhosttyComposerTextView(
-                        text: $text,
-                        isEditable: submissionState.allowsComposerInput,
-                        wantsFirstResponder: wantsKeyboardFocus,
-                        activationToken: keyboardActivationToken,
-                        onFirstResponderChange: onKeyboardFocusChange
+                if submissionState.isSending, attachmentUploadCount > 0 {
+                    GhosttyComposerAttachmentProgress(
+                        uploadCount: attachmentUploadCount,
+                        progress: attachmentTransferProgress
                     )
                 }
             }
 
-            utilityButton(
-                systemName: "mic",
-                accessibilityLabel: "Start dictation",
-                accessibilityIdentifier: "terminal.composer.mic",
-                symbolSize: 20,
-                symbolWeight: .regular,
-                isEnabled: submissionState.allowsComposerInput,
-                action: {}
-            )
+            HStack(alignment: .bottom, spacing: 2) {
+                attachmentMenu
 
-            sendButton(
-                state: submissionState,
-                action: onSend
-            )
+                VStack(alignment: .leading, spacing: 0) {
+                    if let statusMessage {
+                        Text(statusMessage)
+                            .font(.caption)
+                            .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
+                            .padding(.leading, 4)
+                            .accessibilityIdentifier("terminal.composer.status")
+                    }
+
+                    ZStack(alignment: .topLeading) {
+                        if text.isEmpty {
+                            Text(composerPlaceholder)
+                                .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
+                                .padding(.leading, 4)
+                                .padding(.top, 8)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(submissionState != .awaitingSubmit)
+                        }
+
+                        GhosttyComposerTextView(
+                            text: $text,
+                            isEditable: submissionState.allowsComposerInput,
+                            wantsFirstResponder: wantsKeyboardFocus,
+                            activationToken: keyboardActivationToken,
+                            onFirstResponderChange: onKeyboardFocusChange,
+                            onPasteAttachment: onPasteAttachment
+                        )
+                    }
+                }
+
+                utilityButton(
+                    systemName: "mic",
+                    accessibilityLabel: "Start dictation",
+                    accessibilityIdentifier: "terminal.composer.mic",
+                    symbolSize: 20,
+                    symbolWeight: .regular,
+                    isEnabled: submissionState.allowsComposerInput,
+                    action: {}
+                )
+
+                sendButton(
+                    state: submissionState,
+                    action: onSend
+                )
+            }
         }
         .padding(6)
         .padding(.leading, 2)
@@ -106,7 +146,34 @@ struct GhosttyComposeBar: View {
     }
 
     private var composerPlaceholder: String {
-        submissionState == .awaitingSubmit ? "Pasted — tap Submit" : "Compose…"
+        if submissionState == .awaitingSubmit {
+            return "Pasted — tap Submit"
+        }
+        return attachments.isEmpty ? "Compose…" : "Describe the task…"
+    }
+
+    private var attachmentMenu: some View {
+        Menu {
+            Button(action: onChooseFiles) {
+                Label("Files", systemImage: "folder")
+            }
+            .accessibilityIdentifier("terminal.composer.attachments.files")
+
+            Button(action: onChoosePhotos) {
+                Label("Photos", systemImage: "photo")
+            }
+            .accessibilityIdentifier("terminal.composer.attachments.photos")
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 22, weight: .regular))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
+                .frame(width: 42, height: 42)
+        }
+        .disabled(!submissionState.allowsComposerInput)
+        .opacity(submissionState.allowsComposerInput ? 1 : 0.38)
+        .accessibilityLabel("Add attachment")
+        .accessibilityIdentifier("terminal.composer.attachments")
     }
 
     private func utilityButton(
@@ -216,14 +283,16 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
     let wantsFirstResponder: Bool
     let activationToken: Int
     let onFirstResponderChange: (Bool) -> Void
+    let onPasteAttachment: () -> Bool
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
     }
 
-    func makeUIView(context: Context) -> UITextView {
-        let textView = UITextView()
+    func makeUIView(context: Context) -> GhosttyComposerUITextView {
+        let textView = GhosttyComposerUITextView()
         textView.delegate = context.coordinator
+        textView.onPasteAttachment = onPasteAttachment
         textView.backgroundColor = .clear
         textView.font = .preferredFont(forTextStyle: .body)
         textView.adjustsFontForContentSizeCategory = true
@@ -242,9 +311,10 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
         return textView
     }
 
-    func updateUIView(_ textView: UITextView, context: Context) {
+    func updateUIView(_ textView: GhosttyComposerUITextView, context: Context) {
         context.coordinator.parent = self
         textView.isEditable = isEditable
+        textView.onPasteAttachment = onPasteAttachment
 
         if textView.text != text {
             let selection = textView.selectedRange
@@ -264,7 +334,7 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
 
     func sizeThatFits(
         _ proposal: ProposedViewSize,
-        uiView textView: UITextView,
+        uiView textView: GhosttyComposerUITextView,
         context: Context
     ) -> CGSize? {
         guard let width = proposal.width, width > 0 else { return nil }
@@ -322,5 +392,143 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
                 }
             }
         }
+    }
+}
+
+private final class GhosttyComposerUITextView: UITextView {
+    var onPasteAttachment: (() -> Bool)?
+
+    override func paste(_ sender: Any?) {
+        if onPasteAttachment?() == true {
+            return
+        }
+        super.paste(sender)
+    }
+}
+
+private struct GhosttyComposerAttachmentStrip: View {
+    let attachments: [GhosttyPendingAttachment]
+    let isEnabled: Bool
+    let onOpen: () -> Void
+    let onRemove: (GhosttyPendingAttachment.ID) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 7) {
+                ForEach(attachments) { attachment in
+                    attachmentChip(attachment)
+                }
+            }
+        }
+        .contentMargins(.horizontal, 2, for: .scrollContent)
+        .accessibilityIdentifier("terminal.composer.attachment-strip")
+    }
+
+    private func attachmentChip(_ attachment: GhosttyPendingAttachment) -> some View {
+        HStack(spacing: 7) {
+            Button {
+                Haptic.chromeControlPress()
+                onOpen()
+            } label: {
+                HStack(spacing: 7) {
+                    attachmentIcon(attachment)
+
+                    Text(attachment.title)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .lineLimit(1)
+                        .frame(maxWidth: 150)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!isEnabled || !attachment.isPreviewable)
+            .accessibilityLabel("Preview \(attachment.title)")
+
+            Button {
+                Haptic.chromeControlPress()
+                onRemove(attachment.id)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9.5, weight: .bold))
+                    .frame(width: 24, height: 24)
+                    .background(Color.primary.opacity(0.07), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!isEnabled)
+            .accessibilityLabel("Remove \(attachment.title)")
+            .accessibilityIdentifier("terminal.composer.attachment.remove")
+        }
+        .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
+        .padding(.leading, 7)
+        .padding(.trailing, 5)
+        .frame(height: 36)
+        .background(Color.primary.opacity(0.07), in: Capsule())
+        .overlay {
+            Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.75)
+        }
+        .opacity(isEnabled ? 1 : 0.68)
+    }
+
+    @ViewBuilder
+    private func attachmentIcon(_ attachment: GhosttyPendingAttachment) -> some View {
+        if case .imageData(let data) = attachment.previewPayload,
+           let image = UIImage(data: data) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 24, height: 24)
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        } else if attachment.isPreparingTransferSource {
+            ProgressView()
+                .controlSize(.mini)
+                .frame(width: 24, height: 24)
+        } else {
+            Image(systemName: attachment.systemName)
+                .font(.system(size: 13, weight: .semibold))
+                .frame(width: 24, height: 24)
+        }
+    }
+}
+
+private struct GhosttyComposerAttachmentProgress: View {
+    let uploadCount: Int
+    let progress: GhosttyAttachmentTransferProgress?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView(value: progressFraction)
+                .tint(.blue)
+
+            Text(progressLabel)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 4)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(progressAccessibilityLabel)
+        .accessibilityIdentifier("terminal.composer.attachment-progress")
+    }
+
+    private var progressFraction: Double {
+        guard let progress else { return 0 }
+        let completed = Double(progress.completedUploadCount)
+        let current = progress.currentUploadFraction
+        return min(1, (completed + current) / Double(max(uploadCount, 1)))
+    }
+
+    private var progressLabel: String {
+        guard let progress else {
+            return uploadCount > 1 ? "Uploading 1 of \(uploadCount)" : "Uploading"
+        }
+        let percent = Int((progress.currentUploadFraction * 100).rounded())
+        if uploadCount > 1 {
+            return "\(progress.currentUploadIndex) of \(uploadCount) · \(percent)%"
+        }
+        return "\(percent)%"
+    }
+
+    private var progressAccessibilityLabel: String {
+        "Attachment upload \(Int((progressFraction * 100).rounded())) percent"
     }
 }
