@@ -73,6 +73,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var trackpadFeedback = GhosttyKeyboardCursorTrackpad.FeedbackState.hidden
     @State private var isComposerPresented = false
     @State private var composerDraft = ""
+    @State private var composerSubmissionController = GhosttyComposerSubmissionController()
+    @State private var composerStatusMessage: String?
     @State private var isShortcutPalettePresented = false
     @State private var isShortcutsSettingsPresented = false
     @State private var shortcutEditorRequest: ShortcutEditorRequest?
@@ -347,7 +349,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             wantsKeyboardFocus: inputCoordinator.keyboardMode == .system
                                 && inputCoordinator.keyboardOwner == .composer,
                             keyboardActivationToken: inputCoordinator.composerActivationToken,
-                            onKeyboardFocusChange: handleComposerKeyboardFocusChange
+                            submissionState: composerSubmissionState,
+                            statusMessage: composerStatusMessage,
+                            onKeyboardFocusChange: handleComposerKeyboardFocusChange,
+                            onSend: submitComposer
                         )
                         .padding(.horizontal, 4)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -499,6 +504,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             .onChange(of: interactionProjection.selectedActiveLeafID) { _, activeLeafID in
                 handleActiveLeafChange(activeLeafID)
             }
+            .onChange(of: composerDraft) { _, _ in
+                composerStatusMessage = nil
+            }
             .onChange(of: interactionProjection.isInputAvailable) { _, isInputAvailable in
                 handleTerminalCoverInputAvailabilityChange(isInputAvailable)
             }
@@ -580,6 +588,17 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private var isTerminalInputAvailable: Bool {
         model.terminalInteractionProjection.isInputAvailable
+    }
+
+    private var composerSubmissionState: GhosttyComposeBarSubmissionState {
+        switch composerSubmissionController.phase {
+        case .idle:
+            .composing(canSend: isTerminalInputAvailable && !composerDraft.isEmpty)
+        case .sending:
+            .sending
+        case .awaitingSubmit:
+            .awaitingSubmit
+        }
     }
 
     private var isTerminalViewportFrozen: Bool {
@@ -720,6 +739,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             return
         }
 
+        composerSubmissionController.clearAwaitingSubmit()
+        composerStatusMessage = nil
         if isTerminalInputAvailable {
             inputCoordinator.transferKeyboardOwnerIfActive(
                 to: .terminal,
@@ -870,6 +891,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func handleTerminalCoverInputAvailabilityChange(_ isInputAvailable: Bool) {
+        if !isInputAvailable {
+            composerSubmissionController.clearAwaitingSubmit()
+            composerStatusMessage = nil
+        }
         guard terminalCoverPhase.isRestoringKeyboard else { return }
         guard isInputAvailable else {
             cancelTerminalCoverKeyboardRestoration(reason: "inputUnavailable")
@@ -948,6 +973,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func handleActiveLeafChange(_ activeLeafID: UUID?) {
+        if case .awaitingSubmit(let surfaceID) = composerSubmissionController.phase,
+           activeLeafID != surfaceID {
+            composerSubmissionController.clearAwaitingSubmit()
+            composerStatusMessage = nil
+        }
+
         guard let effect = topologyActionInputRefocusCoordinator.consumeActiveLeafChange(to: activeLeafID) else {
             return
         }
@@ -1704,6 +1735,112 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             text,
             submitPendingPrefix: submitTerminalText(_:),
             sendPaste: { model.sendPaste($0, to: surfaceID).isAccepted }
+        )
+    }
+
+    private func submitComposer() {
+        switch composerSubmissionController.phase {
+        case .idle:
+            submitComposerDraft()
+        case .awaitingSubmit:
+            submitDeliveredComposerPaste()
+        case .sending:
+            break
+        }
+    }
+
+    private func submitComposerDraft() {
+        let interaction = model.terminalInteractionProjection
+        guard interaction.isInputAvailable,
+              let surfaceID = interaction.selectedActiveLeafID else {
+            composerStatusMessage = "Destination unavailable — draft kept"
+            return
+        }
+
+        let draft = composerDraft
+        guard !draft.isEmpty else { return }
+
+        terminalInputController.clearControl()
+        scrollComposerDestinationToBottom(surfaceID)
+
+        var controller = composerSubmissionController
+        let result = controller.submitDraft(
+            draft,
+            to: surfaceID,
+            sendPaste: { sendTerminalPaste($0, to: surfaceID) },
+            sendEnter: { sendComposerEnter(to: surfaceID) }
+        )
+        composerSubmissionController = controller
+
+        if result.didDeliverDraft {
+            composerDraft = ""
+        }
+
+        switch result {
+        case .notStarted:
+            break
+        case .pasteRejected:
+            composerStatusMessage = "Send failed — draft kept"
+        case .submitted:
+            composerStatusMessage = nil
+        case .pastedAwaitingSubmit:
+            composerStatusMessage = nil
+        }
+    }
+
+    private func submitDeliveredComposerPaste() {
+        let surfaceID = model.terminalInteractionProjection.selectedActiveLeafID
+        if let surfaceID {
+            terminalInputController.clearControl()
+            scrollComposerDestinationToBottom(surfaceID)
+        }
+
+        var controller = composerSubmissionController
+        let result = controller.submitDeliveredPaste(
+            on: surfaceID,
+            sendEnter: {
+                guard let surfaceID else { return false }
+                return sendComposerEnter(to: surfaceID)
+            }
+        )
+        composerSubmissionController = controller
+
+        switch result {
+        case .notWaiting:
+            break
+        case .destinationChanged:
+            composerStatusMessage = "Destination changed — submit from the terminal"
+        case .enterRejected:
+            composerStatusMessage = nil
+        case .submitted:
+            composerStatusMessage = nil
+        }
+    }
+
+    private func sendComposerEnter(to surfaceID: UUID) -> Bool {
+        guard model.terminalInteractionProjection.selectedActiveLeafID == surfaceID else {
+            return false
+        }
+
+        let start = GhosttyRuntimeTrace.nowNanos()
+        let result = model.sendKeyEventToFocusedSurface(
+            GhosttySurfaceKeyEvent(keyCode: .enter)
+        )
+        GhosttyRuntimeTrace.perf(
+            "composer.sendEnter result=\(result) accepted=\(result.isAccepted) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
+        )
+        return result.isAccepted
+    }
+
+    private func scrollComposerDestinationToBottom(_ surfaceID: UUID) {
+        guard let surface = model.terminalManagedSurfaceLookup.managedSurface(for: surfaceID) else {
+            return
+        }
+        surface.refreshInteractionState()
+        guard surface.scrollRoute == .viewport else { return }
+        _ = surface.scrollToPosition(
+            row: surface.scrollState.maxRow,
+            cellOffset: 0
         )
     }
 

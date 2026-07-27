@@ -1,12 +1,45 @@
 import SwiftUI
 import UIKit
 
+enum GhosttyComposeBarSubmissionState: Equatable {
+    case composing(canSend: Bool)
+    case sending
+    case awaitingSubmit
+
+    var allowsComposerInput: Bool {
+        if case .composing = self { return true }
+        return false
+    }
+
+    var isSendEnabled: Bool {
+        switch self {
+        case .composing(let canSend):
+            canSend
+        case .sending:
+            false
+        case .awaitingSubmit:
+            true
+        }
+    }
+
+    var isSending: Bool {
+        self == .sending
+    }
+
+    var sendAccessibilityLabel: String {
+        self == .awaitingSubmit ? "Submit pasted message" : "Send"
+    }
+}
+
 struct GhosttyComposeBar: View {
     @Binding var text: String
 
     let wantsKeyboardFocus: Bool
     let keyboardActivationToken: Int
+    let submissionState: GhosttyComposeBarSubmissionState
+    let statusMessage: String?
     let onKeyboardFocusChange: (Bool) -> Void
+    let onSend: () -> Void
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 2) {
@@ -16,26 +49,37 @@ struct GhosttyComposeBar: View {
                 accessibilityIdentifier: "terminal.composer.attachments",
                 symbolSize: 22,
                 symbolWeight: .regular,
-                isEnabled: true,
+                isEnabled: submissionState.allowsComposerInput,
                 action: {}
             )
 
-            ZStack(alignment: .topLeading) {
-                if text.isEmpty {
-                    Text("Compose…")
+            VStack(alignment: .leading, spacing: 0) {
+                if let statusMessage {
+                    Text(statusMessage)
+                        .font(.caption)
                         .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
                         .padding(.leading, 4)
-                        .padding(.top, 8)
-                        .allowsHitTesting(false)
-                        .accessibilityHidden(true)
+                        .accessibilityIdentifier("terminal.composer.status")
                 }
 
-                GhosttyComposerTextView(
-                    text: $text,
-                    wantsFirstResponder: wantsKeyboardFocus,
-                    activationToken: keyboardActivationToken,
-                    onFirstResponderChange: onKeyboardFocusChange
-                )
+                ZStack(alignment: .topLeading) {
+                    if text.isEmpty {
+                        Text(composerPlaceholder)
+                            .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
+                            .padding(.leading, 4)
+                            .padding(.top, 8)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(submissionState != .awaitingSubmit)
+                    }
+
+                    GhosttyComposerTextView(
+                        text: $text,
+                        isEditable: submissionState.allowsComposerInput,
+                        wantsFirstResponder: wantsKeyboardFocus,
+                        activationToken: keyboardActivationToken,
+                        onFirstResponderChange: onKeyboardFocusChange
+                    )
+                }
             }
 
             utilityButton(
@@ -44,13 +88,13 @@ struct GhosttyComposeBar: View {
                 accessibilityIdentifier: "terminal.composer.mic",
                 symbolSize: 20,
                 symbolWeight: .regular,
-                isEnabled: true,
+                isEnabled: submissionState.allowsComposerInput,
                 action: {}
             )
 
             sendButton(
-                isEnabled: !text.isEmpty,
-                action: {}
+                state: submissionState,
+                action: onSend
             )
         }
         .padding(6)
@@ -59,6 +103,10 @@ struct GhosttyComposeBar: View {
         .frame(maxWidth: 560)
         .ghosttyComposerSurface()
         .accessibilityElement(children: .contain)
+    }
+
+    private var composerPlaceholder: String {
+        submissionState == .awaitingSubmit ? "Pasted — tap Submit" : "Compose…"
     }
 
     private func utilityButton(
@@ -88,25 +136,35 @@ struct GhosttyComposeBar: View {
     }
 
     private func sendButton(
-        isEnabled: Bool,
+        state: GhosttyComposeBarSubmissionState,
         action: @escaping () -> Void
     ) -> some View {
         Button {
             Haptic.chromeControlPress()
             action()
         } label: {
-            Image(systemName: "arrow.up")
-                .font(.system(size: 16, weight: .bold))
-                .symbolRenderingMode(.monochrome)
-                .foregroundStyle(.white)
+            ZStack {
+                Circle()
+                    .fill(Color(uiColor: .systemBlue))
+
+                if state.isSending {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.white)
+                } else {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 16, weight: .bold))
+                        .symbolRenderingMode(.monochrome)
+                        .foregroundStyle(.white)
+                }
+            }
                 .frame(width: 34, height: 34)
-                .background(Color(uiColor: .systemBlue), in: Circle())
                 .frame(width: 42, height: 42)
         }
         .buttonStyle(.plain)
-        .disabled(!isEnabled)
-        .opacity(isEnabled ? 1 : 0.38)
-        .accessibilityLabel("Send")
+        .disabled(!state.isSendEnabled)
+        .opacity(state.isSendEnabled || state.isSending ? 1 : 0.38)
+        .accessibilityLabel(state.sendAccessibilityLabel)
         .accessibilityIdentifier("terminal.composer.send")
     }
 }
@@ -155,6 +213,7 @@ private extension View {
 
 private struct GhosttyComposerTextView: UIViewRepresentable {
     @Binding var text: String
+    let isEditable: Bool
     let wantsFirstResponder: Bool
     let activationToken: Int
     let onFirstResponderChange: (Bool) -> Void
@@ -178,6 +237,7 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
         textView.smartQuotesType = .yes
         textView.textContainerInset = UIEdgeInsets(top: 5, left: 0, bottom: 5, right: 0)
         textView.textContainer.lineFragmentPadding = 4
+        textView.isEditable = isEditable
         textView.isScrollEnabled = false
         textView.accessibilityIdentifier = "terminal.composer.field"
         return textView
@@ -185,6 +245,7 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
 
     func updateUIView(_ textView: UITextView, context: Context) {
         context.coordinator.parent = self
+        textView.isEditable = isEditable
 
         if textView.text != text {
             let selection = textView.selectedRange
