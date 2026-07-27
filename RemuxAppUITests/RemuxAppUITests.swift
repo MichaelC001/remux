@@ -30,6 +30,13 @@ final class RemuxAppUITests: XCTestCase {
         installSystemPromptMonitor()
     }
 
+    private func attachScreenshot(named name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testCreatesSSHServerAndOpensTerminalWithSimulatorTransport() {
         launchSimulatorApp()
         openConnectionSetup()
@@ -37,6 +44,126 @@ final class RemuxAppUITests: XCTestCase {
 
         saveConnectionAndWaitForTerminal()
         _ = waitForTerminalHomeButton()
+    }
+
+    func testComposerDictationStopAndCancelFlow() {
+        let transcript = "Review the current changes and run the focused tests"
+        app.launchEnvironment["REMUX_DEBUG_DICTATION_TRANSCRIPT"] = transcript
+        launchSimulatorApp()
+        openConnectionSetup()
+        fillConnectionForm()
+        saveConnectionAndWaitForTerminal()
+        _ = waitForTerminalHomeButton()
+
+        let composerToggle = app.buttons["terminal.composer.toggle"]
+        XCTAssertTrue(composerToggle.waitForExistence(timeout: 5))
+        composerToggle.tap()
+
+        let mic = app.buttons["terminal.composer.mic"]
+        XCTAssertTrue(mic.waitForExistence(timeout: 3))
+        mic.tap()
+
+        let cancel = app.buttons["terminal.composer.dictation.cancel"]
+        let stop = app.buttons["terminal.composer.dictation.stop"]
+        let meter = app.descendants(matching: .any)["terminal.composer.dictation.meter"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 3))
+        XCTAssertTrue(stop.waitForExistence(timeout: 3))
+        XCTAssertTrue(meter.waitForExistence(timeout: 3))
+        attachScreenshot(named: "composer-dictation-recording")
+
+        openHomeFromTerminal()
+        let activeSession = activeSessionRows.firstMatch
+        XCTAssertTrue(activeSession.waitForExistence(timeout: 3))
+        activeSession.tap()
+        XCTAssertTrue(app.otherElements["terminal.screen"].waitForExistence(timeout: 5))
+        XCTAssertTrue(stop.waitForExistence(timeout: 3))
+        XCTAssertTrue(meter.waitForExistence(timeout: 3))
+
+        RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+        stop.tap()
+
+        let status = app.staticTexts["terminal.composer.dictation.status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 1))
+        XCTAssertEqual(status.label, "Transcribing")
+        attachScreenshot(named: "composer-dictation-transcribing")
+
+        let field = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        XCTAssertEqual(field.value as? String, transcript)
+        attachScreenshot(named: "composer-dictation-result")
+
+        field.tap()
+        field.typeText(" Keep this draft")
+        guard let originalDraft = field.value as? String else {
+            XCTFail("Composer field did not expose its edited draft")
+            return
+        }
+        mic.tap()
+        XCTAssertTrue(cancel.waitForExistence(timeout: 3))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+        cancel.tap()
+
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        XCTAssertEqual(field.value as? String, originalDraft)
+        attachScreenshot(named: "composer-dictation-cancelled")
+    }
+
+    func testComposerDictationCanRestartAfterNoSpeech() {
+        app.launchEnvironment["REMUX_DEBUG_DICTATION_NO_SPEECH"] = "1"
+        launchSimulatorApp()
+        openConnectionSetup()
+        fillConnectionForm()
+        saveConnectionAndWaitForTerminal()
+        _ = waitForTerminalHomeButton()
+
+        let composerToggle = app.buttons["terminal.composer.toggle"]
+        XCTAssertTrue(composerToggle.waitForExistence(timeout: 5))
+        composerToggle.tap()
+
+        let mic = app.buttons["terminal.composer.mic"]
+        let stop = app.buttons["terminal.composer.dictation.stop"]
+        XCTAssertTrue(mic.waitForExistence(timeout: 3))
+
+        let field = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.tap()
+        field.typeText("Can you check my Gmail?")
+        attachScreenshot(named: "composer-compact-polished")
+
+        mic.tap()
+        XCTAssertTrue(stop.waitForExistence(timeout: 3))
+        stop.tap()
+
+        XCTAssertTrue(mic.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["No speech detected — try again"].exists)
+
+        mic.tap()
+        XCTAssertTrue(stop.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.staticTexts["No speech detected — try again"].exists)
+    }
+
+    func testComposerToggleDoesNotResizeTerminalViewport() {
+        launchSimulatorApp()
+        openConnectionSetup()
+        fillConnectionForm()
+        saveConnectionAndWaitForTerminal()
+        _ = waitForTerminalHomeButton()
+
+        let terminal = app.otherElements["terminal.screen"]
+        XCTAssertTrue(terminal.waitForExistence(timeout: 5))
+        let initialFrame = terminal.frame
+
+        let composerToggle = app.buttons["terminal.composer.toggle"]
+        XCTAssertTrue(composerToggle.waitForExistence(timeout: 5))
+        composerToggle.tap()
+        XCTAssertTrue(app.textViews["terminal.composer.field"].waitForExistence(timeout: 3))
+        XCTAssertEqual(terminal.frame, initialFrame)
+        attachScreenshot(named: "composer-toggle-overlay-open")
+
+        composerToggle.tap()
+        XCTAssertFalse(app.textViews["terminal.composer.field"].waitForExistence(timeout: 1))
+        XCTAssertEqual(terminal.frame, initialFrame)
+        attachScreenshot(named: "composer-toggle-overlay-closed")
     }
 
     func testCanKeepMultipleSimulatorSessionsActive() {

@@ -283,6 +283,7 @@ private struct ActiveTerminalSessionView: View {
     let onShowLibrary: () -> Void
 
     @StateObject private var previewSession: TerminalPreviewSession
+    @StateObject private var composerDictationController: GhosttyComposerDictationController
 
     init(
         entry: ActiveTerminalScreenEntry,
@@ -308,6 +309,9 @@ private struct ActiveTerminalSessionView: View {
                 serverDisplayName: entry.model.target.server.displayName
             )
         )
+        _composerDictationController = StateObject(
+            wrappedValue: GhosttyComposerDictationController()
+        )
     }
 
     var body: some View {
@@ -316,6 +320,7 @@ private struct ActiveTerminalSessionView: View {
                 model: entry.model.terminalScreenAdapter,
                 presentation: entry.presentation,
                 isSelected: isSelected,
+                composerDictationController: composerDictationController,
                 isTerminalCovered: previewSession.isPresented,
                 shortcutStore: shortcutStore,
                 attachmentTransferServiceFactory: entry.attachmentTransferServiceFactory,

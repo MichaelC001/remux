@@ -53,12 +53,18 @@ enum GhosttyComposeBarSubmissionState: Equatable {
 }
 
 struct GhosttyComposeBar: View {
+    static let collapsedHeight: CGFloat = 50
+
+    @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
+
     @Binding var text: String
     @Binding var attachments: [GhosttyPendingAttachment]
 
     let wantsKeyboardFocus: Bool
     let keyboardActivationToken: Int
     let submissionState: GhosttyComposeBarSubmissionState
+    let dictationPhase: GhosttyComposerDictationPhase
+    let dictationAudioLevels: [CGFloat]
     let statusMessage: String?
     let attachmentUploadCount: Int
     let attachmentTransferProgress: GhosttyAttachmentTransferProgress?
@@ -68,6 +74,9 @@ struct GhosttyComposeBar: View {
     let onOpenAttachments: () -> Void
     let onRemoveAttachment: (GhosttyPendingAttachment.ID) -> Void
     let onPasteAttachment: () -> Bool
+    let onStartDictation: () -> Void
+    let onCancelDictation: () -> Void
+    let onFinishDictation: () -> Void
     let onSend: () -> Void
 
     var body: some View {
@@ -88,61 +97,142 @@ struct GhosttyComposeBar: View {
                 }
             }
 
-            HStack(alignment: .bottom, spacing: 2) {
-                attachmentMenu
-
-                VStack(alignment: .leading, spacing: 0) {
-                    if let statusMessage {
-                        Text(statusMessage)
-                            .font(.caption)
-                            .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
-                            .padding(.leading, 4)
-                            .accessibilityIdentifier("terminal.composer.status")
-                    }
-
-                    ZStack(alignment: .topLeading) {
-                        if text.isEmpty {
-                            Text(composerPlaceholder)
-                                .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
-                                .padding(.leading, 4)
-                                .padding(.top, 8)
-                                .allowsHitTesting(false)
-                                .accessibilityHidden(submissionState != .awaitingSubmit)
-                        }
-
-                        GhosttyComposerTextView(
-                            text: $text,
-                            isEditable: submissionState.allowsComposerInput,
-                            wantsFirstResponder: wantsKeyboardFocus,
-                            activationToken: keyboardActivationToken,
-                            onFirstResponderChange: onKeyboardFocusChange,
-                            onPasteAttachment: onPasteAttachment
-                        )
-                    }
-                }
-
-                utilityButton(
-                    systemName: "mic",
-                    accessibilityLabel: "Start dictation",
-                    accessibilityIdentifier: "terminal.composer.mic",
-                    symbolSize: 20,
-                    symbolWeight: .regular,
-                    isEnabled: submissionState.allowsComposerInput,
-                    action: {}
-                )
-
-                sendButton(
-                    state: submissionState,
-                    action: onSend
-                )
+            if dictationPhase.isActive {
+                dictationRow
+            } else {
+                composerRow
             }
         }
-        .padding(6)
-        .padding(.leading, 2)
-        .frame(minHeight: 54)
+        .padding(.vertical, 4)
+        .padding(.horizontal, 3)
+        .frame(minHeight: Self.collapsedHeight)
         .frame(maxWidth: 560)
         .ghosttyComposerSurface()
         .accessibilityElement(children: .contain)
+    }
+
+    private var composerRow: some View {
+        HStack(alignment: .bottom, spacing: 2) {
+            attachmentMenu
+
+            VStack(alignment: .leading, spacing: 0) {
+                if let statusMessage {
+                    Text(statusMessage)
+                        .font(.caption)
+                        .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
+                        .padding(.leading, 4)
+                        .accessibilityIdentifier("terminal.composer.status")
+                }
+
+                ZStack(alignment: .topLeading) {
+                    if text.isEmpty {
+                        Text(composerPlaceholder)
+                            .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
+                            .padding(.leading, 4)
+                            .padding(.top, 8)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(submissionState != .awaitingSubmit)
+                    }
+
+                    GhosttyComposerTextView(
+                        text: $text,
+                        caretColor: UIColor(chromeStyle.accent),
+                        isEditable: submissionState.allowsComposerInput,
+                        wantsFirstResponder: wantsKeyboardFocus,
+                        activationToken: keyboardActivationToken,
+                        onFirstResponderChange: onKeyboardFocusChange,
+                        onPasteAttachment: onPasteAttachment
+                    )
+                }
+            }
+
+            dictationButton
+
+            sendButton(
+                state: submissionState,
+                action: onSend
+            )
+        }
+    }
+
+    private var dictationRow: some View {
+        HStack(spacing: 2) {
+            dictationModeButton(
+                systemName: "xmark",
+                accessibilityLabel: "Cancel dictation",
+                accessibilityIdentifier: "terminal.composer.dictation.cancel",
+                action: onCancelDictation
+            )
+
+            Group {
+                switch dictationPhase {
+                case .idle:
+                    EmptyView()
+                case .starting:
+                    dictationStatus("Starting…")
+                case .recording:
+                    GhosttyComposerDictationMeter(levels: dictationAudioLevels)
+                case .transcribing:
+                    dictationStatus("Transcribing")
+                }
+            }
+            .frame(maxWidth: .infinity)
+
+            if dictationPhase == .recording {
+                dictationModeButton(
+                    systemName: "stop.fill",
+                    accessibilityLabel: "Stop dictation",
+                    accessibilityIdentifier: "terminal.composer.dictation.stop",
+                    action: onFinishDictation
+                )
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(GhosttyPhoneChromePalette.chromeForeground)
+                    .frame(width: 42, height: 42)
+            }
+
+            sendButton(
+                state: submissionState,
+                allowsTap: dictationPhase == .recording && submissionState.isSendEnabled,
+                action: onSend
+            )
+        }
+        .frame(minHeight: 42)
+    }
+
+    private func dictationStatus(_ title: String) -> some View {
+        Text(title)
+            .font(.body)
+            .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
+            .lineLimit(1)
+            .accessibilityIdentifier("terminal.composer.dictation.status")
+    }
+
+    private func dictationModeButton(
+        systemName: String,
+        accessibilityLabel: String,
+        accessibilityIdentifier: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        return Button {
+            Haptic.chromeControlPress()
+            action()
+        } label: {
+            Image(systemName: systemName)
+                .font(.system(size: 15, weight: .semibold))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
+                .frame(width: 34, height: 34)
+                .background(
+                    GhosttyPhoneChromePalette.toolbarButtonPressedFill,
+                    in: Circle()
+                )
+                .frame(width: 42, height: 42)
+        }
+        .buttonStyle(GhosttyComposerPressButtonStyle())
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityIdentifier(accessibilityIdentifier)
     }
 
     private var composerPlaceholder: String {
@@ -163,7 +253,7 @@ struct GhosttyComposeBar: View {
             }
         } label: {
             Image(systemName: "plus")
-                .font(.system(size: 22, weight: .regular))
+                .font(.system(size: 20, weight: .regular))
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
                 .frame(width: 42, height: 42)
@@ -178,37 +268,32 @@ struct GhosttyComposeBar: View {
         .accessibilityIdentifier("terminal.composer.attachments")
     }
 
-    private func utilityButton(
-        systemName: String,
-        accessibilityLabel: String,
-        accessibilityIdentifier: String,
-        symbolSize: CGFloat,
-        symbolWeight: Font.Weight,
-        isEnabled: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
+    private var dictationButton: some View {
         Button {
             Haptic.chromeControlPress()
-            action()
+            onStartDictation()
         } label: {
-            Image(systemName: systemName)
-                .font(.system(size: symbolSize, weight: symbolWeight))
+            Image(systemName: "mic")
+                .font(.system(size: 20, weight: .regular))
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
                 .frame(width: 42, height: 42)
         }
         .buttonStyle(GhosttyComposerPressButtonStyle())
-        .disabled(!isEnabled)
-        .opacity(isEnabled ? 1 : 0.38)
-        .accessibilityLabel(accessibilityLabel)
-        .accessibilityIdentifier(accessibilityIdentifier)
+        .disabled(!submissionState.allowsComposerInput)
+        .opacity(submissionState.allowsComposerInput ? 1 : 0.38)
+        .accessibilityLabel("Start dictation")
+        .accessibilityIdentifier("terminal.composer.mic")
     }
 
     private func sendButton(
         state: GhosttyComposeBarSubmissionState,
+        allowsTap: Bool? = nil,
         action: @escaping () -> Void
     ) -> some View {
-        Button {
+        let isEnabled = allowsTap ?? state.isSendEnabled
+
+        return Button {
             Haptic.chromeControlPress()
             action()
         } label: {
@@ -231,8 +316,8 @@ struct GhosttyComposeBar: View {
                 .frame(width: 42, height: 42)
         }
         .buttonStyle(GhosttyComposerPressButtonStyle())
-        .disabled(!state.isSendEnabled)
-        .opacity(state.isSendEnabled || state.isSending ? 1 : 0.38)
+        .disabled(!isEnabled)
+        .opacity(isEnabled || state.isSending ? 1 : 0.38)
         .accessibilityLabel(state.sendAccessibilityLabel)
         .accessibilityIdentifier("terminal.composer.send")
     }
@@ -254,6 +339,36 @@ private struct GhosttyComposerPressButtonStyle: ButtonStyle {
     }
 }
 
+private struct GhosttyComposerDictationMeter: View {
+    let levels: [CGFloat]
+
+    var body: some View {
+        GeometryReader { geometry in
+            let spacing = CGFloat(2)
+            let availableWidth = max(
+                geometry.size.width - (spacing * CGFloat(max(levels.count - 1, 0))),
+                0
+            )
+            let barWidth = max(min(availableWidth / CGFloat(max(levels.count, 1)), 3), 1.5)
+
+            HStack(spacing: spacing) {
+                ForEach(Array(levels.enumerated()), id: \.offset) { _, level in
+                    Capsule()
+                        .fill(GhosttyPhoneChromePalette.chromeForeground.opacity(0.72))
+                        .frame(
+                            width: barWidth,
+                            height: max(4, 6 + (level * 24))
+                        )
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(height: 32)
+        .accessibilityLabel("Recording audio")
+        .accessibilityIdentifier("terminal.composer.dictation.meter")
+    }
+}
+
 private extension View {
     @ViewBuilder
     func ghosttyComposerSurface(cornerRadius: CGFloat = 28) -> some View {
@@ -264,20 +379,15 @@ private extension View {
                 .background {
                     Color.clear
                         .glassEffect(
-                            .regular
-                                .tint(GhosttyPhoneChromePalette.toolbarGlassTint),
+                            .regular.tint(
+                                GhosttyPhoneChromePalette.toolbarGlassTint.opacity(0.70)
+                            ),
                             in: shape
                         )
-                        .overlay {
-                            shape.strokeBorder(
-                                GhosttyPhoneChromePalette.toolbarGlassStroke,
-                                lineWidth: 0.75
-                            )
-                        }
                         .shadow(
-                            color: GhosttyPhoneChromePalette.toolbarGlassShadow,
-                            radius: 13,
-                            y: 7
+                            color: GhosttyPhoneChromePalette.toolbarGlassShadow.opacity(0.60),
+                            radius: 8,
+                            y: 4
                         )
                 }
         } else {
@@ -286,13 +396,13 @@ private extension View {
                 .overlay {
                     shape.strokeBorder(
                         GhosttyPhoneChromePalette.toolbarStroke,
-                        lineWidth: 1
+                        lineWidth: 0.75
                     )
                 }
                 .shadow(
-                    color: GhosttyPhoneChromePalette.toolbarShadow,
-                    radius: 8,
-                    y: 4
+                    color: GhosttyPhoneChromePalette.toolbarShadow.opacity(0.70),
+                    radius: 6,
+                    y: 3
                 )
         }
     }
@@ -300,6 +410,7 @@ private extension View {
 
 private struct GhosttyComposerTextView: UIViewRepresentable {
     @Binding var text: String
+    let caretColor: UIColor
     let isEditable: Bool
     let wantsFirstResponder: Bool
     let activationToken: Int
@@ -318,7 +429,7 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
         textView.font = .preferredFont(forTextStyle: .body)
         textView.adjustsFontForContentSizeCategory = true
         textView.textColor = .label
-        textView.tintColor = .systemBlue
+        textView.tintColor = caretColor
         textView.autocapitalizationType = .none
         textView.autocorrectionType = .no
         textView.spellCheckingType = .yes
@@ -336,13 +447,13 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
     func updateUIView(_ textView: GhosttyComposerUITextView, context: Context) {
         context.coordinator.parent = self
         textView.isEditable = isEditable
+        textView.tintColor = caretColor
         textView.onPasteAttachment = onPasteAttachment
 
         if textView.text != text {
-            let selection = textView.selectedRange
             textView.text = text
             textView.selectedRange = NSRange(
-                location: min(selection.location, textView.text.utf16.count),
+                location: textView.text.utf16.count,
                 length: 0
             )
         }

@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import AVFoundation
 import CoreTransferable
 import GhosttyKit
 import PhotosUI
@@ -52,6 +53,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
     @ObservedObject private var model: Model
+    @ObservedObject private var composerDictationController: GhosttyComposerDictationController
     private let presentation: GhosttySurfaceScreenPresentation
     private let isSelected: Bool
     private let isTerminalCovered: Bool
@@ -101,6 +103,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         model: Model,
         presentation: GhosttySurfaceScreenPresentation,
         isSelected: Bool,
+        composerDictationController: GhosttyComposerDictationController,
         isTerminalCovered: Bool = false,
         shortcutStore: ShortcutStore,
         attachmentTransferServiceFactory: @escaping @Sendable () -> any GhosttyAttachmentTransferService,
@@ -112,6 +115,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         onTrustHostKey: @escaping () -> Void
     ) {
         self.model = model
+        self.composerDictationController = composerDictationController
         self.presentation = presentation
         self.isSelected = isSelected
         self.isTerminalCovered = isTerminalCovered
@@ -332,52 +336,58 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             .overlay(alignment: .bottom) {
                 attachmentNoticeLayer()
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                VStack(spacing: 4) {
-                    if isComposerPresented {
-                        GhosttyComposeBar(
-                            text: $composerSession.draft,
-                            attachments: $composerSession.attachments,
-                            wantsKeyboardFocus: inputCoordinator.keyboardMode == .system
-                                && inputCoordinator.keyboardOwner == .composer,
-                            keyboardActivationToken: inputCoordinator.composerActivationToken,
-                            submissionState: composerSubmissionState,
-                            statusMessage: composerStatusMessage,
-                            attachmentUploadCount: attachmentTransferUploadCount,
-                            attachmentTransferProgress: attachmentTransferProgress,
-                            onKeyboardFocusChange: handleComposerKeyboardFocusChange,
-                            onChoosePhotos: openAttachmentPhotosPicker,
-                            onChooseFiles: openAttachmentFilePicker,
-                            onOpenAttachments: showPendingAttachmentPreview,
-                            onRemoveAttachment: removePendingAttachment,
-                            onPasteAttachment: handleComposerAttachmentPaste,
-                            onSend: submitComposer
-                        )
-                        .padding(.horizontal, 4)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                    }
-
-                    GhosttyKeyboardChrome(
-                        keyboardMode: renderedKeyboardMode,
-                        isEnabled: interactionProjection.isInputAvailable,
-                        isInteractionLocked: isAttachmentTransferInProgress,
-                        isCompact: chrome.isCompact,
-                        isControlArmed: terminalInputController.isControlArmed,
-                        selectedWindowIndex: interactionProjection.selectedWindowIndex,
-                        windowCount: interactionProjection.windowCount,
-                        selectedPaneIndex: interactionProjection.selectedPaneIndex,
-                        paneCount: interactionProjection.paneCount,
-                        isComposerPresented: isComposerPresented,
-                        onShowHome: onEditConnection,
-                        onShowWindows: showWindows,
-                        onShowPanes: showPanes,
-                        onToggleComposer: toggleComposer,
-                        onToggleKeyboard: toggleKeyboardChrome,
-                        onToggleControl: toggleControlModifier,
-                        onShowShortcuts: showShortcutPalette,
-                        sendKey: sendTerminalKeyEvent
+            .overlay(alignment: .bottom) {
+                if isComposerPresented {
+                    GhosttyComposeBar(
+                        text: $composerSession.draft,
+                        attachments: $composerSession.attachments,
+                        wantsKeyboardFocus: inputCoordinator.keyboardMode == .system
+                            && inputCoordinator.keyboardOwner == .composer,
+                        keyboardActivationToken: inputCoordinator.composerActivationToken,
+                        submissionState: composerSubmissionState,
+                        dictationPhase: composerDictationController.phase,
+                        dictationAudioLevels: composerDictationController.audioLevels,
+                        statusMessage: composerStatusMessage,
+                        attachmentUploadCount: attachmentTransferUploadCount,
+                        attachmentTransferProgress: attachmentTransferProgress,
+                        onKeyboardFocusChange: handleComposerKeyboardFocusChange,
+                        onChoosePhotos: openAttachmentPhotosPicker,
+                        onChooseFiles: openAttachmentFilePicker,
+                        onOpenAttachments: showPendingAttachmentPreview,
+                        onRemoveAttachment: removePendingAttachment,
+                        onPasteAttachment: handleComposerAttachmentPaste,
+                        onStartDictation: startComposerDictation,
+                        onCancelDictation: cancelComposerDictation,
+                        onFinishDictation: finishComposerDictation,
+                        onSend: submitComposer
                     )
+                    .padding(.horizontal, chrome.surfaceHorizontalPadding)
+                    .padding(.bottom, 4)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .zIndex(1)
                 }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                GhosttyKeyboardChrome(
+                    keyboardMode: renderedKeyboardMode,
+                    isEnabled: interactionProjection.isInputAvailable,
+                    isInteractionLocked: isAttachmentTransferInProgress,
+                    isCompact: chrome.isCompact,
+                    isControlArmed: terminalInputController.isControlArmed,
+                    selectedWindowIndex: interactionProjection.selectedWindowIndex,
+                    windowCount: interactionProjection.windowCount,
+                    selectedPaneIndex: interactionProjection.selectedPaneIndex,
+                    paneCount: interactionProjection.paneCount,
+                    isComposerPresented: isComposerPresented,
+                    onShowHome: onEditConnection,
+                    onShowWindows: showWindows,
+                    onShowPanes: showPanes,
+                    onToggleComposer: toggleComposer,
+                    onToggleKeyboard: toggleKeyboardChrome,
+                    onToggleControl: toggleControlModifier,
+                    onShowShortcuts: showShortcutPalette,
+                    sendKey: sendTerminalKeyEvent
+                )
                 .padding(.horizontal, chrome.surfaceHorizontalPadding)
                 .padding(.top, 4)
                 .padding(.bottom, chrome.bottomPadding)
@@ -418,6 +428,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 guard shouldHandleTerminalKeyboardNotification else { return }
                 GhosttyRuntimeTrace.perf("kbd.didHide")
                 completeKeyboardDidHide()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) {
+                notification in
+                handleComposerAudioSessionInterruption(notification)
             }
             .sheet(item: selectionSheetBinding) { sheet in
                 selectionSheetContent(sheet)
@@ -740,6 +754,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             return
         }
 
+        composerDictationController.stopImmediately()
         composerSubmissionController.clearAwaitingSubmit()
         composerStatusMessage = nil
         if isTerminalInputAvailable {
@@ -750,6 +765,40 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         } else if inputCoordinator.keyboardOwner == .composer {
             inputCoordinator.dismissKeyboard()
         }
+    }
+
+    private func startComposerDictation() {
+        guard composerDictationController.phase == .idle else { return }
+        composerStatusMessage = nil
+        composerDictationController.start(
+            draft: composerSession.draft,
+            onTranscript: { transcript in
+                composerSession.draft = transcript
+            },
+            onFailure: { message in
+                composerStatusMessage = message
+            }
+        )
+    }
+
+    private func cancelComposerDictation() {
+        composerDictationController.cancel()
+    }
+
+    private func finishComposerDictation() {
+        GhosttyRuntimeTrace.perf("composer.dictation.stopTapped")
+        composerDictationController.finish()
+    }
+
+    private func handleComposerAudioSessionInterruption(_ notification: Notification) {
+        guard
+            let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+            AVAudioSession.InterruptionType(rawValue: rawType) == .began
+        else {
+            return
+        }
+
+        composerDictationController.interrupt(message: "Dictation interrupted")
     }
 
     private func handleComposerKeyboardFocusChange(_ isFocused: Bool) {
@@ -786,6 +835,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func handleScenePhaseChange(_ phase: ScenePhase) {
+        if phase == .background {
+            composerDictationController.stopImmediately()
+        }
+
         if terminalCoverPhase.isRestoringKeyboard {
             guard phase == .active else { return }
             resumeTerminalCoverKeyboardRestorationIfPossible()
@@ -1617,6 +1670,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func submitComposer() {
         guard !isAttachmentTransferInProgress else { return }
+
+        if composerDictationController.phase == .recording {
+            composerDictationController.finish(afterTranscription: submitComposer)
+            return
+        }
+        guard !composerDictationController.phase.isActive else { return }
 
         switch composerSubmissionController.phase {
         case .idle:
