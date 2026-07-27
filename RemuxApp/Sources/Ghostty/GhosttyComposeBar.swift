@@ -178,8 +178,7 @@ private extension View {
             self
                 .glassEffect(
                     .regular
-                        .tint(GhosttyPhoneChromePalette.toolbarGlassTint)
-                        .interactive(),
+                        .tint(GhosttyPhoneChromePalette.toolbarGlassTint),
                     in: shape
                 )
                 .overlay {
