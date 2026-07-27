@@ -298,11 +298,12 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
         textView.adjustsFontForContentSizeCategory = true
         textView.textColor = .label
         textView.tintColor = .systemBlue
-        textView.autocapitalizationType = .sentences
-        textView.autocorrectionType = .yes
+        textView.autocapitalizationType = .none
+        textView.autocorrectionType = .no
         textView.spellCheckingType = .yes
-        textView.smartDashesType = .yes
-        textView.smartQuotesType = .yes
+        textView.smartDashesType = .no
+        textView.smartQuotesType = .no
+        textView.smartInsertDeleteType = .no
         textView.textContainerInset = UIEdgeInsets(top: 5, left: 0, bottom: 5, right: 0)
         textView.textContainer.lineFragmentPadding = 4
         textView.isEditable = isEditable
@@ -425,20 +426,12 @@ private struct GhosttyComposerAttachmentStrip: View {
     }
 
     private func attachmentChip(_ attachment: GhosttyPendingAttachment) -> some View {
-        HStack(spacing: 7) {
+        ZStack(alignment: .topTrailing) {
             Button {
                 Haptic.chromeControlPress()
                 onOpen()
             } label: {
-                HStack(spacing: 7) {
-                    attachmentIcon(attachment)
-
-                    Text(attachment.title)
-                        .font(.system(size: 12.5, weight: .medium))
-                        .lineLimit(1)
-                        .frame(maxWidth: 150)
-                }
-                .contentShape(Rectangle())
+                attachmentPreview(attachment)
             }
             .buttonStyle(.plain)
             .disabled(!isEnabled || !attachment.isPreviewable)
@@ -449,44 +442,110 @@ private struct GhosttyComposerAttachmentStrip: View {
                 onRemove(attachment.id)
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 9.5, weight: .bold))
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white)
                     .frame(width: 24, height: 24)
-                    .background(Color.primary.opacity(0.07), in: Circle())
+                    .background(Color.black.opacity(0.72), in: Circle())
+                    .overlay {
+                        Circle().strokeBorder(Color.white.opacity(0.16), lineWidth: 0.75)
+                    }
             }
             .buttonStyle(.plain)
             .disabled(!isEnabled)
             .accessibilityLabel("Remove \(attachment.title)")
             .accessibilityIdentifier("terminal.composer.attachment.remove")
+            .offset(x: 4, y: -4)
         }
-        .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
-        .padding(.leading, 7)
-        .padding(.trailing, 5)
-        .frame(height: 36)
-        .background(Color.primary.opacity(0.07), in: Capsule())
-        .overlay {
-            Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.75)
-        }
+        .padding(.top, 4)
+        .padding(.trailing, 4)
         .opacity(isEnabled ? 1 : 0.68)
     }
 
     @ViewBuilder
-    private func attachmentIcon(_ attachment: GhosttyPendingAttachment) -> some View {
+    private func attachmentPreview(_ attachment: GhosttyPendingAttachment) -> some View {
         if case .imageData(let data) = attachment.previewPayload,
            let image = UIImage(data: data) {
             Image(uiImage: image)
                 .resizable()
                 .scaledToFill()
-                .frame(width: 24, height: 24)
-                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-        } else if attachment.isPreparingTransferSource {
-            ProgressView()
-                .controlSize(.mini)
-                .frame(width: 24, height: 24)
+                .frame(width: 58, height: 58)
+                .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 13, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.75)
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        } else if isImageAttachment(attachment) {
+            attachmentLoadingPreview(attachment)
         } else {
-            Image(systemName: attachment.systemName)
-                .font(.system(size: 13, weight: .semibold))
-                .frame(width: 24, height: 24)
+            filePreview(attachment)
         }
+    }
+
+    private func attachmentLoadingPreview(_ attachment: GhosttyPendingAttachment) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .fill(Color.primary.opacity(0.08))
+
+            if attachment.isPreparingTransferSource {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Image(systemName: attachment.systemName)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
+            }
+        }
+        .frame(width: 58, height: 58)
+    }
+
+    private func filePreview(_ attachment: GhosttyPendingAttachment) -> some View {
+        HStack(spacing: 9) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(Color.primary.opacity(0.09))
+
+                if attachment.isPreparingTransferSource {
+                    ProgressView()
+                        .controlSize(.mini)
+                } else {
+                    Text(fileTypeLabel(for: attachment))
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
+                        .lineLimit(1)
+                }
+            }
+            .frame(width: 34, height: 40)
+
+            Text(attachment.title)
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 9)
+        .frame(width: 154, height: 58)
+        .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.75)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+    }
+
+    private func isImageAttachment(_ attachment: GhosttyPendingAttachment) -> Bool {
+        switch attachment.kind {
+        case .photo, .pasteboardImage:
+            true
+        case .video, .media, .file, .pasteboardLink, .pasteboardText:
+            false
+        }
+    }
+
+    private func fileTypeLabel(for attachment: GhosttyPendingAttachment) -> String {
+        let fileExtension = (attachment.title as NSString).pathExtension
+        return fileExtension.isEmpty ? "FILE" : String(fileExtension.prefix(5)).uppercased()
     }
 }
 
