@@ -147,6 +147,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             let terminalResponderFocusPolicy = GhosttyTerminalResponderFocusPolicy(
                 isSelected: isSelected,
                 keyboardMode: inputCoordinator.keyboardMode,
+                keyboardOwner: inputCoordinator.keyboardOwner,
                 isInputAvailable: interactionProjection.isInputAvailable,
                 isTransientInputOwnerPresented: isTransientInputOwnerPresented
             )
@@ -867,6 +868,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             actionEffect: actionEffect,
             activeLeafID: model.terminalInteractionProjection.selectedActiveLeafID,
             keyboardMode: inputCoordinator.keyboardMode,
+            keyboardOwner: inputCoordinator.keyboardOwner,
             apply: applyTopologyInputRefocusEffect,
             action: action
         )

@@ -1,38 +1,78 @@
 import Foundation
 
+enum GhosttyKeyboardOwner: Equatable {
+    case none
+    case terminal
+    case composer
+}
+
 struct GhosttyTerminalInputCoordinator: Equatable {
     private(set) var terminalActivationToken = 0
+    private(set) var composerActivationToken = 0
     private(set) var keyboardMode: GhosttyKeyboardChromeMode = .hidden
+    private(set) var keyboardOwner: GhosttyKeyboardOwner = .none
     private(set) var isDismissSystemKeyboardRequested = false
     private(set) var isSoftwareKeyboardVisible = false
 
     mutating func showSystemKeyboard(isInputAvailable: Bool) {
-        guard isInputAvailable else { return }
-        isDismissSystemKeyboardRequested = false
-        keyboardMode = .system
-        terminalActivationToken += 1
+        showSystemKeyboard(owner: .terminal, isOwnerAvailable: isInputAvailable)
     }
 
-    mutating func toggleKeyboard(isInputAvailable: Bool) {
-        switch keyboardMode.toggledKeyboard() {
-        case .system:
-            showSystemKeyboard(isInputAvailable: isInputAvailable)
-        case .hidden:
-            hideKeyboard()
+    mutating func showSystemKeyboard(
+        owner: GhosttyKeyboardOwner,
+        isOwnerAvailable: Bool
+    ) {
+        guard owner != .none, isOwnerAvailable else { return }
+        isDismissSystemKeyboardRequested = false
+        keyboardMode = .system
+        keyboardOwner = owner
+        switch owner {
+        case .terminal:
+            terminalActivationToken += 1
+        case .composer:
+            composerActivationToken += 1
+        case .none:
+            break
         }
     }
 
-    mutating func refocusSystemKeyboardIfActive(isInputAvailable: Bool) {
+    mutating func toggleKeyboard(isInputAvailable: Bool) {
+        toggleKeyboard(owner: .terminal, isOwnerAvailable: isInputAvailable)
+    }
+
+    mutating func toggleKeyboard(
+        owner: GhosttyKeyboardOwner,
+        isOwnerAvailable: Bool
+    ) {
+        if keyboardMode == .system, keyboardOwner == owner {
+            hideKeyboard()
+            return
+        }
+
+        showSystemKeyboard(owner: owner, isOwnerAvailable: isOwnerAvailable)
+    }
+
+    mutating func transferKeyboardOwnerIfActive(
+        to owner: GhosttyKeyboardOwner,
+        isOwnerAvailable: Bool
+    ) {
         guard keyboardMode == .system else { return }
+        showSystemKeyboard(owner: owner, isOwnerAvailable: isOwnerAvailable)
+    }
+
+    mutating func refocusSystemKeyboardIfActive(isInputAvailable: Bool) {
+        guard keyboardMode == .system, keyboardOwner == .terminal else { return }
         showSystemKeyboard(isInputAvailable: isInputAvailable)
     }
 
     mutating func handleSelectionChange(isInputAvailable: Bool) {
-        switch keyboardMode {
-        case .system:
+        switch (keyboardMode, keyboardOwner) {
+        case (.system, .terminal):
             showSystemKeyboard(isInputAvailable: isInputAvailable)
-        case .hidden:
+        case (.hidden, _):
             isDismissSystemKeyboardRequested = false
+        case (.system, .composer), (.system, .none):
+            break
         }
     }
 
@@ -42,11 +82,15 @@ struct GhosttyTerminalInputCoordinator: Equatable {
         if isVisible {
             isDismissSystemKeyboardRequested = false
             keyboardMode = keyboardMode.applyingSystemKeyboardVisibility(true)
+            if keyboardOwner == .none {
+                keyboardOwner = .terminal
+            }
             return
         }
 
         if isDismissSystemKeyboardRequested {
             keyboardMode = keyboardMode.applyingSystemKeyboardVisibility(false)
+            keyboardOwner = .none
         }
         isDismissSystemKeyboardRequested = false
     }
@@ -58,6 +102,7 @@ struct GhosttyTerminalInputCoordinator: Equatable {
             isDismissSystemKeyboardRequested = false
         }
         keyboardMode = .hidden
+        keyboardOwner = .none
     }
 }
 
@@ -182,8 +227,12 @@ struct GhosttyPendingTopologyInputRefocus: Equatable {
     }
 
     @discardableResult
-    mutating func request(from activeLeafID: UUID?, keyboardMode: GhosttyKeyboardChromeMode) -> Bool {
-        guard keyboardMode == .system else { return false }
+    mutating func request(
+        from activeLeafID: UUID?,
+        keyboardMode: GhosttyKeyboardChromeMode,
+        keyboardOwner: GhosttyKeyboardOwner = .terminal
+    ) -> Bool {
+        guard keyboardMode == .system, keyboardOwner == .terminal else { return false }
         isPending = true
         sourceActiveLeafID = activeLeafID
         ownsKeyboardTransition = false
@@ -234,10 +283,15 @@ struct GhosttyTopologyActionInputRefocusCoordinator: Equatable {
     mutating func prepare(
         actionEffect: GhosttyTmuxTopologyActionInteractionEffect,
         activeLeafID: UUID?,
-        keyboardMode: GhosttyKeyboardChromeMode
+        keyboardMode: GhosttyKeyboardChromeMode,
+        keyboardOwner: GhosttyKeyboardOwner = .terminal
     ) -> Effect? {
         guard actionEffect.requestsInputRefocus else { return nil }
-        guard pendingRefocus.request(from: activeLeafID, keyboardMode: keyboardMode) else {
+        guard pendingRefocus.request(
+            from: activeLeafID,
+            keyboardMode: keyboardMode,
+            keyboardOwner: keyboardOwner
+        ) else {
             return nil
         }
         return .requestRefocus
@@ -280,13 +334,15 @@ struct GhosttyTopologyActionInputRefocusCoordinator: Equatable {
         actionEffect: GhosttyTmuxTopologyActionInteractionEffect,
         activeLeafID: UUID?,
         keyboardMode: GhosttyKeyboardChromeMode,
+        keyboardOwner: GhosttyKeyboardOwner = .terminal,
         apply: (Effect) -> EffectApplicationFeedback,
         action: () -> GhosttyTmuxModelActionOutcome
     ) -> GhosttyTmuxModelActionOutcome {
         if let effect = prepare(
             actionEffect: actionEffect,
             activeLeafID: activeLeafID,
-            keyboardMode: keyboardMode
+            keyboardMode: keyboardMode,
+            keyboardOwner: keyboardOwner
         ) {
             applyEffect(effect, using: apply)
         }

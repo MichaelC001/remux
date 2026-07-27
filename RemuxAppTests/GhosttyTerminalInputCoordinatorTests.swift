@@ -8,6 +8,7 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
         coordinator.showSystemKeyboard(isInputAvailable: true)
 
         XCTAssertEqual(coordinator.keyboardMode, .system)
+        XCTAssertEqual(coordinator.keyboardOwner, .terminal)
         XCTAssertEqual(coordinator.terminalActivationToken, 1)
         XCTAssertFalse(coordinator.isDismissSystemKeyboardRequested)
     }
@@ -18,6 +19,7 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
         coordinator.showSystemKeyboard(isInputAvailable: false)
 
         XCTAssertEqual(coordinator.keyboardMode, .hidden)
+        XCTAssertEqual(coordinator.keyboardOwner, .none)
         XCTAssertEqual(coordinator.terminalActivationToken, 0)
     }
 
@@ -47,6 +49,7 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
         coordinator.toggleKeyboard(isInputAvailable: true)
 
         XCTAssertEqual(coordinator.keyboardMode, .hidden)
+        XCTAssertEqual(coordinator.keyboardOwner, .none)
         XCTAssertTrue(coordinator.isDismissSystemKeyboardRequested)
     }
 
@@ -70,6 +73,7 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
         coordinator.updateSoftwareKeyboardVisibility(false)
 
         XCTAssertEqual(coordinator.keyboardMode, .system)
+        XCTAssertEqual(coordinator.keyboardOwner, .terminal)
         XCTAssertFalse(coordinator.isDismissSystemKeyboardRequested)
         XCTAssertFalse(coordinator.isSoftwareKeyboardVisible)
     }
@@ -104,6 +108,80 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(coordinator.keyboardMode, .hidden)
         XCTAssertEqual(coordinator.terminalActivationToken, 0)
+    }
+
+    func testVisibleKeyboardTransfersFromTerminalToComposerWithoutDismissal() {
+        var coordinator = GhosttyTerminalInputCoordinator()
+        coordinator.showSystemKeyboard(isInputAvailable: true)
+
+        coordinator.transferKeyboardOwnerIfActive(
+            to: .composer,
+            isOwnerAvailable: true
+        )
+
+        XCTAssertEqual(coordinator.keyboardMode, .system)
+        XCTAssertEqual(coordinator.keyboardOwner, .composer)
+        XCTAssertEqual(coordinator.terminalActivationToken, 1)
+        XCTAssertEqual(coordinator.composerActivationToken, 1)
+        XCTAssertFalse(coordinator.isDismissSystemKeyboardRequested)
+    }
+
+    func testHiddenKeyboardDoesNotAppearWhenComposerBecomesAvailable() {
+        var coordinator = GhosttyTerminalInputCoordinator()
+
+        coordinator.transferKeyboardOwnerIfActive(
+            to: .composer,
+            isOwnerAvailable: true
+        )
+
+        XCTAssertEqual(coordinator.keyboardMode, .hidden)
+        XCTAssertEqual(coordinator.keyboardOwner, .none)
+        XCTAssertEqual(coordinator.composerActivationToken, 0)
+    }
+
+    func testComposerKeyboardToggleHidesKeyboardAndClearsOwner() {
+        var coordinator = GhosttyTerminalInputCoordinator()
+        coordinator.showSystemKeyboard(
+            owner: .composer,
+            isOwnerAvailable: true
+        )
+
+        coordinator.toggleKeyboard(
+            owner: .composer,
+            isOwnerAvailable: true
+        )
+
+        XCTAssertEqual(coordinator.keyboardMode, .hidden)
+        XCTAssertEqual(coordinator.keyboardOwner, .none)
+        XCTAssertTrue(coordinator.isDismissSystemKeyboardRequested)
+    }
+
+    func testTerminalRefocusDoesNotStealComposerKeyboard() {
+        var coordinator = GhosttyTerminalInputCoordinator()
+        coordinator.showSystemKeyboard(
+            owner: .composer,
+            isOwnerAvailable: true
+        )
+
+        coordinator.refocusSystemKeyboardIfActive(isInputAvailable: true)
+
+        XCTAssertEqual(coordinator.keyboardOwner, .composer)
+        XCTAssertEqual(coordinator.terminalActivationToken, 0)
+        XCTAssertEqual(coordinator.composerActivationToken, 1)
+    }
+
+    func testSelectionChangeDoesNotStealComposerKeyboard() {
+        var coordinator = GhosttyTerminalInputCoordinator()
+        coordinator.showSystemKeyboard(
+            owner: .composer,
+            isOwnerAvailable: true
+        )
+
+        coordinator.handleSelectionChange(isInputAvailable: true)
+
+        XCTAssertEqual(coordinator.keyboardOwner, .composer)
+        XCTAssertEqual(coordinator.terminalActivationToken, 0)
+        XCTAssertEqual(coordinator.composerActivationToken, 1)
     }
 
     func testSelectionChangeRefocusesSystemKeyboardOnlyWhenActive() {
@@ -147,6 +225,19 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
 
         XCTAssertFalse(refocus.isActive)
         XCTAssertFalse(refocus.consumeIfActiveLeafChanged(to: UUID()))
+    }
+
+    func testPendingTopologyInputRefocusIgnoresComposerKeyboardOwner() {
+        var refocus = GhosttyPendingTopologyInputRefocus()
+
+        XCTAssertFalse(
+            refocus.request(
+                from: UUID(),
+                keyboardMode: .system,
+                keyboardOwner: .composer
+            )
+        )
+        XCTAssertFalse(refocus.isActive)
     }
 
     func testPendingTopologyInputRefocusCancelClearsPendingRequest() {
@@ -244,6 +335,20 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
             actionEffect: .refocusOnly,
             activeLeafID: UUID(),
             keyboardMode: .hidden
+        )
+
+        XCTAssertNil(effect)
+        XCTAssertFalse(coordinator.isActive)
+    }
+
+    func testTopologyRefocusCoordinatorIgnoresComposerKeyboardOwner() {
+        var coordinator = GhosttyTopologyActionInputRefocusCoordinator()
+
+        let effect = coordinator.prepare(
+            actionEffect: .refocusOnly,
+            activeLeafID: UUID(),
+            keyboardMode: .system,
+            keyboardOwner: .composer
         )
 
         XCTAssertNil(effect)
