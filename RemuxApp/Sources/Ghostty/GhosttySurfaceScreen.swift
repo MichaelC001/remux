@@ -71,6 +71,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var topologyActionInputRefocusCoordinator = GhosttyTopologyActionInputRefocusCoordinator()
     @State private var trackpadDriver = GhosttyKeyboardCursorTrackpadDriver()
     @State private var trackpadFeedback = GhosttyKeyboardCursorTrackpad.FeedbackState.hidden
+    @State private var isComposerPresented = false
+    @State private var composerDraft = ""
     @State private var isShortcutPalettePresented = false
     @State private var isShortcutsSettingsPresented = false
     @State private var shortcutEditorRequest: ShortcutEditorRequest?
@@ -338,27 +340,39 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 attachmentNoticeLayer()
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                GhosttyKeyboardChrome(
-                    keyboardMode: renderedKeyboardMode,
-                    isEnabled: interactionProjection.isInputAvailable,
-                    isCompact: chrome.isCompact,
-                    isControlArmed: terminalInputController.isControlArmed,
-                    selectedWindowIndex: interactionProjection.selectedWindowIndex,
-                    windowCount: interactionProjection.windowCount,
-                    selectedPaneIndex: interactionProjection.selectedPaneIndex,
-                    paneCount: interactionProjection.paneCount,
-                    isAttachmentControlActive: isAttachmentTrayPresented,
-                    isAttachmentControlEnabled: !hasPendingAttachments,
-                    pendingAttachmentCount: pendingAttachments.count,
-                    onShowHome: onEditConnection,
-                    onShowWindows: showWindows,
-                    onShowPanes: showPanes,
-                    onShowAttachments: toggleAttachmentTray,
-                    onToggleKeyboard: toggleKeyboardChrome,
-                    onToggleControl: toggleControlModifier,
-                    onShowShortcuts: showShortcutPalette,
-                    sendKey: sendTerminalKeyEvent
-                )
+                VStack(spacing: 4) {
+                    if isComposerPresented {
+                        GhosttyComposeBar(
+                            text: $composerDraft,
+                            wantsKeyboardFocus: inputCoordinator.keyboardMode == .system
+                                && inputCoordinator.keyboardOwner == .composer,
+                            keyboardActivationToken: inputCoordinator.composerActivationToken,
+                            onKeyboardFocusChange: handleComposerKeyboardFocusChange
+                        )
+                        .padding(.horizontal, 4)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+
+                    GhosttyKeyboardChrome(
+                        keyboardMode: renderedKeyboardMode,
+                        isEnabled: interactionProjection.isInputAvailable,
+                        isCompact: chrome.isCompact,
+                        isControlArmed: terminalInputController.isControlArmed,
+                        selectedWindowIndex: interactionProjection.selectedWindowIndex,
+                        windowCount: interactionProjection.windowCount,
+                        selectedPaneIndex: interactionProjection.selectedPaneIndex,
+                        paneCount: interactionProjection.paneCount,
+                        isComposerPresented: isComposerPresented,
+                        onShowHome: onEditConnection,
+                        onShowWindows: showWindows,
+                        onShowPanes: showPanes,
+                        onToggleComposer: toggleComposer,
+                        onToggleKeyboard: toggleKeyboardChrome,
+                        onToggleControl: toggleControlModifier,
+                        onShowShortcuts: showShortcutPalette,
+                        sendKey: sendTerminalKeyEvent
+                    )
+                }
                 .padding(.horizontal, chrome.surfaceHorizontalPadding)
                 .padding(.top, 4)
                 .padding(.bottom, chrome.bottomPadding)
@@ -620,7 +634,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             ]
         )
         let isInputAvailable = isTerminalInputAvailable
-        showSystemKeyboard()
+        if !isComposerPresented {
+            showSystemKeyboard()
+        }
         GhosttyRuntimeTrace.flowEvent(
             "terminal.input",
             event: "ui.tap.surface.end",
@@ -653,7 +669,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func toggleKeyboardChrome() {
-        let isInputAvailable = isTerminalInputAvailable
+        let keyboardOwner: GhosttyKeyboardOwner = isComposerPresented ? .composer : .terminal
+        let isInputAvailable = isComposerPresented || isTerminalInputAvailable
         GhosttyRuntimeTrace.flowBegin(
             "terminal.input",
             event: "ui.tap.keyboardToggle",
@@ -678,10 +695,66 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     _ = beginKeyboardViewportTransition(request)
                 },
                 applyKeyboardToggle: {
-                    inputCoordinator.toggleKeyboard(isInputAvailable: projection.isInputAvailable)
+                    inputCoordinator.toggleKeyboard(
+                        owner: keyboardOwner,
+                        isOwnerAvailable: projection.isInputAvailable
+                    )
                     return inputCoordinator.keyboardMode
                 },
                 completeTransition: completeKeyboardViewportTransition
+            )
+        }
+    }
+
+    private func toggleComposer() {
+        withAnimation(.easeOut(duration: 0.16)) {
+            isComposerPresented.toggle()
+        }
+
+        if isComposerPresented {
+            dismissAttachmentTray()
+            inputCoordinator.transferKeyboardOwnerIfActive(
+                to: .composer,
+                isOwnerAvailable: true
+            )
+            return
+        }
+
+        if isTerminalInputAvailable {
+            inputCoordinator.transferKeyboardOwnerIfActive(
+                to: .terminal,
+                isOwnerAvailable: true
+            )
+        } else if inputCoordinator.keyboardOwner == .composer {
+            inputCoordinator.dismissKeyboard()
+        }
+    }
+
+    private func handleComposerKeyboardFocusChange(_ isFocused: Bool) {
+        guard isComposerPresented else { return }
+        if isFocused {
+            showComposerKeyboard()
+        } else if inputCoordinator.keyboardOwner == .composer {
+            inputCoordinator.dismissKeyboard()
+        }
+    }
+
+    private func showComposerKeyboard() {
+        performKeyboardChromeStateChange {
+            if inputCoordinator.keyboardMode == .hidden {
+                let projection = GhosttyKeyboardToggleProjection(
+                    keyboardMode: inputCoordinator.keyboardMode,
+                    isInputAvailable: true
+                )
+                if let request = keyboardViewportTransitionCoordinator.transitionRequest(
+                    forToggle: projection
+                ) {
+                    _ = beginKeyboardViewportTransition(request)
+                }
+            }
+            inputCoordinator.showSystemKeyboard(
+                owner: .composer,
+                isOwnerAvailable: true
             )
         }
     }

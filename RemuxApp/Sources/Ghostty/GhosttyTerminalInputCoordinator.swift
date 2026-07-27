@@ -60,6 +60,10 @@ struct GhosttyTerminalInputCoordinator: Equatable {
         showSystemKeyboard(owner: owner, isOwnerAvailable: isOwnerAvailable)
     }
 
+    mutating func dismissKeyboard() {
+        hideKeyboard()
+    }
+
     mutating func refocusSystemKeyboardIfActive(isInputAvailable: Bool) {
         guard keyboardMode == .system, keyboardOwner == .terminal else { return }
         showSystemKeyboard(isInputAvailable: isInputAvailable)

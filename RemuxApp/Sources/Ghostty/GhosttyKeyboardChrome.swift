@@ -114,13 +114,11 @@ struct GhosttyKeyboardChrome: View {
     let windowCount: Int
     let selectedPaneIndex: Int?
     let paneCount: Int
-    let isAttachmentControlActive: Bool
-    let isAttachmentControlEnabled: Bool
-    let pendingAttachmentCount: Int
+    let isComposerPresented: Bool
     let onShowHome: () -> Void
     let onShowWindows: () -> Void
     let onShowPanes: () -> Void
-    let onShowAttachments: () -> Void
+    let onToggleComposer: () -> Void
     let onToggleKeyboard: () -> Void
     let onToggleControl: () -> Void
     let onShowShortcuts: () -> Void
@@ -226,15 +224,17 @@ struct GhosttyKeyboardChrome: View {
         controlGroup {
             HStack(spacing: 2) {
                 GhosttyKeyboardChromeDockButton(
-                    systemName: "paperclip",
-                    badge: attachmentBadge,
+                    systemName: "square.and.pencil",
+                    badge: nil,
                     chromeStyle: chromeStyle,
-                    accessibilityLabel: attachmentAccessibilityLabel,
-                    accessibilityHint: attachmentAccessibilityHint,
-                    accessibilityIdentifier: "terminal.attachments",
-                    isActive: isAttachmentControlActive,
-                    isEnabled: isEnabled && isAttachmentControlEnabled,
-                    action: onShowAttachments
+                    accessibilityLabel: isComposerPresented ? "Close composer" : "Open composer",
+                    accessibilityHint: isComposerPresented
+                        ? "Hide the compose field while preserving its draft."
+                        : "Prepare an editable message before sending it to the terminal.",
+                    accessibilityIdentifier: "terminal.composer.toggle",
+                    isActive: isComposerPresented,
+                    isEnabled: true,
+                    action: onToggleComposer
                 )
 
                 GhosttyKeyboardChromeDockButton(
@@ -245,33 +245,11 @@ struct GhosttyKeyboardChrome: View {
                     accessibilityHint: nil,
                     accessibilityIdentifier: "terminal.keyboard",
                     isActive: keyboardMode != .hidden,
-                    isEnabled: isEnabled,
+                    isEnabled: isEnabled || isComposerPresented,
                     action: onToggleKeyboard
                 )
             }
         }
-    }
-
-    private var attachmentBadge: String? {
-        guard pendingAttachmentCount > 0 else { return nil }
-        return "\(pendingAttachmentCount)"
-    }
-
-    private var attachmentAccessibilityLabel: String {
-        guard pendingAttachmentCount > 0 else { return "Attachments" }
-        return "Attachments, \(pendingAttachmentCount) pending"
-    }
-
-    private var attachmentAccessibilityHint: String {
-        if isAttachmentControlActive {
-            return "Close attachment options."
-        }
-
-        if pendingAttachmentCount > 0 {
-            return "Remove pending attachments before choosing another source."
-        }
-
-        return "Choose Photos, Files, or Paste."
     }
 
     private func controlGroup<Content: View>(@ViewBuilder content: () -> Content) -> some View {
