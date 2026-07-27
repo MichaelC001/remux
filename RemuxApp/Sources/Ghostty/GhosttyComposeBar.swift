@@ -16,7 +16,7 @@ struct GhosttyComposeBar: View {
                 accessibilityIdentifier: "terminal.composer.attachments",
                 symbolSize: 22,
                 symbolWeight: .regular,
-                isEnabled: false,
+                isEnabled: true,
                 action: {}
             )
 
@@ -44,12 +44,12 @@ struct GhosttyComposeBar: View {
                 accessibilityIdentifier: "terminal.composer.mic",
                 symbolSize: 20,
                 symbolWeight: .regular,
-                isEnabled: false,
+                isEnabled: true,
                 action: {}
             )
 
             sendButton(
-                isEnabled: false,
+                isEnabled: !text.isEmpty,
                 action: {}
             )
         }
