@@ -2,7 +2,6 @@ import SwiftUI
 import UIKit
 
 struct GhosttyComposeBar: View {
-    @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
     @Binding var text: String
 
     let wantsKeyboardFocus: Bool
@@ -11,10 +10,12 @@ struct GhosttyComposeBar: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 2) {
-            composeButton(
+            utilityButton(
                 systemName: "plus",
                 accessibilityLabel: "Add attachment",
                 accessibilityIdentifier: "terminal.composer.attachments",
+                symbolSize: 22,
+                symbolWeight: .regular,
                 isEnabled: false,
                 action: {}
             )
@@ -37,22 +38,18 @@ struct GhosttyComposeBar: View {
                 )
             }
 
-            composeButton(
-                systemName: "mic.fill",
+            utilityButton(
+                systemName: "mic",
                 accessibilityLabel: "Start dictation",
                 accessibilityIdentifier: "terminal.composer.mic",
+                symbolSize: 20,
+                symbolWeight: .regular,
                 isEnabled: false,
-                size: 40,
                 action: {}
             )
 
-            composeButton(
-                systemName: "arrow.up",
-                accessibilityLabel: "Send",
-                accessibilityIdentifier: "terminal.composer.send",
+            sendButton(
                 isEnabled: false,
-                size: 40,
-                usesAccentFill: true,
                 action: {}
             )
         }
@@ -64,13 +61,13 @@ struct GhosttyComposeBar: View {
         .accessibilityElement(children: .contain)
     }
 
-    private func composeButton(
+    private func utilityButton(
         systemName: String,
         accessibilityLabel: String,
         accessibilityIdentifier: String,
+        symbolSize: CGFloat,
+        symbolWeight: Font.Weight,
         isEnabled: Bool,
-        size: CGFloat = 44,
-        usesAccentFill: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button {
@@ -78,26 +75,39 @@ struct GhosttyComposeBar: View {
             action()
         } label: {
             Image(systemName: systemName)
-                .font(.system(size: 17, weight: .semibold))
+                .font(.system(size: symbolSize, weight: symbolWeight))
                 .symbolRenderingMode(.monochrome)
-                .foregroundStyle(
-                    usesAccentFill
-                        ? chromeStyle.accentForeground
-                        : GhosttyPhoneChromePalette.chromeForeground
-                )
-                .frame(width: size, height: size)
-                .background(
-                    usesAccentFill
-                        ? chromeStyle.accent
-                        : Color.clear,
-                    in: Circle()
-                )
+                .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
+                .frame(width: 42, height: 42)
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.38)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityIdentifier(accessibilityIdentifier)
+    }
+
+    private func sendButton(
+        isEnabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            Haptic.chromeControlPress()
+            action()
+        } label: {
+            Image(systemName: "arrow.up")
+                .font(.system(size: 16, weight: .bold))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(.white)
+                .frame(width: 34, height: 34)
+                .background(Color(uiColor: .systemBlue), in: Circle())
+                .frame(width: 42, height: 42)
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.38)
+        .accessibilityLabel("Send")
+        .accessibilityIdentifier("terminal.composer.send")
     }
 }
 
