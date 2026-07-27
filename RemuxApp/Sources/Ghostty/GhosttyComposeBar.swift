@@ -53,8 +53,11 @@ enum GhosttyComposeBarSubmissionState: Equatable {
 }
 
 struct GhosttyComposeBar: View {
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
+
     @Binding var text: String
     @Binding var attachments: [GhosttyPendingAttachment]
+    @Binding var isAttachmentMenuPresented: Bool
 
     let wantsKeyboardFocus: Bool
     let keyboardActivationToken: Int
@@ -142,6 +145,14 @@ struct GhosttyComposeBar: View {
         .frame(minHeight: 54)
         .frame(maxWidth: 560)
         .ghosttyComposerSurface()
+        .overlay(alignment: .topLeading) {
+            if isAttachmentMenuPresented {
+                attachmentMenuPanel
+                    .offset(x: 2, y: -108)
+                    .transition(attachmentMenuTransition)
+                    .zIndex(1)
+            }
+        }
         .accessibilityElement(children: .contain)
     }
 
@@ -153,16 +164,11 @@ struct GhosttyComposeBar: View {
     }
 
     private var attachmentMenu: some View {
-        Menu {
-            Button(action: onChooseFiles) {
-                Label("Files", systemImage: "folder")
+        Button {
+            Haptic.chromeControlPress()
+            withAnimation(attachmentMenuAnimation) {
+                isAttachmentMenuPresented.toggle()
             }
-            .accessibilityIdentifier("terminal.composer.attachments.files")
-
-            Button(action: onChoosePhotos) {
-                Label("Photos", systemImage: "photo")
-            }
-            .accessibilityIdentifier("terminal.composer.attachments.photos")
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 22, weight: .regular))
@@ -170,10 +176,74 @@ struct GhosttyComposeBar: View {
                 .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
                 .frame(width: 42, height: 42)
         }
+        .buttonStyle(GhosttyComposerPressButtonStyle())
         .disabled(!submissionState.allowsComposerInput)
         .opacity(submissionState.allowsComposerInput ? 1 : 0.38)
-        .accessibilityLabel("Add attachment")
+        .accessibilityLabel(
+            isAttachmentMenuPresented ? "Close attachment menu" : "Add attachment"
+        )
         .accessibilityIdentifier("terminal.composer.attachments")
+    }
+
+    private var attachmentMenuPanel: some View {
+        VStack(spacing: 0) {
+            attachmentMenuButton(
+                title: "Photos",
+                systemName: "photo",
+                accessibilityIdentifier: "terminal.composer.attachments.photos",
+                action: onChoosePhotos
+            )
+
+            Divider()
+                .padding(.leading, 40)
+
+            attachmentMenuButton(
+                title: "Files",
+                systemName: "folder",
+                accessibilityIdentifier: "terminal.composer.attachments.files",
+                action: onChooseFiles
+            )
+        }
+        .padding(6)
+        .frame(width: 188)
+        .ghosttyComposerSurface(cornerRadius: 22)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("terminal.composer.attachment-menu")
+    }
+
+    private func attachmentMenuButton(
+        title: String,
+        systemName: String,
+        accessibilityIdentifier: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            Haptic.chromeControlPress()
+            withAnimation(attachmentMenuAnimation) {
+                isAttachmentMenuPresented = false
+            }
+            action()
+        } label: {
+            Label(title, systemImage: systemName)
+                .font(.body)
+                .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .padding(.horizontal, 10)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(GhosttyComposerMenuRowButtonStyle())
+        .accessibilityIdentifier(accessibilityIdentifier)
+    }
+
+    private var attachmentMenuAnimation: Animation {
+        accessibilityReduceMotion
+            ? .easeOut(duration: 0.10)
+            : .snappy(duration: 0.18)
+    }
+
+    private var attachmentMenuTransition: AnyTransition {
+        guard !accessibilityReduceMotion else { return .opacity }
+        return .scale(scale: 0.16, anchor: .bottomLeading).combined(with: .opacity)
     }
 
     private func utilityButton(
@@ -195,7 +265,7 @@ struct GhosttyComposeBar: View {
                 .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
                 .frame(width: 42, height: 42)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(GhosttyComposerPressButtonStyle())
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.38)
         .accessibilityLabel(accessibilityLabel)
@@ -228,7 +298,7 @@ struct GhosttyComposeBar: View {
                 .frame(width: 34, height: 34)
                 .frame(width: 42, height: 42)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(GhosttyComposerPressButtonStyle())
         .disabled(!state.isSendEnabled)
         .opacity(state.isSendEnabled || state.isSending ? 1 : 0.38)
         .accessibilityLabel(state.sendAccessibilityLabel)
@@ -236,10 +306,39 @@ struct GhosttyComposeBar: View {
     }
 }
 
+private struct GhosttyComposerPressButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .overlay {
+                Circle()
+                    .fill(
+                        configuration.isPressed
+                            ? GhosttyPhoneChromePalette.toolbarButtonPressedFill
+                            : Color.clear
+                    )
+            }
+            .contentShape(Circle())
+            .animation(.easeOut(duration: 0.10), value: configuration.isPressed)
+    }
+}
+
+private struct GhosttyComposerMenuRowButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(
+                configuration.isPressed
+                    ? GhosttyPhoneChromePalette.toolbarButtonPressedFill
+                    : Color.clear,
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            )
+            .animation(.easeOut(duration: 0.10), value: configuration.isPressed)
+    }
+}
+
 private extension View {
     @ViewBuilder
-    func ghosttyComposerSurface() -> some View {
-        let shape = RoundedRectangle(cornerRadius: 28, style: .continuous)
+    func ghosttyComposerSurface(cornerRadius: CGFloat = 28) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 
         if #available(iOS 26.0, *) {
             self

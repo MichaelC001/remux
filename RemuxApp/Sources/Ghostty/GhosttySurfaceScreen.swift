@@ -49,6 +49,8 @@ enum GhosttyTerminalCoverPhase: Equatable {
 }
 
 struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
+
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
     @ObservedObject private var model: Model
@@ -71,6 +73,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var trackpadDriver = GhosttyKeyboardCursorTrackpadDriver()
     @State private var trackpadFeedback = GhosttyKeyboardCursorTrackpad.FeedbackState.hidden
     @State private var isComposerPresented = false
+    @State private var isAttachmentMenuPresented = false
     @State private var composerSession = GhosttyComposerSessionState()
     @State private var composerSubmissionController = GhosttyComposerSubmissionController()
     @State private var composerStatusMessage: String?
@@ -332,12 +335,23 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             .overlay(alignment: .bottom) {
                 attachmentNoticeLayer()
             }
+            .overlay {
+                if isAttachmentMenuPresented {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            dismissAttachmentMenu()
+                        }
+                        .accessibilityHidden(true)
+                }
+            }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 4) {
                     if isComposerPresented {
                         GhosttyComposeBar(
                             text: $composerSession.draft,
                             attachments: $composerSession.attachments,
+                            isAttachmentMenuPresented: $isAttachmentMenuPresented,
                             wantsKeyboardFocus: inputCoordinator.keyboardMode == .system
                                 && inputCoordinator.keyboardOwner == .composer,
                             keyboardActivationToken: inputCoordinator.composerActivationToken,
@@ -728,6 +742,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private func toggleComposer() {
         guard !isAttachmentTransferInProgress else { return }
 
+        dismissAttachmentMenu()
+
         withAnimation(.easeOut(duration: 0.16)) {
             isComposerPresented.toggle()
         }
@@ -1113,11 +1129,23 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func openAttachmentPhotosPicker() {
+        isAttachmentMenuPresented = false
         isAttachmentPhotosPickerPresented = true
     }
 
     private func openAttachmentFilePicker() {
+        isAttachmentMenuPresented = false
         isAttachmentFileImporterPresented = true
+    }
+
+    private func dismissAttachmentMenu() {
+        guard isAttachmentMenuPresented else { return }
+        let animation: Animation = accessibilityReduceMotion
+            ? .easeOut(duration: 0.10)
+            : .snappy(duration: 0.18)
+        withAnimation(animation) {
+            isAttachmentMenuPresented = false
+        }
     }
 
     private func handleAttachmentPhotoSelection(_ items: [PhotosPickerItem]) {
