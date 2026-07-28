@@ -32,7 +32,7 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(RemuxAppLifecycleProjection(scenePhase: .background).appLifecyclePhase, .background)
     }
 
-    func testConnectionSetupFormDisablesTextInputDuringAction() throws {
+    func testConnectionSetupFormDisablesTextInputDuringAction() async {
         let view = NavigationStack {
             ConnectionSetupView(
                 draft: TmuxConnectionDraft(),
@@ -58,17 +58,23 @@ final class RemuxRootModelTests: XCTestCase {
         hostingController.view.frame = window.bounds
         defer {
             window.isHidden = true
+            window.rootViewController = nil
         }
 
         hostingController.view.setNeedsLayout()
         hostingController.view.layoutIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
 
+        let didLoadTextFields = await waitUntil {
+            !descendants(
+                of: hostingController.view,
+                matching: UITextField.self
+            ).isEmpty
+        }
+        XCTAssertTrue(didLoadTextFields)
         let textFields = descendants(
             of: hostingController.view,
             matching: UITextField.self
         )
-        XCTAssertFalse(textFields.isEmpty)
         XCTAssertTrue(textFields.allSatisfy { !$0.isEnabled })
     }
 

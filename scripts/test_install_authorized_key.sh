@@ -104,6 +104,13 @@ ${permissive_new_key}"
 assert_mode "${permissive_home}/.ssh" "700"
 assert_mode "${permissive_home}/.ssh/authorized_keys" "600"
 
+unusable_home="${test_root}/unusable-target"
+mkdir -p "${unusable_home}/.ssh/authorized_keys"
+if install_key "${unusable_home}" "ssh-ed25519 AAAA-must-not-install remux-test" 2>/dev/null; then
+  fail "installer wrote to an unusable authorized_keys target"
+fi
+test -d "${unusable_home}/.ssh/authorized_keys" || fail "installer replaced the unusable target"
+
 concurrent_home="${test_root}/concurrent-install"
 concurrent_key="ssh-ed25519 AAAA-concurrent remux-test"
 mkdir -p "${concurrent_home}"
