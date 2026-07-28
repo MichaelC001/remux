@@ -25,7 +25,7 @@ enum GhosttyComposerDictationDraft {
     }
 }
 
-private enum GhosttyComposerDictationBackendEvent: Sendable {
+enum GhosttyComposerDictationBackendEvent: Sendable {
     case started
     case audioLevel(CGFloat)
     case hypothesis(String, isFinal: Bool)
@@ -33,9 +33,104 @@ private enum GhosttyComposerDictationBackendEvent: Sendable {
     case failed(String)
 }
 
+protocol GhosttyComposerDictationBackendProtocol: Sendable {
+    func start(
+        id: UInt64,
+        locale: Locale,
+        handler: @escaping @Sendable (GhosttyComposerDictationBackendEvent) -> Void
+    )
+    func finish(id: UInt64)
+    func cancel(id: UInt64, completion: @escaping @Sendable () -> Void)
+    func cancelAll(completion: @escaping @Sendable () -> Void)
+}
+
+struct GhosttyComposerDictationAuthorizationClient: Sendable {
+    enum Result: Sendable {
+        case authorized
+        case speechRecognitionDenied
+        case microphoneDenied
+        case cancelled
+    }
+
+    let requestSpeechAuthorization: @Sendable () async -> SFSpeechRecognizerAuthorizationStatus
+    let requestMicrophoneAuthorization: @Sendable () async -> Bool
+
+    func resolve() async -> Result {
+        let speechAuthorization = await requestSpeechAuthorization()
+        guard !Task.isCancelled else { return .cancelled }
+        guard speechAuthorization == .authorized else {
+            return .speechRecognitionDenied
+        }
+
+        let microphoneAuthorized = await requestMicrophoneAuthorization()
+        guard !Task.isCancelled else { return .cancelled }
+        return microphoneAuthorized ? .authorized : .microphoneDenied
+    }
+
+    static let live = Self(
+        requestSpeechAuthorization: {
+            let current = SFSpeechRecognizer.authorizationStatus()
+            guard current == .notDetermined else { return current }
+
+            return await withCheckedContinuation { continuation in
+                SFSpeechRecognizer.requestAuthorization { status in
+                    continuation.resume(returning: status)
+                }
+            }
+        },
+        requestMicrophoneAuthorization: {
+            switch AVAudioApplication.shared.recordPermission {
+            case .granted:
+                return true
+            case .denied:
+                return false
+            case .undetermined:
+                return await withCheckedContinuation { continuation in
+                    AVAudioApplication.requestRecordPermission { granted in
+                        continuation.resume(returning: granted)
+                    }
+                }
+            @unknown default:
+                return false
+            }
+        }
+    )
+}
+
+/// AVAudioSession is process-wide even though each retained terminal has its
+/// own composer controller. This lease makes microphone ownership equally
+/// process-wide and prevents two terminal sessions from racing audio setup and
+/// teardown against each other.
+final class GhosttyComposerDictationLease: @unchecked Sendable {
+    static let shared = GhosttyComposerDictationLease()
+
+    private let lock = NSLock()
+    private var ownerID: UUID?
+
+    func acquire(ownerID: UUID) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard self.ownerID == nil || self.ownerID == ownerID else { return false }
+        self.ownerID = ownerID
+        return true
+    }
+
+    func release(ownerID: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if self.ownerID == ownerID {
+            self.ownerID = nil
+        }
+    }
+}
+
 /// Owns Speech and AVAudioEngine on one serial queue. The UI controller never
 /// waits for teardown and never touches audio objects directly.
-private final class GhosttyComposerDictationBackend: @unchecked Sendable {
+final class GhosttyComposerDictationBackend: GhosttyComposerDictationBackendProtocol,
+    @unchecked Sendable
+{
     typealias EventHandler = @Sendable (GhosttyComposerDictationBackendEvent) -> Void
 
     private enum RunPhase {
@@ -102,18 +197,21 @@ private final class GhosttyComposerDictationBackend: @unchecked Sendable {
         }
     }
 
-    func cancel(id: UInt64) {
+    func cancel(id: UInt64, completion: @escaping @Sendable () -> Void) {
         clearDesiredRunID(ifMatching: id)
         queue.async { [self] in
-            guard activeRun?.id == id else { return }
-            cancelActiveRun()
+            if activeRun?.id == id {
+                cancelActiveRun()
+            }
+            completion()
         }
     }
 
-    func cancelAll() {
+    func cancelAll(completion: @escaping @Sendable () -> Void) {
         setDesiredRunID(nil)
         queue.async { [self] in
             cancelActiveRun()
+            completion()
         }
     }
 
@@ -150,7 +248,6 @@ private final class GhosttyComposerDictationBackend: @unchecked Sendable {
             run.recognizer = recognizer
             run.request = request
             let runID = run.id
-            let eventHandler = run.handler
             run.recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
                 let hypothesis = result?.bestTranscription.formattedString
                 let isFinal = result?.isFinal == true
@@ -176,7 +273,9 @@ private final class GhosttyComposerDictationBackend: @unchecked Sendable {
 
             let tapProcessor = GhosttyComposerAudioTapProcessor(
                 request: request,
-                onLevel: { level in eventHandler(.audioLevel(level)) }
+                onLevel: { [weak self] level in
+                    self?.publishAudioLevel(level, runID: runID)
+                }
             )
             inputNode.installTap(
                 onBus: 0,
@@ -244,6 +343,18 @@ private final class GhosttyComposerDictationBackend: @unchecked Sendable {
         cancelActiveRun()
     }
 
+    private func publishAudioLevel(_ level: CGFloat, runID: UInt64) {
+        queue.async { [weak self] in
+            guard let self,
+                  let run = activeRun,
+                  run.id == runID,
+                  run.phase == .recording else {
+                return
+            }
+            run.handler(.audioLevel(level))
+        }
+    }
+
     private func releaseCompletedRun(_ run: Run) {
         guard activeRun === run else { return }
         stopCapture(run)
@@ -280,9 +391,9 @@ private final class GhosttyComposerDictationBackend: @unchecked Sendable {
         try audioSession.setCategory(
             .record,
             mode: .measurement,
-            options: [.duckOthers, .allowBluetoothHFP]
+            options: [.allowBluetoothHFP]
         )
-        try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+        try audioSession.setActive(true)
     }
 
     private func deactivateAudioSession() {
@@ -367,8 +478,6 @@ private final class GhosttyComposerAudioTapProcessor: @unchecked Sendable {
 @MainActor
 final class GhosttyComposerDictationController: ObservableObject {
     static let meterBarCount = 28
-    private static let startDeadline: Duration = .seconds(8)
-    private static let finalizationDeadline: Duration = .seconds(3)
 
     @Published private(set) var phase = GhosttyComposerDictationPhase.idle
     @Published private(set) var audioLevels = Array(
@@ -376,11 +485,18 @@ final class GhosttyComposerDictationController: ObservableObject {
         count: meterBarCount
     )
 
-    private let backend = GhosttyComposerDictationBackend()
+    private let backend: any GhosttyComposerDictationBackendProtocol
+    private let authorizationClient: GhosttyComposerDictationAuthorizationClient
+    private let lease: GhosttyComposerDictationLease
+    private let leaseOwnerID: UUID
+    private let startDeadline: Duration
+    private let finalizationDeadline: Duration
     private var authorizationTask: Task<Void, Never>?
     private var startDeadlineTask: Task<Void, Never>?
     private var finalizationTask: Task<Void, Never>?
     private var sessionID: UInt64 = 0
+    private var leaseGeneration: UInt64 = 0
+    private var backendRunRequested = false
     private var draftSnapshot = ""
     private var latestHypothesis = ""
     private var onTranscript: ((String) -> Void)?
@@ -391,8 +507,27 @@ final class GhosttyComposerDictationController: ObservableObject {
     private var debugTranscript: String?
 #endif
 
+    init(
+        backend: any GhosttyComposerDictationBackendProtocol = GhosttyComposerDictationBackend(),
+        authorizationClient: GhosttyComposerDictationAuthorizationClient = .live,
+        lease: GhosttyComposerDictationLease = .shared,
+        startDeadline: Duration = .seconds(8),
+        finalizationDeadline: Duration = .seconds(3)
+    ) {
+        self.backend = backend
+        self.authorizationClient = authorizationClient
+        self.lease = lease
+        leaseOwnerID = UUID()
+        self.startDeadline = startDeadline
+        self.finalizationDeadline = finalizationDeadline
+    }
+
     deinit {
-        backend.cancelAll()
+        let lease = lease
+        let leaseOwnerID = leaseOwnerID
+        backend.cancelAll {
+            lease.release(ownerID: leaseOwnerID)
+        }
     }
 
     func start(
@@ -401,6 +536,11 @@ final class GhosttyComposerDictationController: ObservableObject {
         onFailure: @escaping (String) -> Void
     ) {
         guard phase == .idle else { return }
+        guard lease.acquire(ownerID: leaseOwnerID) else {
+            onFailure("Microphone is already in use by another terminal")
+            return
+        }
+        leaseGeneration &+= 1
 
         sessionID &+= 1
         let requestedSessionID = sessionID
@@ -411,7 +551,6 @@ final class GhosttyComposerDictationController: ObservableObject {
         self.onFailure = onFailure
         phase = .starting
         GhosttyRuntimeTrace.perf("composer.dictation.startRequested id=\(requestedSessionID)")
-        scheduleStartDeadline(sessionID: requestedSessionID)
 
 #if DEBUG
         if ProcessInfo.processInfo.environment[
@@ -429,9 +568,11 @@ final class GhosttyComposerDictationController: ObservableObject {
         }
 #endif
 
-        authorizationTask = Task { [weak self] in
+        let authorizationClient = authorizationClient
+        authorizationTask = Task { [weak self, authorizationClient] in
+            let result = await authorizationClient.resolve()
             guard let self else { return }
-            await authorizeAndStart(sessionID: requestedSessionID)
+            handleAuthorizationResult(result, sessionID: requestedSessionID)
         }
     }
 
@@ -493,36 +634,42 @@ final class GhosttyComposerDictationController: ObservableObject {
         failure?(message)
     }
 
-    private func authorizeAndStart(sessionID requestedSessionID: UInt64) async {
-        let speechAuthorization = await requestSpeechAuthorizationIfNeeded()
+    private func handleAuthorizationResult(
+        _ result: GhosttyComposerDictationAuthorizationClient.Result,
+        sessionID requestedSessionID: UInt64
+    ) {
         guard isCurrentStartingSession(requestedSessionID) else { return }
-        guard speechAuthorization == .authorized else {
+        authorizationTask = nil
+
+        switch result {
+        case .authorized:
+            beginBackend(sessionID: requestedSessionID)
+
+        case .speechRecognitionDenied:
             fail(
                 sessionID: requestedSessionID,
                 message: "Enable Speech Recognition in Settings to use dictation"
             )
-            return
-        }
 
-        let microphoneAuthorized = await requestMicrophoneAuthorizationIfNeeded()
-        guard isCurrentStartingSession(requestedSessionID) else { return }
-        guard microphoneAuthorized else {
+        case .microphoneDenied:
             fail(
                 sessionID: requestedSessionID,
                 message: "Enable Microphone access in Settings to use dictation"
             )
-            return
-        }
 
-        beginBackend(sessionID: requestedSessionID)
+        case .cancelled:
+            invalidateSession()
+        }
     }
 
     private func beginBackend(sessionID requestedSessionID: UInt64) {
+        backendRunRequested = true
+        scheduleStartDeadline(sessionID: requestedSessionID)
         backend.start(
             id: requestedSessionID,
             locale: .current,
             handler: { [weak self] event in
-                Task { @MainActor [weak self] in
+                DispatchQueue.main.async { [weak self] in
                     self?.handleBackendEvent(event, sessionID: requestedSessionID)
                 }
             }
@@ -576,9 +723,10 @@ final class GhosttyComposerDictationController: ObservableObject {
 
     private func scheduleStartDeadline(sessionID requestedSessionID: UInt64) {
         startDeadlineTask?.cancel()
+        let startDeadline = startDeadline
         startDeadlineTask = Task { [weak self] in
             do {
-                try await Task.sleep(for: Self.startDeadline)
+                try await Task.sleep(for: startDeadline)
             } catch {
                 return
             }
@@ -600,9 +748,10 @@ final class GhosttyComposerDictationController: ObservableObject {
 
     private func scheduleFinalizationDeadline(sessionID requestedSessionID: UInt64) {
         finalizationTask?.cancel()
+        let finalizationDeadline = finalizationDeadline
         finalizationTask = Task { [weak self] in
             do {
-                try await Task.sleep(for: Self.finalizationDeadline)
+                try await Task.sleep(for: finalizationDeadline)
             } catch {
                 return
             }
@@ -639,14 +788,16 @@ final class GhosttyComposerDictationController: ObservableObject {
 
     private func invalidateSession() {
         let invalidatedSessionID = sessionID
+        let invalidatedLeaseGeneration = leaseGeneration
+        let shouldCancelBackend = backendRunRequested
         sessionID &+= 1
+        backendRunRequested = false
         authorizationTask?.cancel()
         authorizationTask = nil
         startDeadlineTask?.cancel()
         startDeadlineTask = nil
         finalizationTask?.cancel()
         finalizationTask = nil
-        backend.cancel(id: invalidatedSessionID)
 
         phase = .idle
         audioLevels = Self.emptyAudioLevels
@@ -657,6 +808,24 @@ final class GhosttyComposerDictationController: ObservableObject {
         isDebugSession = false
         debugTranscript = nil
 #endif
+
+        guard shouldCancelBackend else {
+            lease.release(ownerID: leaseOwnerID)
+            return
+        }
+
+        let lease = lease
+        let leaseOwnerID = leaseOwnerID
+        backend.cancel(id: invalidatedSessionID) { [weak self] in
+            DispatchQueue.main.async { [weak self, lease] in
+                guard let self else {
+                    lease.release(ownerID: leaseOwnerID)
+                    return
+                }
+                guard leaseGeneration == invalidatedLeaseGeneration else { return }
+                lease.release(ownerID: leaseOwnerID)
+            }
+        }
     }
 
 #if DEBUG
@@ -699,37 +868,8 @@ final class GhosttyComposerDictationController: ObservableObject {
 #endif
 
     private func isCurrentStartingSession(_ requestedSessionID: UInt64) -> Bool {
-        !Task.isCancelled
-            && requestedSessionID == sessionID
+        requestedSessionID == sessionID
             && phase == .starting
-    }
-
-    private func requestSpeechAuthorizationIfNeeded() async -> SFSpeechRecognizerAuthorizationStatus {
-        let current = SFSpeechRecognizer.authorizationStatus()
-        guard current == .notDetermined else { return current }
-
-        return await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { status in
-                continuation.resume(returning: status)
-            }
-        }
-    }
-
-    private func requestMicrophoneAuthorizationIfNeeded() async -> Bool {
-        switch AVAudioApplication.shared.recordPermission {
-        case .granted:
-            return true
-        case .denied:
-            return false
-        case .undetermined:
-            return await withCheckedContinuation { continuation in
-                AVAudioApplication.requestRecordPermission { granted in
-                    continuation.resume(returning: granted)
-                }
-            }
-        @unknown default:
-            return false
-        }
     }
 
     private static var emptyAudioLevels: [CGFloat] {
