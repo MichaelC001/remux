@@ -84,6 +84,10 @@ struct GhosttyTerminalInputCoordinator: Equatable {
         isSoftwareKeyboardVisible = isVisible
 
         if isVisible {
+            // Presentation can finish after the user has already asked to
+            // dismiss the keyboard. Keep that explicit dismissal authoritative
+            // until UIKit confirms the keyboard is hidden.
+            guard !isDismissSystemKeyboardRequested else { return }
             isDismissSystemKeyboardRequested = false
             keyboardMode = keyboardMode.applyingSystemKeyboardVisibility(true)
             if keyboardOwner == .none {
