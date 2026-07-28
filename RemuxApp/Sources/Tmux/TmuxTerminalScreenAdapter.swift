@@ -492,6 +492,15 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         return managed.sendPaste(text)
     }
 
+    func sendKeyEvent(
+        _ event: GhosttySurfaceKeyEvent,
+        to surfaceID: UUID
+    ) -> FocusedTerminalInputSubmissionResult {
+        guard isTransportWritable else { return .transportUnavailable }
+        guard let managed = managedSurface(for: surfaceID) else { return .noFocusedSurface }
+        return managed.sendKeyEvent(event)
+    }
+
     func sendKeyEventToFocusedSurface(_ event: GhosttySurfaceKeyEvent) -> FocusedTerminalInputSubmissionResult {
         if let preflight = preflightFocusedInput() { return preflight }
         return focusedManagedSurface?.sendKeyEvent(event) ?? .noFocusedSurface

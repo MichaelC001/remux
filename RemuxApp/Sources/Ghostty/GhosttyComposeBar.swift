@@ -50,7 +50,6 @@ enum GhosttyComposerMessageFormatter {
 enum GhosttyComposeBarSubmissionState: Equatable {
     case composing(canSend: Bool)
     case sending
-    case awaitingSubmit
 
     var allowsComposerInput: Bool {
         if case .composing = self { return true }
@@ -63,8 +62,6 @@ enum GhosttyComposeBarSubmissionState: Equatable {
             canSend
         case .sending:
             false
-        case .awaitingSubmit:
-            true
         }
     }
 
@@ -73,7 +70,7 @@ enum GhosttyComposeBarSubmissionState: Equatable {
     }
 
     var sendAccessibilityLabel: String {
-        self == .awaitingSubmit ? "Submit pasted message" : "Send"
+        "Send"
     }
 }
 
@@ -154,17 +151,6 @@ struct GhosttyComposeBar: View {
                 }
 
                 ZStack(alignment: .topLeading) {
-                    if text.isEmpty {
-                        Text(composerPlaceholder)
-                            .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
-                            .padding(.leading, 4)
-                            .padding(.top, 8)
-                            .allowsHitTesting(false)
-                            .accessibilityHidden(
-                                dictationPhase.isActive || submissionState != .awaitingSubmit
-                            )
-                    }
-
                     GhosttyComposerTextView(
                         text: $text,
                         caretColor: UIColor(chromeStyle.accent),
@@ -177,15 +163,12 @@ struct GhosttyComposeBar: View {
                         onResponderAttached: onKeyboardResponderAttached,
                         onPasteAttachment: onPasteAttachment
                     )
+                    .frame(height: dictationPhase.isActive ? 32 : nil)
                     .opacity(dictationPhase.isActive ? 0 : 1)
                     .allowsHitTesting(!dictationPhase.isActive)
                     .accessibilityHidden(dictationPhase.isActive)
-                    .overlay {
-                        if dictationPhase.isActive {
-                            dictationCenterContent
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 32)
-                        }
+                    .overlay(alignment: .topLeading) {
+                        composerCenterPresentation
                     }
                 }
             }
@@ -200,6 +183,22 @@ struct GhosttyComposeBar: View {
             )
         }
         .frame(height: dictationPhase.isActive ? 42 : nil, alignment: .bottom)
+    }
+
+    @ViewBuilder
+    private var composerCenterPresentation: some View {
+        if dictationPhase.isActive {
+            dictationCenterContent
+                .frame(maxWidth: .infinity)
+                .frame(height: 32)
+        } else if text.isEmpty {
+            Text(composerPlaceholder)
+                .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
+                .padding(.leading, 4)
+                .padding(.top, 8)
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("terminal.composer.placeholder")
+        }
     }
 
     @ViewBuilder
@@ -285,9 +284,6 @@ struct GhosttyComposeBar: View {
     }
 
     private var composerPlaceholder: String {
-        if submissionState == .awaitingSubmit {
-            return "Pasted — tap Submit"
-        }
         return attachments.isEmpty ? "Compose…" : "Describe the task…"
     }
 

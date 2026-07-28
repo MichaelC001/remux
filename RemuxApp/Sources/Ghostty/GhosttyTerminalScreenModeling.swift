@@ -70,6 +70,12 @@ protocol GhosttyTerminalInputModeling: ObservableObject {
     func sendPaste(_ text: String, to surfaceID: UUID) -> FocusedTerminalInputSubmissionResult
 
     @discardableResult
+    func sendKeyEvent(
+        _ event: GhosttySurfaceKeyEvent,
+        to surfaceID: UUID
+    ) -> FocusedTerminalInputSubmissionResult
+
+    @discardableResult
     func sendKeyEventToFocusedSurface(_ event: GhosttySurfaceKeyEvent) -> FocusedTerminalInputSubmissionResult
 
     func isMouseCaptured(for surfaceID: UUID) -> Bool

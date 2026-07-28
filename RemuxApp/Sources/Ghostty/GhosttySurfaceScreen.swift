@@ -395,7 +395,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 GhosttyKeyboardChrome(
                     keyboardMode: renderedKeyboardMode,
                     isEnabled: interactionProjection.isInputAvailable,
-                    isInteractionLocked: isAttachmentTransferInProgress,
+                    isInteractionLocked: composerSubmissionState.isSending,
                     isCompact: chrome.isCompact,
                     isControlArmed: terminalInputController.isControlArmed,
                     selectedWindowIndex: interactionProjection.selectedWindowIndex,
@@ -649,8 +649,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             )
         case .sending:
             return .sending
-        case .awaitingSubmit:
-            return .awaitingSubmit
         }
     }
 
@@ -769,7 +767,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func toggleComposer() {
-        guard !isAttachmentTransferInProgress else { return }
+        guard !composerSubmissionState.isSending else { return }
 
         if isComposerPresented {
             closeComposer()
@@ -1016,7 +1014,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func handleTerminalCoverInputAvailabilityChange(_ isInputAvailable: Bool) {
         if !isInputAvailable {
-            composerSubmissionController.clearAwaitingSubmit()
             composerStatusMessage = nil
         }
         guard terminalCoverPhase.isRestoringKeyboard else { return }
@@ -1097,12 +1094,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func handleActiveLeafChange(_ activeLeafID: UUID?) {
-        if case .awaitingSubmit(let surfaceID) = composerSubmissionController.phase,
-           activeLeafID != surfaceID {
-            composerSubmissionController.clearAwaitingSubmit()
-            composerStatusMessage = nil
-        }
-
         guard let effect = topologyActionInputRefocusCoordinator.consumeActiveLeafChange(to: activeLeafID) else {
             return
         }
@@ -1730,14 +1721,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         )
     }
 
-    private func sendTerminalPaste(_ text: String, to surfaceID: UUID) -> Bool {
-        terminalInputController.performPaste(
-            text,
-            submitPendingPrefix: submitTerminalText(_:),
-            sendPaste: { model.sendPaste($0, to: surfaceID).isAccepted }
-        )
-    }
-
     private func submitComposer() {
         guard !isAttachmentTransferInProgress else { return }
 
@@ -1750,8 +1733,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         switch composerSubmissionController.phase {
         case .idle:
             submitComposerContent()
-        case .awaitingSubmit:
-            submitDeliveredComposerPaste()
         case .sending:
             break
         }
@@ -1868,12 +1849,77 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         scrollComposerDestinationToBottom(surfaceID)
 
         var controller = composerSubmissionController
-        let result = controller.submitDraft(
-            message,
-            to: surfaceID,
-            sendPaste: { sendTerminalPaste($0, to: surfaceID) },
-            sendEnter: { sendComposerEnter(to: surfaceID) }
+        guard controller.beginSubmission(message) else { return }
+        composerSubmissionController = controller
+
+        Task { @MainActor in
+            let didPaste = sendTerminalPaste(message, to: surfaceID)
+            guard didPaste else {
+                finishComposerSubmission(.pasteRejected, session: session)
+                return
+            }
+
+            // TUIs consume a bracketed paste as one input event. Give that
+            // event one short processing boundary before delivering a real,
+            // terminal-mode-aware Enter key event. Remux uses the same
+            // boundary for auto-submitting text shortcuts.
+            do {
+                try await Task.sleep(for: .milliseconds(75))
+            } catch {
+                finishComposerSubmission(.pastedAwaitingSubmit, session: session)
+                return
+            }
+
+            let result: GhosttyComposerSubmissionController.DraftResult =
+                sendComposerEnter(to: surfaceID)
+                ? .submitted
+                : .pastedAwaitingSubmit
+            finishComposerSubmission(result, session: session)
+        }
+    }
+
+    private func sendTerminalPaste(_ text: String, to surfaceID: UUID) -> Bool {
+        terminalInputController.performPaste(
+            text,
+            submitPendingPrefix: submitTerminalText(_:),
+            sendPaste: { model.sendPaste($0, to: surfaceID).isAccepted }
         )
+    }
+
+    private func sendComposerEnter(to surfaceID: UUID) -> Bool {
+        guard model.terminalInteractionProjection.selectedActiveLeafID == surfaceID else {
+            return false
+        }
+
+        let keyCode = GhosttySurfaceKeyEvent.KeyCode.enter
+        let start = GhosttyRuntimeTrace.nowNanos()
+        let press = model.sendKeyEvent(
+            GhosttySurfaceKeyEvent(action: .press, keyCode: keyCode),
+            to: surfaceID
+        )
+        guard press.isAccepted else {
+            GhosttyRuntimeTrace.perf(
+                "composer.sendEnter result=\(press) accepted=false elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
+            )
+            return false
+        }
+
+        _ = model.sendKeyEvent(
+            GhosttySurfaceKeyEvent(action: .release, keyCode: keyCode),
+            to: surfaceID
+        )
+        GhosttyRuntimeTrace.perf(
+            "composer.sendEnter result=\(press) accepted=true elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
+        )
+        return true
+    }
+
+    private func finishComposerSubmission(
+        _ proposedResult: GhosttyComposerSubmissionController.DraftResult,
+        session: GhosttyComposerSessionState
+    ) {
+        var controller = composerSubmissionController
+        let result = controller.finishSubmission(proposedResult)
         composerSubmissionController = controller
 
         if result.didDeliverDraft {
@@ -1891,52 +1937,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         case .submitted:
             composerStatusMessage = nil
         case .pastedAwaitingSubmit:
-            composerStatusMessage = nil
+            composerStatusMessage = "Message pasted — press Enter in the terminal"
         }
-    }
-
-    private func submitDeliveredComposerPaste() {
-        let surfaceID = model.terminalInteractionProjection.selectedActiveLeafID
-        if let surfaceID {
-            terminalInputController.clearControl()
-            scrollComposerDestinationToBottom(surfaceID)
-        }
-
-        var controller = composerSubmissionController
-        let result = controller.submitDeliveredPaste(
-            on: surfaceID,
-            sendEnter: {
-                guard let surfaceID else { return false }
-                return sendComposerEnter(to: surfaceID)
-            }
-        )
-        composerSubmissionController = controller
-
-        switch result {
-        case .notWaiting:
-            break
-        case .destinationChanged:
-            composerStatusMessage = "Destination changed — submit from the terminal"
-        case .enterRejected:
-            composerStatusMessage = nil
-        case .submitted:
-            composerStatusMessage = nil
-        }
-    }
-
-    private func sendComposerEnter(to surfaceID: UUID) -> Bool {
-        guard model.terminalInteractionProjection.selectedActiveLeafID == surfaceID else {
-            return false
-        }
-
-        let start = GhosttyRuntimeTrace.nowNanos()
-        let result = model.sendKeyEventToFocusedSurface(
-            GhosttySurfaceKeyEvent(keyCode: .enter)
-        )
-        GhosttyRuntimeTrace.perf(
-            "composer.sendEnter result=\(result) accepted=\(result.isAccepted) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
-        )
-        return result.isAccepted
     }
 
     private func scrollComposerDestinationToBottom(_ surfaceID: UUID) {

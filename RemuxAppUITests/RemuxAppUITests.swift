@@ -63,6 +63,8 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         let compactComposerFrame = composer.frame
         XCTAssertLessThanOrEqual(compactComposerFrame.height, 60)
+        let placeholder = app.staticTexts["terminal.composer.placeholder"]
+        XCTAssertTrue(placeholder.exists)
 
         let mic = app.buttons["terminal.composer.mic"]
         XCTAssertTrue(mic.waitForExistence(timeout: 3))
@@ -74,6 +76,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(cancel.waitForExistence(timeout: 3))
         XCTAssertTrue(stop.waitForExistence(timeout: 3))
         XCTAssertTrue(meter.waitForExistence(timeout: 3))
+        XCTAssertFalse(placeholder.exists)
         XCTAssertNotNil(waitForKeyboardPresence(false, label: "dictation started with keyboard hidden"))
         attachScreenshot(named: "composer-dictation-recording")
         XCTAssertEqual(composer.frame.height, compactComposerFrame.height, accuracy: 1)
@@ -110,8 +113,10 @@ final class RemuxAppUITests: XCTestCase {
         }
         mic.tap()
         XCTAssertTrue(cancel.waitForExistence(timeout: 3))
+        XCTAssertFalse(placeholder.exists)
         XCTAssertNotNil(waitForKeyboardPresence(true, label: "dictation started with keyboard visible"))
         XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
+        attachScreenshot(named: "composer-dictation-recording-keyboard-visible")
         RunLoop.current.run(until: Date().addingTimeInterval(0.6))
         cancel.tap()
 

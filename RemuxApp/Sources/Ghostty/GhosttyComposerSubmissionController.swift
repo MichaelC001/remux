@@ -1,10 +1,7 @@
-import Foundation
-
 struct GhosttyComposerSubmissionController: Equatable {
     enum Phase: Equatable {
         case idle
         case sending
-        case awaitingSubmit(surfaceID: UUID)
     }
 
     enum DraftResult: Equatable {
@@ -23,62 +20,17 @@ struct GhosttyComposerSubmissionController: Equatable {
         }
     }
 
-    enum SubmitResult: Equatable {
-        case notWaiting
-        case destinationChanged
-        case enterRejected
-        case submitted
-    }
-
     private(set) var phase: Phase = .idle
 
-    mutating func submitDraft(
-        _ text: String,
-        to surfaceID: UUID,
-        sendPaste: (String) -> Bool,
-        sendEnter: () -> Bool
-    ) -> DraftResult {
-        guard !text.isEmpty, phase == .idle else { return .notStarted }
-
+    mutating func beginSubmission(_ text: String) -> Bool {
+        guard !text.isEmpty, phase == .idle else { return false }
         phase = .sending
-        guard sendPaste(text) else {
-            phase = .idle
-            return .pasteRejected
-        }
-
-        guard sendEnter() else {
-            phase = .awaitingSubmit(surfaceID: surfaceID)
-            return .pastedAwaitingSubmit
-        }
-
-        phase = .idle
-        return .submitted
+        return true
     }
 
-    mutating func submitDeliveredPaste(
-        on currentSurfaceID: UUID?,
-        sendEnter: () -> Bool
-    ) -> SubmitResult {
-        guard case .awaitingSubmit(let surfaceID) = phase else {
-            return .notWaiting
-        }
-        guard currentSurfaceID == surfaceID else {
-            phase = .idle
-            return .destinationChanged
-        }
-
-        phase = .sending
-        guard sendEnter() else {
-            phase = .awaitingSubmit(surfaceID: surfaceID)
-            return .enterRejected
-        }
-
+    mutating func finishSubmission(_ result: DraftResult) -> DraftResult {
+        guard phase == .sending else { return .notStarted }
         phase = .idle
-        return .submitted
-    }
-
-    mutating func clearAwaitingSubmit() {
-        guard case .awaitingSubmit = phase else { return }
-        phase = .idle
+        return result
     }
 }
