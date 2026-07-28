@@ -33,6 +33,36 @@ final class GhosttyComposerSubmissionControllerTests: XCTestCase {
         XCTAssertTrue(session.areAttachmentsReady)
     }
 
+    @MainActor
+    func testComposerSessionCleansUnsentStagedFilesWhenTerminalIsReleased() async throws {
+        let stagedURL = try GhosttyAttachmentStagingStore.stageDataSynchronously(
+            Data("unsent".utf8),
+            filename: "unsent.txt"
+        )
+        addTeardownBlock {
+            GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
+        }
+
+        var session: GhosttyComposerSessionModel? = GhosttyComposerSessionModel()
+        session?.draft = "Review this"
+        session?.attachments = [.file(url: stagedURL)]
+        XCTAssertEqual(
+            session?.snapshot,
+            GhosttyComposerSessionState(
+                draft: "Review this",
+                attachments: [.file(url: stagedURL)]
+            )
+        )
+        session = nil
+
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(1))
+        while FileManager.default.fileExists(atPath: stagedURL.path), clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stagedURL.path))
+    }
+
     func testUploadedAttachmentAndDraftBecomeOnePasteThenOneEnter() {
         let sourceID = UUID()
         let transferResult = GhosttyAttachmentTransferResult(

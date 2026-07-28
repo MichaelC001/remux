@@ -284,6 +284,7 @@ private struct ActiveTerminalSessionView: View {
 
     @StateObject private var previewSession: TerminalPreviewSession
     @StateObject private var composerDictationController: GhosttyComposerDictationController
+    @StateObject private var composerSession: GhosttyComposerSessionModel
 
     init(
         entry: ActiveTerminalScreenEntry,
@@ -312,6 +313,9 @@ private struct ActiveTerminalSessionView: View {
         _composerDictationController = StateObject(
             wrappedValue: GhosttyComposerDictationController()
         )
+        _composerSession = StateObject(
+            wrappedValue: GhosttyComposerSessionModel()
+        )
     }
 
     var body: some View {
@@ -321,6 +325,7 @@ private struct ActiveTerminalSessionView: View {
                 presentation: entry.presentation,
                 isSelected: isSelected,
                 composerDictationController: composerDictationController,
+                composerSession: composerSession,
                 isTerminalCovered: previewSession.isPresented,
                 shortcutStore: shortcutStore,
                 attachmentTransferServiceFactory: entry.attachmentTransferServiceFactory,

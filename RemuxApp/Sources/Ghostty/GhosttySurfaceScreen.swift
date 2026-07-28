@@ -54,6 +54,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @Environment(\.displayScale) private var displayScale
     @ObservedObject private var model: Model
     @ObservedObject private var composerDictationController: GhosttyComposerDictationController
+    @ObservedObject private var composerSession: GhosttyComposerSessionModel
     private let presentation: GhosttySurfaceScreenPresentation
     private let isSelected: Bool
     private let isTerminalCovered: Bool
@@ -73,7 +74,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var trackpadDriver = GhosttyKeyboardCursorTrackpadDriver()
     @State private var trackpadFeedback = GhosttyKeyboardCursorTrackpad.FeedbackState.hidden
     @State private var isComposerPresented = false
-    @State private var composerSession = GhosttyComposerSessionState()
     @State private var composerSubmissionController = GhosttyComposerSubmissionController()
     @State private var composerStatusMessage: String?
     @State private var isShortcutPalettePresented = false
@@ -104,6 +104,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         presentation: GhosttySurfaceScreenPresentation,
         isSelected: Bool,
         composerDictationController: GhosttyComposerDictationController,
+        composerSession: GhosttyComposerSessionModel,
         isTerminalCovered: Bool = false,
         shortcutStore: ShortcutStore,
         attachmentTransferServiceFactory: @escaping @Sendable () -> any GhosttyAttachmentTransferService,
@@ -116,6 +117,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     ) {
         self.model = model
         self.composerDictationController = composerDictationController
+        self.composerSession = composerSession
         self.presentation = presentation
         self.isSelected = isSelected
         self.isTerminalCovered = isTerminalCovered
@@ -1693,7 +1695,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             return
         }
 
-        let session = composerSession
+        let session = composerSession.snapshot
         guard session.hasContent else { return }
 
         guard !session.attachments.isEmpty else {
