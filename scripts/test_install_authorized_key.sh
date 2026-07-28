@@ -142,7 +142,8 @@ if [ "${interrupted_lock_seen}" != true ]; then
 fi
 kill -TERM "${interrupted_installer_pid}"
 printf 'release\n' > "${interrupted_release}"
-wait "${interrupted_writer_pid}"
+# A prompt installer exit can close its FIFO before this writer runs.
+wait "${interrupted_writer_pid}" 2>/dev/null || true
 if wait "${interrupted_installer_pid}"; then
   fail "interrupted installer exited successfully"
 fi
