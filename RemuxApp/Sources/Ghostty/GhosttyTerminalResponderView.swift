@@ -1,10 +1,43 @@
 import SwiftUI
 import UIKit
 
+@MainActor
+final class GhosttyKeyboardResponderHandoff {
+    enum Target {
+        case terminal
+        case composer
+    }
+
+    private weak var terminalResponder: UIView?
+    private weak var composerResponder: UIView?
+
+    func register(_ responder: UIView, as target: Target) {
+        switch target {
+        case .terminal:
+            terminalResponder = responder
+        case .composer:
+            composerResponder = responder
+        }
+    }
+
+    @discardableResult
+    func transfer(to target: Target) -> Bool {
+        let responder = switch target {
+        case .terminal:
+            terminalResponder
+        case .composer:
+            composerResponder
+        }
+        guard let responder, responder.window != nil else { return false }
+        return responder.becomeFirstResponder()
+    }
+}
+
 struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
     let isEnabled: Bool
     let wantsFirstResponder: Bool
     let activationToken: Int
+    let responderHandoff: GhosttyKeyboardResponderHandoff
     let trackpadDriver: GhosttyKeyboardCursorTrackpadDriver
     let keyboardAppearance: UIKeyboardAppearance
     let sendText: (String) -> Bool
@@ -17,6 +50,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
         isEnabled: Bool,
         wantsFirstResponder: Bool,
         activationToken: Int,
+        responderHandoff: GhosttyKeyboardResponderHandoff,
         trackpadDriver: GhosttyKeyboardCursorTrackpadDriver,
         keyboardAppearance: UIKeyboardAppearance = .dark,
         sendText: @escaping (String) -> Bool,
@@ -28,6 +62,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
         self.isEnabled = isEnabled
         self.wantsFirstResponder = wantsFirstResponder
         self.activationToken = activationToken
+        self.responderHandoff = responderHandoff
         self.trackpadDriver = trackpadDriver
         self.keyboardAppearance = keyboardAppearance
         self.sendText = sendText
@@ -41,6 +76,7 @@ struct GhosttyTerminalResponderRepresentable: UIViewRepresentable {
         let view = GhosttyTerminalResponderUIView(trackpadDriver: trackpadDriver)
         view.backgroundColor = .clear
         view.isAccessibilityElement = false
+        responderHandoff.register(view, as: .terminal)
         return view
     }
 

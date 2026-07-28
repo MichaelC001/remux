@@ -87,6 +87,7 @@ struct GhosttyComposeBar: View {
 
     let wantsKeyboardFocus: Bool
     let keyboardActivationToken: Int
+    let keyboardResponderHandoff: GhosttyKeyboardResponderHandoff
     let submissionState: GhosttyComposeBarSubmissionState
     let dictationPhase: GhosttyComposerDictationPhase
     let dictationAudioLevelModel: GhosttyComposerAudioLevelModel
@@ -94,6 +95,7 @@ struct GhosttyComposeBar: View {
     let attachmentUploadCount: Int
     let attachmentTransferProgress: GhosttyAttachmentTransferProgress?
     let onKeyboardFocusRequest: () -> Void
+    let onKeyboardResponderAttached: () -> Void
     let onChoosePhotos: () -> Void
     let onChooseFiles: () -> Void
     let onOpenAttachments: () -> Void
@@ -170,7 +172,9 @@ struct GhosttyComposeBar: View {
                         allowsUserEdits: !dictationPhase.isActive,
                         wantsFirstResponder: wantsKeyboardFocus,
                         activationToken: keyboardActivationToken,
+                        responderHandoff: keyboardResponderHandoff,
                         onFocusRequest: onKeyboardFocusRequest,
+                        onResponderAttached: onKeyboardResponderAttached,
                         onPasteAttachment: onPasteAttachment
                     )
                     .opacity(dictationPhase.isActive ? 0 : 1)
@@ -452,7 +456,9 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
     let allowsUserEdits: Bool
     let wantsFirstResponder: Bool
     let activationToken: Int
+    let responderHandoff: GhosttyKeyboardResponderHandoff
     let onFocusRequest: () -> Void
+    let onResponderAttached: () -> Void
     let onPasteAttachment: () -> Bool
 
     func makeCoordinator() -> Coordinator {
@@ -479,6 +485,8 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
         textView.isEditable = isEditable
         textView.isScrollEnabled = false
         textView.accessibilityIdentifier = "terminal.composer.field"
+        textView.onAttachedToWindow = onResponderAttached
+        responderHandoff.register(textView, as: .composer)
         return textView
     }
 
@@ -487,6 +495,8 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
         textView.isEditable = isEditable
         textView.tintColor = caretColor
         textView.onPasteAttachment = onPasteAttachment
+        textView.onAttachedToWindow = onResponderAttached
+        responderHandoff.register(textView, as: .composer)
 
         if textView.text != text {
             textView.text = text
@@ -590,6 +600,13 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
 
 private final class GhosttyComposerUITextView: UITextView {
     var onPasteAttachment: (() -> Bool)?
+    var onAttachedToWindow: (() -> Void)?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard window != nil else { return }
+        onAttachedToWindow?()
+    }
 
     override func paste(_ sender: Any?) {
         if onPasteAttachment?() == true {

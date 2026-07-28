@@ -263,6 +263,51 @@ final class GhosttyTerminalViewportCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.effectiveSize(liveSize: full), keyboard)
     }
 
+    func testComposerPresentationHoldsTerminalViewportThroughResponderLayoutChange() {
+        var coordinator = GhosttyTerminalViewportCoordinator()
+        let terminalResponderLayout = CGSize(width: 402, height: 450)
+        let composerResponderLayout = CGSize(width: 402, height: 423)
+
+        XCTAssertTrue(coordinator.observeLiveSize(terminalResponderLayout).didApplyStableSize)
+        XCTAssertEqual(
+            coordinator.setComposerPresented(true, liveSize: terminalResponderLayout),
+            .hold(effectiveSize: terminalResponderLayout)
+        )
+
+        let observation = coordinator.observeLiveSize(composerResponderLayout)
+
+        XCTAssertFalse(observation.didApplyStableSize)
+        XCTAssertEqual(observation.effectiveSize, terminalResponderLayout)
+        XCTAssertEqual(
+            coordinator.effectiveSize(liveSize: composerResponderLayout),
+            terminalResponderLayout
+        )
+    }
+
+    func testComposerDismissalPreservesTerminalViewportUntilResponderLayoutRestores() {
+        var coordinator = GhosttyTerminalViewportCoordinator()
+        let terminalResponderLayout = CGSize(width: 402, height: 450)
+        let composerResponderLayout = CGSize(width: 402, height: 423)
+
+        XCTAssertTrue(coordinator.observeLiveSize(terminalResponderLayout).didApplyStableSize)
+        coordinator.setComposerPresented(true, liveSize: terminalResponderLayout)
+        XCTAssertFalse(coordinator.observeLiveSize(composerResponderLayout).didApplyStableSize)
+
+        XCTAssertEqual(
+            coordinator.setComposerPresented(false, liveSize: composerResponderLayout),
+            .release(previousEffectiveSize: terminalResponderLayout)
+        )
+        XCTAssertFalse(coordinator.isFrozen)
+        XCTAssertEqual(
+            coordinator.effectiveSize(liveSize: composerResponderLayout),
+            terminalResponderLayout
+        )
+
+        let restored = coordinator.observeLiveSize(terminalResponderLayout)
+        XCTAssertFalse(restored.didApplyStableSize)
+        XCTAssertEqual(restored.effectiveSize, terminalResponderLayout)
+    }
+
     func testTopologyRefocusRequestReportsEffectiveHold() {
         var coordinator = GhosttyTerminalViewportCoordinator()
         let keyboard = CGSize(width: 402, height: 452)

@@ -61,6 +61,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private let shortcutStore: ShortcutStore
     @State private var inputCoordinator = GhosttyTerminalInputCoordinator()
     @State private var terminalInputController = GhosttyTerminalInputController()
+    @State private var keyboardResponderHandoff = GhosttyKeyboardResponderHandoff()
     @State private var selectionSheet: GhosttySurfaceSelectionSheet?
     @State private var selectionSheetPresentationState = GhosttySelectionSheetPresentationState()
     @State private var bottomChromeHeight: CGFloat = 0
@@ -88,6 +89,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var attachmentTransferUploadCount = 0
     @State private var attachmentTransferProgress: GhosttyAttachmentTransferProgress?
     @State private var attachmentNotice: GhosttyAttachmentNotice?
+#if DEBUG
+    @State private var uiTestKeyboardWillHideCount = 0
+#endif
 
     private let onReconnect: () -> Void
     private let onEditConnection: () -> Void
@@ -221,6 +225,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             isEnabled: terminalResponderFocusPolicy.isResponderEnabled,
                             wantsFirstResponder: terminalResponderFocusPolicy.wantsFirstResponder,
                             activationToken: inputCoordinator.terminalActivationToken,
+                            responderHandoff: keyboardResponderHandoff,
                             trackpadDriver: trackpadDriver,
                             keyboardAppearance: presentation.terminalTheme.terminalKeyboardAppearance,
                             sendText: sendTerminalText,
@@ -250,6 +255,21 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         )
                         .frame(width: 1, height: 1, alignment: .topLeading)
                         .allowsHitTesting(false)
+
+#if DEBUG
+                        if ProcessInfo.processInfo.environment["REMUX_UI_TESTING"] == "1" {
+                            GhosttyKeyboardContinuityAccessibilityMarker(
+                                owner: inputCoordinator.keyboardOwner,
+                                keyboardWillHideCount: uiTestKeyboardWillHideCount,
+                                liveViewportSize: liveTerminalViewportSize,
+                                effectiveViewportSize: terminalViewportSize,
+                                isKeyboardTransitionActive: terminalViewportCoordinator.isKeyboardTransitionActive,
+                                isAwaitingSystemKeyboard: isAwaitingSystemKeyboardPresentation
+                            )
+                            .frame(width: 1, height: 1, alignment: .topLeading)
+                            .allowsHitTesting(false)
+                        }
+#endif
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .overlay {
@@ -346,6 +366,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         wantsKeyboardFocus: inputCoordinator.keyboardMode == .system
                             && inputCoordinator.keyboardOwner == .composer,
                         keyboardActivationToken: inputCoordinator.composerActivationToken,
+                        keyboardResponderHandoff: keyboardResponderHandoff,
                         submissionState: composerSubmissionState,
                         dictationPhase: composerDictationController.phase,
                         dictationAudioLevelModel: composerDictationController.audioLevelModel,
@@ -353,6 +374,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         attachmentUploadCount: attachmentTransferUploadCount,
                         attachmentTransferProgress: attachmentTransferProgress,
                         onKeyboardFocusRequest: handleComposerKeyboardFocusRequest,
+                        onKeyboardResponderAttached: handleComposerKeyboardResponderAttached,
                         onChoosePhotos: openAttachmentPhotosPicker,
                         onChooseFiles: openAttachmentFilePicker,
                         onOpenAttachments: showPendingAttachmentPreview,
@@ -418,6 +440,11 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { notification in
                 guard shouldHandleTerminalKeyboardNotification else { return }
+#if DEBUG
+                if ProcessInfo.processInfo.environment["REMUX_UI_TESTING"] == "1" {
+                    uiTestKeyboardWillHideCount += 1
+                }
+#endif
                 GhosttyRuntimeTrace.perf("kbd.willHide")
                 updateKeyboardVisibility(with: notification)
             }
@@ -744,28 +771,71 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private func toggleComposer() {
         guard !isAttachmentTransferInProgress else { return }
 
-        withAnimation(.easeOut(duration: 0.16)) {
-            isComposerPresented.toggle()
-        }
-
         if isComposerPresented {
-            inputCoordinator.transferKeyboardOwnerIfActive(
-                to: .composer,
-                isOwnerAvailable: true
-            )
-            return
+            closeComposer()
+        } else {
+            openComposer()
         }
+    }
 
-        composerDictationController.stopImmediately()
-        composerSubmissionController.clearAwaitingSubmit()
-        composerStatusMessage = nil
-        if isTerminalInputAvailable {
+    private func openComposer() {
+        let liveSize = terminalViewportCoordinator.latestLiveSize
+        let effect = terminalViewportCoordinator.setComposerPresented(
+            true,
+            liveSize: liveSize
+        )
+        GhosttyRuntimeTrace.tmuxViewport(
+            "viewport.freeze begin reason=composer effect=\(effect) live=\(liveSize.traceLabel) holdReasons=\(terminalViewportCoordinator.holdReasonTraceLabel)"
+        )
+        withAnimation(.easeOut(duration: 0.16)) {
+            isComposerPresented = true
+        }
+    }
+
+    private func closeComposer() {
+        if inputCoordinator.keyboardMode == .system,
+           inputCoordinator.keyboardOwner == .composer {
+            guard isTerminalInputAvailable,
+                  keyboardResponderHandoff.transfer(to: .terminal) else {
+                GhosttyRuntimeTrace.perf(
+                    "composer.toggle close deferred terminalResponderUnavailable"
+                )
+                return
+            }
             inputCoordinator.transferKeyboardOwnerIfActive(
                 to: .terminal,
                 isOwnerAvailable: true
             )
-        } else if inputCoordinator.keyboardOwner == .composer {
-            inputCoordinator.dismissKeyboard()
+        }
+
+        let liveSize = terminalViewportCoordinator.latestLiveSize
+        let effect = terminalViewportCoordinator.setComposerPresented(
+            false,
+            liveSize: liveSize
+        )
+        GhosttyRuntimeTrace.tmuxViewport(
+            "viewport.freeze end reason=composer effect=\(effect) live=\(liveSize.traceLabel) holdReasons=\(terminalViewportCoordinator.holdReasonTraceLabel)"
+        )
+        withAnimation(.easeOut(duration: 0.16)) {
+            isComposerPresented = false
+        }
+    }
+
+    private func handleComposerKeyboardResponderAttached() {
+        guard isComposerPresented,
+              inputCoordinator.keyboardMode == .system,
+              inputCoordinator.keyboardOwner == .terminal else { return }
+        guard keyboardResponderHandoff.transfer(to: .composer) else {
+            GhosttyRuntimeTrace.perf(
+                "composer.toggle open handoff deferred composerResponderUnavailable"
+            )
+            return
+        }
+        if inputCoordinator.keyboardOwner != .composer {
+            inputCoordinator.transferKeyboardOwnerIfActive(
+                to: .composer,
+                isOwnerAvailable: true
+            )
         }
     }
 
@@ -2399,6 +2469,39 @@ private struct GhosttyTerminalInputReadyAccessibilityMarker: View {
         }
     }
 }
+
+#if DEBUG
+private struct GhosttyKeyboardContinuityAccessibilityMarker: View {
+    let owner: GhosttyKeyboardOwner
+    let keyboardWillHideCount: Int
+    let liveViewportSize: CGSize
+    let effectiveViewportSize: CGSize
+    let isKeyboardTransitionActive: Bool
+    let isAwaitingSystemKeyboard: Bool
+
+    private var ownerLabel: String {
+        switch owner {
+        case .none: "none"
+        case .terminal: "terminal"
+        case .composer: "composer"
+        }
+    }
+
+    var body: some View {
+        Color.clear
+            .accessibilityElement()
+            .accessibilityLabel("Keyboard continuity")
+            .accessibilityValue(
+                "owner=\(ownerLabel);willHide=\(keyboardWillHideCount);"
+                    + "liveViewport=\(liveViewportSize.traceLabel);"
+                    + "effectiveViewport=\(effectiveViewportSize.traceLabel);"
+                    + "transitionActive=\(isKeyboardTransitionActive);"
+                    + "awaitingSystemKeyboard=\(isAwaitingSystemKeyboard)"
+            )
+            .accessibilityIdentifier("terminal.keyboard.continuity")
+    }
+}
+#endif
 
 private struct GhosttyBottomChromeHeightPreferenceKey: PreferenceKey {
     static let defaultValue: CGFloat = 0

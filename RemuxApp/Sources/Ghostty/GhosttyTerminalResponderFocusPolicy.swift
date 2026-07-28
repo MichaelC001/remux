@@ -9,7 +9,6 @@ struct GhosttyTerminalResponderFocusPolicy: Equatable {
 
     var isResponderEnabled: Bool {
         isInputAvailable
-            && keyboardOwner != .composer
             && !isTransientInputOwnerPresented
     }
 

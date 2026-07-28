@@ -166,28 +166,90 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["No speech detected — try again"].exists)
     }
 
-    func testComposerToggleDoesNotResizeTerminalViewport() {
+    func testComposerToggleKeepsOpenKeyboardAndTerminalViewportStable() {
+        app.launchEnvironment["REMUX_UI_TEST_INPUT_READY"] = "1"
         launchSimulatorApp()
         openConnectionSetup()
         fillConnectionForm()
         saveConnectionAndWaitForTerminal()
         _ = waitForTerminalHomeButton()
+        waitForLiveTerminalInputReady(timeout: 10)
 
         let terminal = app.otherElements["terminal.screen"]
         XCTAssertTrue(terminal.waitForExistence(timeout: 5))
-        let initialFrame = terminal.frame
 
+        guard let hiddenContinuity = waitForKeyboardContinuity(owner: "none") else {
+            return
+        }
         let composerToggle = app.buttons["terminal.composer.toggle"]
         XCTAssertTrue(composerToggle.waitForExistence(timeout: 5))
         composerToggle.tap()
-        XCTAssertTrue(app.textViews["terminal.composer.field"].waitForExistence(timeout: 3))
-        XCTAssertEqual(terminal.frame, initialFrame)
+        let composerField = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(composerField.waitForExistence(timeout: 3))
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "composer opened with keyboard hidden"))
+        guard let hiddenOpenContinuity = waitForKeyboardContinuity(owner: "none") else {
+            return
+        }
+        XCTAssertEqual(hiddenOpenContinuity.effectiveViewport, hiddenContinuity.effectiveViewport)
+
+        composerToggle.tap()
+        XCTAssertFalse(composerField.waitForExistence(timeout: 1))
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "composer closed with keyboard hidden"))
+        guard let hiddenClosedContinuity = waitForKeyboardContinuity(owner: "none") else {
+            return
+        }
+        XCTAssertEqual(hiddenClosedContinuity.effectiveViewport, hiddenContinuity.effectiveViewport)
+
+        terminal.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "terminal keyboard before composer toggle"))
+
+        let keyboard = app.keyboards.firstMatch
+        let initialKeyboardFrame = keyboard.frame
+        guard let initialContinuity = waitForKeyboardContinuity(owner: "terminal") else {
+            return
+        }
+
+        composerToggle.tap()
+        XCTAssertTrue(composerField.waitForExistence(timeout: 3))
+        guard let composerContinuity = waitForKeyboardContinuity(owner: "composer") else {
+            return
+        }
+        XCTAssertEqual(composerContinuity.willHideCount, initialContinuity.willHideCount)
+        XCTAssertEqual(keyboard.frame, initialKeyboardFrame)
+        XCTAssertEqual(composerContinuity.effectiveViewport, initialContinuity.effectiveViewport)
+        composerField.typeText("Keep this draft")
+        XCTAssertEqual(composerField.value as? String, "Keep this draft")
         attachScreenshot(named: "composer-toggle-overlay-open")
 
         composerToggle.tap()
-        XCTAssertFalse(app.textViews["terminal.composer.field"].waitForExistence(timeout: 1))
-        XCTAssertEqual(terminal.frame, initialFrame)
+        XCTAssertFalse(composerField.waitForExistence(timeout: 1))
+        guard let terminalContinuity = waitForKeyboardContinuity(owner: "terminal") else {
+            return
+        }
+        XCTAssertEqual(terminalContinuity.willHideCount, initialContinuity.willHideCount)
+        XCTAssertTrue(keyboard.exists)
+        XCTAssertEqual(keyboard.frame, initialKeyboardFrame)
+        XCTAssertEqual(terminalContinuity.effectiveViewport, initialContinuity.effectiveViewport)
         attachScreenshot(named: "composer-toggle-overlay-closed")
+
+        composerToggle.tap()
+        XCTAssertTrue(composerField.waitForExistence(timeout: 3))
+        guard let reopenedContinuity = waitForKeyboardContinuity(owner: "composer") else {
+            return
+        }
+        XCTAssertEqual(reopenedContinuity.willHideCount, initialContinuity.willHideCount)
+        XCTAssertEqual(composerField.value as? String, "Keep this draft")
+        XCTAssertEqual(keyboard.frame, initialKeyboardFrame)
+        XCTAssertEqual(reopenedContinuity.effectiveViewport, initialContinuity.effectiveViewport)
+
+        composerToggle.tap()
+        XCTAssertFalse(composerField.waitForExistence(timeout: 1))
+        guard let reclosedContinuity = waitForKeyboardContinuity(owner: "terminal") else {
+            return
+        }
+        XCTAssertEqual(reclosedContinuity.willHideCount, initialContinuity.willHideCount)
+        XCTAssertEqual(keyboard.frame, initialKeyboardFrame)
+        XCTAssertEqual(reclosedContinuity.effectiveViewport, initialContinuity.effectiveViewport)
     }
 
     func testCanKeepMultipleSimulatorSessionsActive() {
@@ -1889,6 +1951,71 @@ final class RemuxAppUITests: XCTestCase {
 
         XCTFail("Timed out waiting for keyboard \(expected ? "visible" : "hidden") during \(label)")
         return nil
+    }
+
+    private func waitForKeyboardContinuity(
+        owner expectedOwner: String,
+        timeout: TimeInterval = 3,
+        pollInterval: TimeInterval = 0.01
+    ) -> (
+        owner: String,
+        willHideCount: Int,
+        liveViewport: String,
+        effectiveViewport: String,
+        transitionActive: Bool,
+        awaitingSystemKeyboard: Bool
+    )? {
+        let marker = app.otherElements["terminal.keyboard.continuity"]
+        let deadline = Date().addingTimeInterval(timeout)
+
+        repeat {
+            if marker.exists,
+               let value = marker.value as? String,
+               let state = keyboardContinuityState(from: value),
+               state.owner == expectedOwner,
+               !state.transitionActive,
+               !state.awaitingSystemKeyboard {
+                return state
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(pollInterval))
+        } while Date() < deadline
+
+        XCTFail("Timed out waiting for keyboard owner \(expectedOwner)")
+        return nil
+    }
+
+    private func keyboardContinuityState(
+        from value: String
+    ) -> (
+        owner: String,
+        willHideCount: Int,
+        liveViewport: String,
+        effectiveViewport: String,
+        transitionActive: Bool,
+        awaitingSystemKeyboard: Bool
+    )? {
+        var fields: [String: String] = [:]
+        for field in value.split(separator: ";") {
+            let parts = field.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            fields[String(parts[0])] = String(parts[1])
+        }
+        guard let owner = fields["owner"],
+              let willHide = fields["willHide"],
+              let willHideCount = Int(willHide),
+              let liveViewport = fields["liveViewport"],
+              let effectiveViewport = fields["effectiveViewport"],
+              let transitionActive = fields["transitionActive"].flatMap(Bool.init),
+              let awaitingSystemKeyboard = fields["awaitingSystemKeyboard"].flatMap(Bool.init)
+        else { return nil }
+        return (
+            owner,
+            willHideCount,
+            liveViewport,
+            effectiveViewport,
+            transitionActive,
+            awaitingSystemKeyboard
+        )
     }
 
     private func launchSimulatorApp() {

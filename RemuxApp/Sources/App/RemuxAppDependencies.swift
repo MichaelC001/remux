@@ -305,11 +305,29 @@ struct RemuxAppDependencies: Sendable {
             credentialStore: InMemorySSHCredentialStore(),
             trustedHostStore: TrustedHostStore(rootURL: root),
             transportFactory: { _, _, _ in
-                DeterministicTmuxControlTransport(chunks: [])
+                DeterministicTmuxControlTransport(
+                    chunks: uiTestingTransportChunks()
+                )
             },
             sshConnectionPrewarmer: { _, _, _ in
             }
         )
+    }
+
+    private static func uiTestingTransportChunks() -> [Data] {
+        guard ProcessInfo.processInfo.environment["REMUX_UI_TEST_INPUT_READY"] == "1" else {
+            return []
+        }
+
+        let paneState = "%0;83;44;0;0;1;;;;0;4294967295;4294967295;0;1;0;0;0;0;0;0;0;0;;;0;0;43;8,16\n"
+        let window = "$42 @0 1 %0 83 44 b7dd,83x44,0,0,0 b7dd,83x44,0,0,0 window-0\n"
+        let transcript = "%begin 1 1 0\n%end 1 1 0\n%session-changed $42 main\n"
+            + "%begin 2 2 1\n3.1\n%end 2 2 1\n"
+            + "%begin 3 3 1\n%end 3 3 1\n"
+            + "%begin 4 4 1\n\(window)%end 4 4 1\n"
+            + "%begin 5 5 1\n\(paneState)%end 5 5 1\n"
+            + (6...9).map { "%begin \($0) \($0) 1\n%end \($0) \($0) 1\n" }.joined()
+        return [Data(transcript.utf8)]
     }
 #endif
 

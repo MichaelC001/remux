@@ -86,7 +86,7 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
         XCTAssertFalse(policy.wantsFirstResponder)
     }
 
-    func testComposerKeyboardOwnerSuspendsTerminalResponder() {
+    func testComposerKeyboardOwnerKeepsTerminalEligibleForResponderHandoff() {
         let policy = GhosttyTerminalResponderFocusPolicy(
             isSelected: true,
             keyboardMode: .system,
@@ -95,7 +95,7 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
             isTransientInputOwnerPresented: false
         )
 
-        XCTAssertFalse(policy.isResponderEnabled)
+        XCTAssertTrue(policy.isResponderEnabled)
         XCTAssertFalse(policy.wantsFirstResponder)
     }
 
