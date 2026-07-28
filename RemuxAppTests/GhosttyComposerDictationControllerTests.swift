@@ -89,6 +89,20 @@ final class GhosttyComposerDictationControllerTests: XCTestCase {
         controller.stopImmediately()
     }
 
+    func testKnownAuthorizationStartsBackendWithoutTaskHop() {
+        let backend = DictationBackendSpy()
+        let controller = GhosttyComposerDictationController(
+            backend: backend,
+            authorizationClient: .authorizedForTests,
+            lease: GhosttyComposerDictationLease()
+        )
+
+        controller.start(draft: "", onTranscript: { _ in }, onFailure: { _ in })
+
+        XCTAssertEqual(backend.actions, [.start(1)])
+        controller.stopImmediately()
+    }
+
     func testBackendStartDeadlineCancelsRunAndReportsFailure() async {
         let backend = DictationBackendSpy()
         let controller = GhosttyComposerDictationController(
@@ -353,6 +367,8 @@ private final class DictationBackendSpy: GhosttyComposerDictationBackendProtocol
         return storedActions
     }
 
+    func prepare(locale: Locale) {}
+
     func start(
         id: UInt64,
         locale: Locale,
@@ -413,12 +429,14 @@ private final class DictationBackendSpy: GhosttyComposerDictationBackendProtocol
 
 private extension GhosttyComposerDictationAuthorizationClient {
     static let authorizedForTests = Self(
+        knownResult: { .authorized },
         requestSpeechAuthorization: { .authorized },
         requestMicrophoneAuthorization: { true }
     )
 
     static func delayedAuthorization(_ delay: Duration) -> Self {
         Self(
+            knownResult: { nil },
             requestSpeechAuthorization: {
                 try? await Task.sleep(for: delay)
                 return .authorized

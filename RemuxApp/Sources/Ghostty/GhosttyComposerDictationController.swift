@@ -68,6 +68,7 @@ enum GhosttyComposerDictationBackendEvent: Sendable {
 }
 
 protocol GhosttyComposerDictationBackendProtocol: Sendable {
+    func prepare(locale: Locale)
     func start(
         id: UInt64,
         locale: Locale,
@@ -87,6 +88,7 @@ struct GhosttyComposerDictationAuthorizationClient: Sendable {
         case cancelled
     }
 
+    let knownResult: @Sendable () -> Result?
     let requestSpeechAuthorization: @Sendable () async -> SFSpeechRecognizerAuthorizationStatus
     let requestMicrophoneAuthorization: @Sendable () async -> Bool
 
@@ -103,6 +105,30 @@ struct GhosttyComposerDictationAuthorizationClient: Sendable {
     }
 
     static let live = Self(
+        knownResult: {
+            let speechAuthorization = SFSpeechRecognizer.authorizationStatus()
+            switch speechAuthorization {
+            case .denied, .restricted:
+                return .speechRecognitionDenied
+            case .notDetermined:
+                return nil
+            case .authorized:
+                break
+            @unknown default:
+                return .speechRecognitionDenied
+            }
+
+            switch AVAudioApplication.shared.recordPermission {
+            case .granted:
+                return .authorized
+            case .denied:
+                return .microphoneDenied
+            case .undetermined:
+                return nil
+            @unknown default:
+                return .microphoneDenied
+            }
+        },
         requestSpeechAuthorization: {
             let current = SFSpeechRecognizer.authorizationStatus()
             guard current == .notDetermined else { return current }
@@ -216,6 +242,28 @@ final class GhosttyComposerDictationBackend: GhosttyComposerDictationBackendProt
     private let desiredRunLock = NSLock()
     private var desiredRunID: UInt64?
     private var activeRun: Run?
+    private var preparedLocaleIdentifier: String?
+    private var preparedRecognizer: SFSpeechRecognizer?
+
+    func prepare(locale: Locale) {
+        queue.async { [self] in
+            guard activeRun == nil else { return }
+            let startedAt = GhosttyRuntimeTrace.nowNanos()
+            do {
+                _ = try recognizer(for: locale)
+                GhosttyRuntimeTrace.perf(
+                    "composer.dictation.prepare result=ready locale=\(locale.identifier) "
+                        + "elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt))"
+                )
+            } catch {
+                GhosttyRuntimeTrace.perf(
+                    "composer.dictation.prepare result=unavailable locale=\(locale.identifier) "
+                        + "elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startedAt)) "
+                        + "error=\(String(describing: error))"
+                )
+            }
+        }
+    }
 
     func start(
         id: UInt64,
@@ -284,17 +332,9 @@ final class GhosttyComposerDictationBackend: GhosttyComposerDictationBackendProt
             }
             traceStartup("backend.audioSessionActivation.end", run: run)
 
-            traceStartup("backend.recognizerCreation.begin", run: run)
-            guard let recognizer = SFSpeechRecognizer(locale: locale) else {
-                throw GhosttyComposerDictationError.unsupportedLocale
-            }
-            guard recognizer.supportsOnDeviceRecognition else {
-                throw GhosttyComposerDictationError.unsupportedOnDeviceLocale
-            }
-            guard recognizer.isAvailable else {
-                throw GhosttyComposerDictationError.recognizerUnavailable
-            }
-            traceStartup("backend.recognizerCreation.end", run: run)
+            traceStartup("backend.recognizerResolve.begin", run: run)
+            let recognizer = try recognizer(for: locale)
+            traceStartup("backend.recognizerResolve.end", run: run)
 
             traceStartup("backend.recognitionTaskCreation.begin", run: run)
             let request = SFSpeechAudioBufferRecognitionRequest()
@@ -479,6 +519,30 @@ final class GhosttyComposerDictationBackend: GhosttyComposerDictationBackendProt
         )
     }
 
+    private func recognizer(for locale: Locale) throws -> SFSpeechRecognizer {
+        let localeIdentifier = locale.identifier
+        let recognizer: SFSpeechRecognizer
+        if preparedLocaleIdentifier == localeIdentifier,
+           let preparedRecognizer {
+            recognizer = preparedRecognizer
+        } else {
+            guard let createdRecognizer = SFSpeechRecognizer(locale: locale) else {
+                throw GhosttyComposerDictationError.unsupportedLocale
+            }
+            preparedLocaleIdentifier = localeIdentifier
+            preparedRecognizer = createdRecognizer
+            recognizer = createdRecognizer
+        }
+
+        guard recognizer.supportsOnDeviceRecognition else {
+            throw GhosttyComposerDictationError.unsupportedOnDeviceLocale
+        }
+        guard recognizer.isAvailable else {
+            throw GhosttyComposerDictationError.recognizerUnavailable
+        }
+        return recognizer
+    }
+
     private func traceStartup(
         _ event: String,
         run: Run,
@@ -642,6 +706,10 @@ final class GhosttyComposerDictationController: ObservableObject {
         }
     }
 
+    func prepare() {
+        backend.prepare(locale: .current)
+    }
+
     func start(
         draft: String,
         onTranscript: @escaping (String) -> Void,
@@ -683,6 +751,15 @@ final class GhosttyComposerDictationController: ObservableObject {
             return
         }
 #endif
+
+        if let knownAuthorizationResult = authorizationClient.knownResult() {
+            handleAuthorizationResult(
+                knownAuthorizationResult,
+                sessionID: requestedSessionID,
+                requestedAt: requestedAt
+            )
+            return
+        }
 
         let authorizationClient = authorizationClient
         authorizationTask = Task { [weak self, authorizationClient] in

@@ -777,6 +777,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func openComposer() {
+        composerDictationController.prepare()
         let liveSize = terminalViewportCoordinator.latestLiveSize
         let effect = terminalViewportCoordinator.setComposerPresented(
             true,
