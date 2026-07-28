@@ -702,10 +702,11 @@ final class RemuxRootModel: ObservableObject {
                 for: serverID,
                 setupID: action.setupID
             )
-        } catch {
-            finishSetupSession(action.setupID)
-            transitionToFailed(error)
-            return
+        } catch let restoreError {
+            NSLog(
+                "Remux trusted-host restore failed: %@",
+                String(describing: restoreError)
+            )
         }
         finishSetupSession(action.setupID)
         transitionToFailed(error)

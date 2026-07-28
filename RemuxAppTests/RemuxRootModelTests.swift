@@ -32,6 +32,46 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(RemuxAppLifecycleProjection(scenePhase: .background).appLifecyclePhase, .background)
     }
 
+    func testConnectionSetupFormDisablesTextInputDuringAction() throws {
+        let view = NavigationStack {
+            ConnectionSetupView(
+                draft: TmuxConnectionDraft(),
+                validation: .empty,
+                mode: .newServer,
+                setupSessionID: UUID(),
+                terminalTheme: .remuxDark,
+                isActionInProgress: true,
+                onChange: { _ in },
+                onConnect: {},
+                publicKeyInstallTarget: { _ in throw CancellationError() },
+                preflightPublicKeyInstallation: { _ in .passwordRequired },
+                appendPublicKey: { _, _ in },
+                verifyPublicKeyInstallation: { _ in },
+                trustSetupHostKey: { _ in },
+                onCancel: {}
+            )
+        }
+        let hostingController = UIHostingController(rootView: view)
+        let window = UIWindow(frame: UIScreen.main.bounds)
+        window.rootViewController = hostingController
+        window.makeKeyAndVisible()
+        hostingController.view.frame = window.bounds
+        defer {
+            window.isHidden = true
+        }
+
+        hostingController.view.setNeedsLayout()
+        hostingController.view.layoutIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+
+        let textFields = descendants(
+            of: hostingController.view,
+            matching: UITextField.self
+        )
+        XCTAssertFalse(textFields.isEmpty)
+        XCTAssertTrue(textFields.allSatisfy { !$0.isEnabled })
+    }
+
     func testInstallTargetUsesDraftStableIDAndNormalizedEndpoint() throws {
         let harness = makeHarness()
         var draft = makePublicKeyInstallDraft()
@@ -510,6 +550,54 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(
             try loadTrustedHostIdentities(root: harness.trustedHostRoot),
             [unrelatedIdentity]
+        )
+    }
+
+    func testEditServerTrustRollbackFailurePreservesPrimarySaveError() async throws {
+        let pair = makePasswordBackedServer()
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity]
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("normal connection password"),
+            identityID: pair.identity.id
+        )
+        let originalIdentity = TrustedHostIdentity(
+            serverID: pair.server.id,
+            host: pair.server.host,
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 original-host-key",
+            trustedAt: Date(timeIntervalSince1970: 123)
+        )
+        try saveTrustedHostIdentity(originalIdentity, root: harness.trustedHostRoot)
+        await harness.model.load()
+
+        await harness.model.beginEditServer(serverID: pair.server.id)
+        try harness.model.trustSetupHostKey(
+            makeChangedHostKeyChallenge(
+                serverID: pair.server.id,
+                host: "replacement.example.test",
+                trustedIdentity: originalIdentity,
+                receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+            ),
+            setupSessionID: harness.model.setupSessionID
+        )
+        let trustedHostsFile = harness.trustedHostRoot
+            .appendingPathComponent("trusted-hosts.json")
+        try FileManager.default.removeItem(at: trustedHostsFile)
+        try FileManager.default.createDirectory(
+            at: trustedHostsFile,
+            withIntermediateDirectories: false
+        )
+        let saveError = ConnectionProfileRepositoryError.missingServer(pair.server.id)
+        await harness.profileRepository.failNextSaveServer(with: saveError)
+
+        await harness.model.saveAndConnect()
+
+        XCTAssertEqual(
+            harness.model.state,
+            .failed(String(describing: saveError))
         )
     }
 
@@ -2951,6 +3039,23 @@ final class RemuxRootModelTests: XCTestCase {
             model.session == nil
         }
         XCTAssertTrue(didStop, file: file, line: line)
+    }
+
+    private func descendants<View: UIView>(
+        of view: UIView,
+        matching _: View.Type
+    ) -> [View] {
+        var matches: [View] = []
+        if let match = view as? View {
+            matches.append(match)
+        }
+        for subview in view.subviews {
+            matches.append(contentsOf: descendants(
+                of: subview,
+                matching: View.self
+            ))
+        }
+        return matches
     }
 
     private func temporaryRoot() -> URL {

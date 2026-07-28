@@ -4,6 +4,46 @@ import XCTest
 
 @MainActor
 final class SSHPublicKeyInstallCoordinatorTests: XCTestCase {
+    func testInstallCompletionMatchesOnlyCapturedTargetAndSetupSession() {
+        let setupSessionID = UUID()
+        let target = makeInstallTarget(
+            host: "example.test",
+            port: 22,
+            username: "remux",
+            publicKeyLine: "ssh-ed25519 AAAA-current"
+        )
+        let completion = SSHPublicKeyInstallCompletion(
+            success: .installed,
+            target: target,
+            setupSessionID: setupSessionID
+        )
+
+        XCTAssertTrue(
+            completion.matchesActiveSetup(
+                target: target,
+                setupSessionID: setupSessionID
+            )
+        )
+        XCTAssertFalse(
+            completion.matchesActiveSetup(
+                target: makeInstallTarget(host: "other.test"),
+                setupSessionID: setupSessionID
+            )
+        )
+        XCTAssertFalse(
+            completion.matchesActiveSetup(
+                target: target,
+                setupSessionID: UUID()
+            )
+        )
+        XCTAssertFalse(
+            completion.matchesActiveSetup(
+                target: target,
+                setupSessionID: nil
+            )
+        )
+    }
+
     func testInstallConfirmationMatchesOnlyItsNonSecretTargetIdentity() {
         let target = makeInstallTarget(
             host: "example.test",

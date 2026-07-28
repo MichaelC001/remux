@@ -158,6 +158,7 @@ private struct RemuxWorkspaceShell: View {
                     draft: draft,
                     validation: validation,
                     mode: mode,
+                    setupSessionID: setupSessionID,
                     terminalTheme: model.terminalSettings.theme,
                     isActionInProgress: model.isSetupActionInProgress,
                     onChange: model.updateDraft,
@@ -165,7 +166,7 @@ private struct RemuxWorkspaceShell: View {
                         Task { await model.saveAndConnect() }
                     },
                     publicKeyInstallTarget: { draft in
-                        try? model.publicKeyInstallTarget(for: draft)
+                        try model.publicKeyInstallTarget(for: draft)
                     },
                     preflightPublicKeyInstallation: { draft in
                         try await model.preflightPublicKeyInstallation(
@@ -1386,15 +1387,25 @@ private struct TerminalThemePreviewSurface: View {
     }
 }
 
-private struct ConnectionSetupView: View {
+private struct SSHPublicKeyInstallRequest: Identifiable {
+    let id = UUID()
+    let draft: TmuxConnectionDraft
+    let target: SSHPublicKeyInstallTarget
+    let setupSessionID: UUID
+}
+
+struct ConnectionSetupView: View {
     let draft: TmuxConnectionDraft
     let validation: TmuxConnectionDraftValidation
     let mode: RemuxRootModel.SetupMode
+    let setupSessionID: UUID?
     let terminalTheme: TerminalTheme
     let isActionInProgress: Bool
     let onChange: ((inout TmuxConnectionDraft) -> Void) -> Void
     let onConnect: () -> Void
-    let publicKeyInstallTarget: (TmuxConnectionDraft) -> SSHPublicKeyInstallTarget?
+    let publicKeyInstallTarget: (
+        TmuxConnectionDraft
+    ) throws -> SSHPublicKeyInstallTarget
     let preflightPublicKeyInstallation: @MainActor (
         TmuxConnectionDraft
     ) async throws -> SSHPublicKeyPreflightOutcome
@@ -1416,7 +1427,7 @@ private struct ConnectionSetupView: View {
 
     @State private var privateKeyImportError: String?
     @State private var publicKeyCopyMessage: String?
-    @State private var isPublicKeyInstallPresented = false
+    @State private var publicKeyInstallRequest: SSHPublicKeyInstallRequest?
     @State private var publicKeyInstallConfirmation: SSHPublicKeyInstallConfirmation?
     @FocusState private var focusedField: Field?
 
@@ -1531,6 +1542,7 @@ private struct ConnectionSetupView: View {
                 .libraryHomeListRowSurface()
             }
         })
+        .disabled(isActionInProgress)
         .libraryHomeGroupedScrollBackground()
         .libraryHomeChrome(theme: terminalTheme)
         .scrollDismissesKeyboard(.interactively)
@@ -1574,24 +1586,21 @@ private struct ConnectionSetupView: View {
             allowsMultipleSelection: false,
             onCompletion: handlePrivateKeyImport
         )
-        .sheet(isPresented: $isPublicKeyInstallPresented) {
+        .sheet(item: $publicKeyInstallRequest) { request in
             SSHPublicKeyInstallSheet(
-                draft: draft,
+                draft: request.draft,
+                target: request.target,
+                setupSessionID: request.setupSessionID,
                 onPreflight: preflightPublicKeyInstallation,
                 onAppend: appendPublicKey,
                 onVerify: verifyPublicKeyInstallation,
                 onTrustHostKey: trustSetupHostKey,
-                onSuccess: { success in
-                    if let target = publicKeyInstallTarget(draft) {
-                        publicKeyInstallConfirmation = SSHPublicKeyInstallConfirmation(
-                            success: success,
-                            target: target
-                        )
-                    }
-                    isPublicKeyInstallPresented = false
+                onSuccess: { completion in
+                    acceptPublicKeyInstallCompletion(completion)
+                    publicKeyInstallRequest = nil
                 },
                 onCancel: {
-                    isPublicKeyInstallPresented = false
+                    publicKeyInstallRequest = nil
                 }
             )
         }
@@ -2067,9 +2076,21 @@ private struct ConnectionSetupView: View {
     }
 
     private func privateKeyInstallButton() -> some View {
-        Button {
+        let target: SSHPublicKeyInstallTarget?
+        do {
+            target = try publicKeyInstallTarget(draft)
+        } catch {
+            target = nil
+        }
+
+        return Button {
             dismissKeyboard()
-            isPublicKeyInstallPresented = true
+            guard let target, let setupSessionID else { return }
+            publicKeyInstallRequest = SSHPublicKeyInstallRequest(
+                draft: draft,
+                target: target,
+                setupSessionID: setupSessionID
+            )
         } label: {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: "square.and.arrow.down.on.square")
@@ -2089,7 +2110,7 @@ private struct ConnectionSetupView: View {
                 Spacer(minLength: 12)
 
                 if let confirmation = publicKeyInstallConfirmation,
-                   let target = publicKeyInstallTarget(draft),
+                   let target,
                    confirmation.matches(target) {
                     Label(confirmation.success.message, systemImage: "checkmark.circle.fill")
                         .font(.footnote.weight(.semibold))
@@ -2101,8 +2122,29 @@ private struct ConnectionSetupView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(isActionInProgress || publicKeyInstallTarget(draft) == nil)
+        .disabled(isActionInProgress || target == nil || setupSessionID == nil)
         .accessibilityIdentifier("connection.private-key.install")
+    }
+
+    private func acceptPublicKeyInstallCompletion(
+        _ completion: SSHPublicKeyInstallCompletion
+    ) {
+        let activeTarget: SSHPublicKeyInstallTarget
+        do {
+            activeTarget = try publicKeyInstallTarget(draft)
+        } catch {
+            return
+        }
+        guard completion.matchesActiveSetup(
+            target: activeTarget,
+            setupSessionID: setupSessionID
+        ) else {
+            return
+        }
+        publicKeyInstallConfirmation = SSHPublicKeyInstallConfirmation(
+            success: completion.success,
+            target: completion.target
+        )
     }
 
     private func privateKeyChangeMenu() -> some View {

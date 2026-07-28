@@ -1,15 +1,19 @@
 import SwiftUI
 
 struct SSHPublicKeyInstallSheet: View {
-    let onSuccess: (SSHPublicKeyInstallSuccess) -> Void
+    let onSuccess: (SSHPublicKeyInstallCompletion) -> Void
     let onCancel: () -> Void
 
+    private let target: SSHPublicKeyInstallTarget
+    private let setupSessionID: UUID
     @StateObject private var coordinator: SSHPublicKeyInstallCoordinator
     @State private var operationTask: Task<Void, Never>?
     @State private var didComplete = false
 
     init(
         draft: TmuxConnectionDraft,
+        target: SSHPublicKeyInstallTarget,
+        setupSessionID: UUID,
         onPreflight: @escaping @MainActor (
             TmuxConnectionDraft
         ) async throws -> SSHPublicKeyPreflightOutcome,
@@ -23,9 +27,11 @@ struct SSHPublicKeyInstallSheet: View {
         onTrustHostKey: @escaping @MainActor (
             SSHHostKeyTrustChallenge
         ) throws -> Void,
-        onSuccess: @escaping (SSHPublicKeyInstallSuccess) -> Void,
+        onSuccess: @escaping (SSHPublicKeyInstallCompletion) -> Void,
         onCancel: @escaping () -> Void
     ) {
+        self.target = target
+        self.setupSessionID = setupSessionID
         self.onSuccess = onSuccess
         self.onCancel = onCancel
         _coordinator = StateObject(
@@ -178,7 +184,13 @@ struct SSHPublicKeyInstallSheet: View {
     private func complete(_ success: SSHPublicKeyInstallSuccess) {
         guard !didComplete else { return }
         didComplete = true
-        onSuccess(success)
+        onSuccess(
+            SSHPublicKeyInstallCompletion(
+                success: success,
+                target: target,
+                setupSessionID: setupSessionID
+            )
+        )
     }
 
     private var hostTrustIsPresented: Binding<Bool> {

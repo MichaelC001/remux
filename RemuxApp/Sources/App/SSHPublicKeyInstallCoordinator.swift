@@ -26,6 +26,20 @@ enum SSHPublicKeyInstallSuccess: Equatable {
     }
 }
 
+struct SSHPublicKeyInstallCompletion: Equatable {
+    let success: SSHPublicKeyInstallSuccess
+    let target: SSHPublicKeyInstallTarget
+    let setupSessionID: UUID
+
+    func matchesActiveSetup(
+        target activeTarget: SSHPublicKeyInstallTarget,
+        setupSessionID activeSetupSessionID: UUID?
+    ) -> Bool {
+        target == activeTarget
+            && setupSessionID == activeSetupSessionID
+    }
+}
+
 struct SSHPublicKeyInstallConfirmation: Equatable {
     let success: SSHPublicKeyInstallSuccess
     private let host: String
