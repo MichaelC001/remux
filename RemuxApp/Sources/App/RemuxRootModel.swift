@@ -785,10 +785,10 @@ final class RemuxRootModel: ObservableObject {
         do {
             var updated = terminalSettings
             mutation(&updated)
+            try await dependencies.settingsRepository.saveSettings(updated)
             terminalSettings = updated
             dependencies.applyHostKeyPolicy(allowInsecureRSA: updated.allowInsecureRSAHostKeys)
             try applyTerminalSettingsToActiveSessions(updated)
-            try await dependencies.settingsRepository.saveSettings(updated)
         } catch {
             transitionToFailed(error)
         }

@@ -1237,8 +1237,8 @@ private struct TerminalSettingsView: View {
                     .tint(LibraryHomePalette.controlAccent)
                     .accessibilityIdentifier("settings.allow-insecure-rsa")
                     .accessibilityHint(
-                        "Lowers host-key verification: accepts servers using the "
-                            + "deprecated SHA-1 ssh-rsa signature."
+                        "Allows legacy RSA host-key signatures using SHA-1; "
+                            + "host identity is still verified."
                     )
             } header: {
                 Text("Security")
