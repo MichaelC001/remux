@@ -71,6 +71,7 @@ protocol GhosttyComposerDictationBackendProtocol: Sendable {
     func start(
         id: UInt64,
         locale: Locale,
+        requestedAt: UInt64,
         handler: @escaping @Sendable (GhosttyComposerDictationBackendEvent) -> Void
     )
     func finish(id: UInt64)
@@ -131,6 +132,21 @@ struct GhosttyComposerDictationAuthorizationClient: Sendable {
     )
 }
 
+private extension GhosttyComposerDictationAuthorizationClient.Result {
+    var traceLabel: String {
+        switch self {
+        case .authorized:
+            "authorized"
+        case .speechRecognitionDenied:
+            "speech_denied"
+        case .microphoneDenied:
+            "microphone_denied"
+        case .cancelled:
+            "cancelled"
+        }
+    }
+}
+
 /// AVAudioSession is process-wide even though each retained terminal has its
 /// own composer controller. This lease makes microphone ownership equally
 /// process-wide and prevents two terminal sessions from racing audio setup and
@@ -175,6 +191,7 @@ final class GhosttyComposerDictationBackend: GhosttyComposerDictationBackendProt
 
     private final class Run {
         let id: UInt64
+        let requestedAt: UInt64
         let handler: EventHandler
         var phase = RunPhase.starting
         var recognizer: SFSpeechRecognizer?
@@ -183,9 +200,11 @@ final class GhosttyComposerDictationBackend: GhosttyComposerDictationBackendProt
         var audioEngine: AVAudioEngine?
         var tapProcessor: GhosttyComposerAudioTapProcessor?
         var hasInstalledTap = false
+        var hasReportedFirstHypothesis = false
 
-        init(id: UInt64, handler: @escaping EventHandler) {
+        init(id: UInt64, requestedAt: UInt64, handler: @escaping EventHandler) {
             self.id = id
+            self.requestedAt = requestedAt
             self.handler = handler
         }
     }
@@ -201,15 +220,17 @@ final class GhosttyComposerDictationBackend: GhosttyComposerDictationBackendProt
     func start(
         id: UInt64,
         locale: Locale,
+        requestedAt: UInt64,
         handler: @escaping EventHandler
     ) {
         setDesiredRunID(id)
         queue.async { [self] in
-            GhosttyRuntimeTrace.perf("composer.dictation.backend.startQueued id=\(id)")
+            traceStartup("backend.queueEntered", id: id, requestedAt: requestedAt)
             cancelActiveRun()
             guard isDesiredRun(id) else { return }
+            traceStartup("backend.previousRunCleanupCompleted", id: id, requestedAt: requestedAt)
 
-            let run = Run(id: id, handler: handler)
+            let run = Run(id: id, requestedAt: requestedAt, handler: handler)
             activeRun = run
             start(run, locale: locale)
         }
@@ -251,18 +272,19 @@ final class GhosttyComposerDictationBackend: GhosttyComposerDictationBackendProt
 
     private func start(_ run: Run, locale: Locale) {
         do {
-            GhosttyRuntimeTrace.perf(
-                "composer.dictation.backend.audioSessionActivate.begin id=\(run.id)"
-            )
-            try activateAudioSession()
+            traceStartup("backend.audioSessionCategory.begin", run: run)
+            try configureAudioSession()
+            traceStartup("backend.audioSessionCategory.end", run: run)
+
+            traceStartup("backend.audioSessionActivation.begin", run: run)
+            try AVAudioSession.sharedInstance().setActive(true)
             guard isActive(run), isDesiredRun(run.id) else {
                 cancelActiveRun()
                 return
             }
-            GhosttyRuntimeTrace.perf(
-                "composer.dictation.backend.audioSessionActivate.end id=\(run.id)"
-            )
+            traceStartup("backend.audioSessionActivation.end", run: run)
 
+            traceStartup("backend.recognizerCreation.begin", run: run)
             guard let recognizer = SFSpeechRecognizer(locale: locale) else {
                 throw GhosttyComposerDictationError.unsupportedLocale
             }
@@ -272,7 +294,9 @@ final class GhosttyComposerDictationBackend: GhosttyComposerDictationBackendProt
             guard recognizer.isAvailable else {
                 throw GhosttyComposerDictationError.recognizerUnavailable
             }
+            traceStartup("backend.recognizerCreation.end", run: run)
 
+            traceStartup("backend.recognitionTaskCreation.begin", run: run)
             let request = SFSpeechAudioBufferRecognitionRequest()
             request.shouldReportPartialResults = true
             request.requiresOnDeviceRecognition = true
@@ -295,7 +319,9 @@ final class GhosttyComposerDictationBackend: GhosttyComposerDictationBackendProt
                     )
                 }
             }
+            traceStartup("backend.recognitionTaskCreation.end", run: run)
 
+            traceStartup("backend.audioEngineCreation.begin", run: run)
             let engine = AVAudioEngine()
             let inputNode = engine.inputNode
             // The input node delivers captured microphone audio on its output bus.
@@ -305,8 +331,18 @@ final class GhosttyComposerDictationBackend: GhosttyComposerDictationBackendProt
                 throw GhosttyComposerDictationError.unavailableAudioInput
             }
 
+            let firstBufferHandler: (@Sendable (UInt64) -> Void)?
+            if GhosttyRuntimeTrace.perfEnabled {
+                firstBufferHandler = { [weak self] capturedAt in
+                    self?.publishFirstAudioBuffer(capturedAt, runID: runID)
+                }
+            } else {
+                firstBufferHandler = nil
+            }
+
             let tapProcessor = GhosttyComposerAudioTapProcessor(
                 request: request,
+                onFirstBuffer: firstBufferHandler,
                 onLevel: { [weak self] level in
                     self?.publishAudioLevel(level, runID: runID)
                 }
@@ -322,19 +358,18 @@ final class GhosttyComposerDictationBackend: GhosttyComposerDictationBackendProt
             run.tapProcessor = tapProcessor
             run.hasInstalledTap = true
 
+            traceStartup("backend.audioEngineCreation.end", run: run)
+            traceStartup("backend.audioEnginePrepare.begin", run: run)
             engine.prepare()
-            GhosttyRuntimeTrace.perf(
-                "composer.dictation.backend.engineStart.begin id=\(run.id)"
-            )
+            traceStartup("backend.audioEnginePrepare.end", run: run)
+            traceStartup("backend.audioEngineStart.begin", run: run)
             try engine.start()
             guard isActive(run), isDesiredRun(run.id) else {
                 cancelActiveRun()
                 return
             }
 
-            GhosttyRuntimeTrace.perf(
-                "composer.dictation.backend.engineStart.end id=\(run.id)"
-            )
+            traceStartup("backend.audioEngineStart.end", run: run)
             run.phase = .recording
             run.handler(.started)
         } catch {
@@ -358,6 +393,10 @@ final class GhosttyComposerDictationBackend: GhosttyComposerDictationBackendProt
         guard let run = activeRun, run.id == runID else { return }
 
         if let hypothesis, !hypothesis.isEmpty {
+            if !run.hasReportedFirstHypothesis {
+                run.hasReportedFirstHypothesis = true
+                traceStartup("backend.firstHypothesis", run: run)
+            }
             run.handler(.hypothesis(hypothesis, isFinal: isFinal))
         }
 
@@ -386,6 +425,17 @@ final class GhosttyComposerDictationBackend: GhosttyComposerDictationBackendProt
                 return
             }
             run.handler(.audioLevel(level))
+        }
+    }
+
+    private func publishFirstAudioBuffer(_ capturedAt: UInt64, runID: UInt64) {
+        queue.async { [weak self] in
+            guard let self,
+                  let run = activeRun,
+                  run.id == runID else {
+                return
+            }
+            traceStartup("backend.firstAudioBuffer", run: run, at: capturedAt)
         }
     }
 
@@ -420,14 +470,35 @@ final class GhosttyComposerDictationBackend: GhosttyComposerDictationBackendProt
         run.audioEngine = nil
     }
 
-    private func activateAudioSession() throws {
+    private func configureAudioSession() throws {
         let audioSession = AVAudioSession.sharedInstance()
         try audioSession.setCategory(
             .record,
             mode: .measurement,
             options: [.allowBluetoothHFP]
         )
-        try audioSession.setActive(true)
+    }
+
+    private func traceStartup(
+        _ event: String,
+        run: Run,
+        at timestamp: UInt64? = nil
+    ) {
+        traceStartup(event, id: run.id, requestedAt: run.requestedAt, at: timestamp)
+    }
+
+    private func traceStartup(
+        _ event: String,
+        id: UInt64,
+        requestedAt: UInt64,
+        at timestamp: UInt64? = nil
+    ) {
+        guard GhosttyRuntimeTrace.perfEnabled else { return }
+        let resolvedTimestamp = timestamp ?? GhosttyRuntimeTrace.nowNanos()
+        GhosttyRuntimeTrace.perf(
+            "composer.dictation.startup event=\(event) id=\(id) "
+                + "elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: requestedAt, to: resolvedTimestamp))"
+        )
     }
 
     private func deactivateAudioSession() {
@@ -486,20 +557,28 @@ private final class GhosttyComposerAudioTapProcessor: @unchecked Sendable {
     private static let levelPublishInterval = 0.075
 
     private let request: SFSpeechAudioBufferRecognitionRequest
+    private let onFirstBuffer: (@Sendable (UInt64) -> Void)?
     private let onLevel: @Sendable (CGFloat) -> Void
     private var lastLevelPublishTime: CFTimeInterval = 0
+    private var hasSeenFirstBuffer = false
 
     init(
         request: SFSpeechAudioBufferRecognitionRequest,
+        onFirstBuffer: (@Sendable (UInt64) -> Void)?,
         onLevel: @escaping @Sendable (CGFloat) -> Void
     ) {
         self.request = request
+        self.onFirstBuffer = onFirstBuffer
         self.onLevel = onLevel
     }
 
     /// AVAudioEngine invokes one tap serially, so this state stays confined to
     /// the engine's render callback and never needs to enter the main actor.
     func process(_ buffer: AVAudioPCMBuffer) {
+        if !hasSeenFirstBuffer {
+            hasSeenFirstBuffer = true
+            onFirstBuffer?(GhosttyRuntimeTrace.nowNanos())
+        }
         request.append(buffer)
 
         let now = CACurrentMediaTime()
@@ -528,6 +607,7 @@ final class GhosttyComposerDictationController: ObservableObject {
     private var sessionID: UInt64 = 0
     private var leaseGeneration: UInt64 = 0
     private var backendRunRequested = false
+    private var startRequestedAt: UInt64?
     private var draftSnapshot = ""
     private var latestHypothesis = ""
     private var onTranscript: ((String) -> Void)?
@@ -582,7 +662,11 @@ final class GhosttyComposerDictationController: ObservableObject {
         self.onTranscript = onTranscript
         self.onFailure = onFailure
         phase = .starting
-        GhosttyRuntimeTrace.perf("composer.dictation.startRequested id=\(requestedSessionID)")
+        let requestedAt = GhosttyRuntimeTrace.nowNanos()
+        startRequestedAt = requestedAt
+        GhosttyRuntimeTrace.perf(
+            "composer.dictation.startup event=ui.tap id=\(requestedSessionID) elapsed_ms=0.000"
+        )
 
 #if DEBUG
         if ProcessInfo.processInfo.environment[
@@ -604,7 +688,11 @@ final class GhosttyComposerDictationController: ObservableObject {
         authorizationTask = Task { [weak self, authorizationClient] in
             let result = await authorizationClient.resolve()
             guard let self else { return }
-            handleAuthorizationResult(result, sessionID: requestedSessionID)
+            handleAuthorizationResult(
+                result,
+                sessionID: requestedSessionID,
+                requestedAt: requestedAt
+            )
         }
     }
 
@@ -668,14 +756,20 @@ final class GhosttyComposerDictationController: ObservableObject {
 
     private func handleAuthorizationResult(
         _ result: GhosttyComposerDictationAuthorizationClient.Result,
-        sessionID requestedSessionID: UInt64
+        sessionID requestedSessionID: UInt64,
+        requestedAt: UInt64
     ) {
         guard isCurrentStartingSession(requestedSessionID) else { return }
         authorizationTask = nil
+        GhosttyRuntimeTrace.perf(
+            "composer.dictation.startup event=authorization.resolved "
+                + "id=\(requestedSessionID) result=\(result.traceLabel) "
+                + "elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: requestedAt))"
+        )
 
         switch result {
         case .authorized:
-            beginBackend(sessionID: requestedSessionID)
+            beginBackend(sessionID: requestedSessionID, requestedAt: requestedAt)
 
         case .speechRecognitionDenied:
             fail(
@@ -694,17 +788,29 @@ final class GhosttyComposerDictationController: ObservableObject {
         }
     }
 
-    private func beginBackend(sessionID requestedSessionID: UInt64) {
+    private func beginBackend(sessionID requestedSessionID: UInt64, requestedAt: UInt64) {
         backendRunRequested = true
         scheduleStartDeadline(sessionID: requestedSessionID)
         backend.start(
             id: requestedSessionID,
             locale: .current,
+            requestedAt: requestedAt,
             handler: { [weak self] event in
                 DispatchQueue.main.async { [weak self] in
                     self?.handleBackendEvent(event, sessionID: requestedSessionID)
                 }
             }
+        )
+    }
+
+    private func traceStartupFromUI(_ event: String, id: UInt64) {
+        guard GhosttyRuntimeTrace.perfEnabled,
+              let startRequestedAt else {
+            return
+        }
+        GhosttyRuntimeTrace.perf(
+            "composer.dictation.startup event=\(event) id=\(id) "
+                + "elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: startRequestedAt))"
         )
     }
 
@@ -720,12 +826,16 @@ final class GhosttyComposerDictationController: ObservableObject {
             startDeadlineTask?.cancel()
             startDeadlineTask = nil
             phase = .recording
+            traceStartupFromUI("ui.recording", id: requestedSessionID)
 
         case .audioLevel(let level):
             guard phase == .recording else { return }
             audioLevelModel.append(level)
 
         case .hypothesis(let hypothesis, let isFinal):
+            if latestHypothesis.isEmpty, !hypothesis.isEmpty {
+                traceStartupFromUI("ui.firstHypothesis", id: requestedSessionID)
+            }
             latestHypothesis = hypothesis
             onTranscript?(
                 GhosttyComposerDictationDraft.merging(
@@ -823,6 +933,7 @@ final class GhosttyComposerDictationController: ObservableObject {
         let shouldCancelBackend = backendRunRequested
         sessionID &+= 1
         backendRunRequested = false
+        startRequestedAt = nil
         authorizationTask?.cancel()
         authorizationTask = nil
         startDeadlineTask?.cancel()

@@ -356,6 +356,7 @@ private final class DictationBackendSpy: GhosttyComposerDictationBackendProtocol
     func start(
         id: UInt64,
         locale: Locale,
+        requestedAt: UInt64,
         handler: @escaping @Sendable (GhosttyComposerDictationBackendEvent) -> Void
     ) {
         lock.lock()
