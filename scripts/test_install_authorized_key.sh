@@ -111,6 +111,45 @@ if install_key "${unusable_home}" "ssh-ed25519 AAAA-must-not-install remux-test"
 fi
 test -d "${unusable_home}/.ssh/authorized_keys" || fail "installer replaced the unusable target"
 
+interrupted_home="${test_root}/interrupted-install"
+interrupted_key="ssh-ed25519 AAAA-interrupted remux-test"
+interrupted_input="${test_root}/interrupted-input"
+interrupted_release="${test_root}/interrupted-release"
+mkdir -p "${interrupted_home}"
+mkfifo "${interrupted_input}" "${interrupted_release}"
+(
+  exec 8>"${interrupted_input}"
+  read -r _ < "${interrupted_release}"
+  printf '%s\n' "${interrupted_key}" >&8
+) &
+interrupted_writer_pid="$!"
+HOME="${interrupted_home}" /bin/sh "${installer}" < "${interrupted_input}" &
+interrupted_installer_pid="$!"
+interrupted_lock="${interrupted_home}/.ssh/authorized_keys.remux-lock"
+interrupted_lock_seen=false
+for _ in {1..100}; do
+  if [ -d "${interrupted_lock}" ]; then
+    interrupted_lock_seen=true
+    break
+  fi
+  sleep 0.01
+done
+if [ "${interrupted_lock_seen}" != true ]; then
+  kill "${interrupted_installer_pid}" "${interrupted_writer_pid}" 2>/dev/null || true
+  wait "${interrupted_installer_pid}" 2>/dev/null || true
+  wait "${interrupted_writer_pid}" 2>/dev/null || true
+  fail "interrupted installer did not acquire its lock"
+fi
+kill -TERM "${interrupted_installer_pid}"
+printf 'release\n' > "${interrupted_release}"
+wait "${interrupted_writer_pid}"
+if wait "${interrupted_installer_pid}"; then
+  fail "interrupted installer exited successfully"
+fi
+test ! -e "${interrupted_home}/.ssh/authorized_keys" ||
+  fail "interrupted installer modified authorized_keys"
+test ! -d "${interrupted_lock}" || fail "interrupted installer left its lock behind"
+
 concurrent_home="${test_root}/concurrent-install"
 concurrent_key="ssh-ed25519 AAAA-concurrent remux-test"
 mkdir -p "${concurrent_home}"

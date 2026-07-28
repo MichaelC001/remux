@@ -19,7 +19,11 @@ until mkdir "${lock_directory}" 2>/dev/null; do
   fi
   sleep 0.1
 done
-trap 'rmdir "${lock_directory}" 2>/dev/null || true' 0 HUP INT TERM
+cleanup_lock() {
+  rmdir "${lock_directory}" 2>/dev/null || true
+}
+trap cleanup_lock 0
+trap 'exit 1' HUP INT TERM
 
 public_key="$(cat)"
 case "${public_key}" in
