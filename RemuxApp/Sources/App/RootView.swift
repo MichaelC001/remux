@@ -1419,7 +1419,7 @@ private struct ConnectionSetupView: View {
                         keyPath: \.displayName,
                         field: .displayName,
                         validationMessage: validation.displayName,
-                        textInputAutocapitalization: .words,
+                        textInputAutocapitalization: .never,
                         autocorrectionDisabled: false,
                         accessibilityIdentifier: "connection.name"
                     )
