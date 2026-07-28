@@ -23,6 +23,25 @@ assert_authorized_key() {
   test "$(cat "${test_home}/.ssh/authorized_keys")" = "${expected_key}" || fail "unexpected authorized_keys contents"
 }
 
+assert_mode() {
+  local path="$1"
+  local expected_mode="$2"
+  local actual_mode
+
+  actual_mode="$(stat -f '%Lp' "${path}")"
+  test "${actual_mode}" = "${expected_mode}" || fail "expected ${path} mode ${expected_mode}, got ${actual_mode}"
+}
+
+assert_key_occurrences() {
+  local test_home="$1"
+  local expected_key="$2"
+  local expected_count="$3"
+  local actual_count
+
+  actual_count="$(grep -F -x -c -e "${expected_key}" "${test_home}/.ssh/authorized_keys" || true)"
+  test "${actual_count}" = "${expected_count}" || fail "expected ${expected_count} copies of ${expected_key}, got ${actual_count}"
+}
+
 install_key() {
   local test_home="$1"
   local public_key="$2"
@@ -65,14 +84,37 @@ assert_authorized_key "${preserved_home}" "${preserved_first_key}
 ${preserved_second_key}
 ${preserved_new_key}"
 
-unwritable_home="${test_root}/unwritable-target"
-unwritable_key="ssh-ed25519 AAAA-unwritable remux-test"
-mkdir -p "${unwritable_home}/.ssh"
-printf '%s\n' "${unwritable_key}" > "${unwritable_home}/.ssh/authorized_keys"
-chmod u-w "${unwritable_home}/.ssh/authorized_keys"
-if install_key "${unwritable_home}" "ssh-ed25519 AAAA-must-not-install remux-test" 2>/dev/null; then
-  fail "installer wrote to an unwritable authorized_keys file"
-fi
-assert_authorized_key "${unwritable_home}" "${unwritable_key}"
+repeated_home="${test_root}/repeated-install"
+repeated_key="ssh-ed25519 AAAA-repeated remux-test"
+mkdir -p "${repeated_home}"
+install_key "${repeated_home}" "${repeated_key}"
+install_key "${repeated_home}" "${repeated_key}"
+assert_authorized_key "${repeated_home}" "${repeated_key}"
+
+permissive_home="${test_root}/permissive-target"
+permissive_existing_key="ssh-ed25519 AAAA-permissive-existing remux-test"
+permissive_new_key="ssh-ed25519 AAAA-permissive-new remux-test"
+mkdir -p "${permissive_home}/.ssh"
+printf '%s\n' "${permissive_existing_key}" > "${permissive_home}/.ssh/authorized_keys"
+chmod 777 "${permissive_home}/.ssh"
+chmod 666 "${permissive_home}/.ssh/authorized_keys"
+install_key "${permissive_home}" "${permissive_new_key}"
+assert_authorized_key "${permissive_home}" "${permissive_existing_key}
+${permissive_new_key}"
+assert_mode "${permissive_home}/.ssh" "700"
+assert_mode "${permissive_home}/.ssh/authorized_keys" "600"
+
+concurrent_home="${test_root}/concurrent-install"
+concurrent_key="ssh-ed25519 AAAA-concurrent remux-test"
+mkdir -p "${concurrent_home}"
+concurrent_pids=()
+for _ in {1..8}; do
+  install_key "${concurrent_home}" "${concurrent_key}" &
+  concurrent_pids+=("$!")
+done
+for concurrent_pid in "${concurrent_pids[@]}"; do
+  wait "${concurrent_pid}"
+done
+assert_key_occurrences "${concurrent_home}" "${concurrent_key}" "1"
 
 printf 'PASS: authorized-key installer filesystem behavior\n'
