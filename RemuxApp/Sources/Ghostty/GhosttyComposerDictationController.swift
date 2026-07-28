@@ -25,6 +25,40 @@ enum GhosttyComposerDictationDraft {
     }
 }
 
+@MainActor
+final class GhosttyComposerAudioLevelModel: ObservableObject {
+    static let barCount = 28
+
+    @Published private(set) var levels: [CGFloat]
+
+    init() {
+        levels = Self.emptyLevels
+    }
+
+    func append(_ level: CGFloat) {
+        var updatedLevels = levels
+        updatedLevels.removeFirst()
+        updatedLevels.append(level)
+        levels = updatedLevels
+    }
+
+    func reset() {
+        levels = Self.emptyLevels
+    }
+
+    func replace(with levels: [CGFloat]) {
+        precondition(levels.count == Self.barCount)
+        self.levels = levels
+    }
+
+    private static var emptyLevels: [CGFloat] {
+        Array(
+            repeating: 0.08,
+            count: Self.barCount
+        )
+    }
+}
+
 enum GhosttyComposerDictationBackendEvent: Sendable {
     case started
     case audioLevel(CGFloat)
@@ -477,13 +511,10 @@ private final class GhosttyComposerAudioTapProcessor: @unchecked Sendable {
 
 @MainActor
 final class GhosttyComposerDictationController: ObservableObject {
-    static let meterBarCount = 28
+    static let meterBarCount = GhosttyComposerAudioLevelModel.barCount
 
     @Published private(set) var phase = GhosttyComposerDictationPhase.idle
-    @Published private(set) var audioLevels = Array(
-        repeating: CGFloat(0.08),
-        count: meterBarCount
-    )
+    let audioLevelModel: GhosttyComposerAudioLevelModel
 
     private let backend: any GhosttyComposerDictationBackendProtocol
     private let authorizationClient: GhosttyComposerDictationAuthorizationClient
@@ -520,6 +551,7 @@ final class GhosttyComposerDictationController: ObservableObject {
         leaseOwnerID = UUID()
         self.startDeadline = startDeadline
         self.finalizationDeadline = finalizationDeadline
+        audioLevelModel = GhosttyComposerAudioLevelModel()
     }
 
     deinit {
@@ -546,7 +578,7 @@ final class GhosttyComposerDictationController: ObservableObject {
         let requestedSessionID = sessionID
         draftSnapshot = draft
         latestHypothesis = ""
-        audioLevels = Self.emptyAudioLevels
+        audioLevelModel.reset()
         self.onTranscript = onTranscript
         self.onFailure = onFailure
         phase = .starting
@@ -691,8 +723,7 @@ final class GhosttyComposerDictationController: ObservableObject {
 
         case .audioLevel(let level):
             guard phase == .recording else { return }
-            audioLevels.removeFirst()
-            audioLevels.append(level)
+            audioLevelModel.append(level)
 
         case .hypothesis(let hypothesis, let isFinal):
             latestHypothesis = hypothesis
@@ -800,7 +831,7 @@ final class GhosttyComposerDictationController: ObservableObject {
         finalizationTask = nil
 
         phase = .idle
-        audioLevels = Self.emptyAudioLevels
+        audioLevelModel.reset()
         onTranscript = nil
         onFailure = nil
         afterTranscription = nil
@@ -843,9 +874,11 @@ final class GhosttyComposerDictationController: ObservableObject {
             startDeadlineTask?.cancel()
             startDeadlineTask = nil
             phase = .recording
-            audioLevels = (0..<Self.meterBarCount).map { index in
-                0.14 + (CGFloat(index % 7) * 0.1)
-            }
+            audioLevelModel.replace(
+                with: (0..<Self.meterBarCount).map { index in
+                    0.14 + (CGFloat(index % 7) * 0.1)
+                }
+            )
 
             guard let transcript else { return }
 
@@ -872,9 +905,6 @@ final class GhosttyComposerDictationController: ObservableObject {
             && phase == .starting
     }
 
-    private static var emptyAudioLevels: [CGFloat] {
-        Array(repeating: 0.08, count: meterBarCount)
-    }
 }
 
 private enum GhosttyComposerAudioLevelMeter {

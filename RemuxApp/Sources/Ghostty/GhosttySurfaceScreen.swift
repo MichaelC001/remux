@@ -346,7 +346,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         keyboardActivationToken: inputCoordinator.composerActivationToken,
                         submissionState: composerSubmissionState,
                         dictationPhase: composerDictationController.phase,
-                        dictationAudioLevels: composerDictationController.audioLevels,
+                        dictationAudioLevelModel: composerDictationController.audioLevelModel,
                         statusMessage: composerStatusMessage,
                         attachmentUploadCount: attachmentTransferUploadCount,
                         attachmentTransferProgress: attachmentTransferProgress,

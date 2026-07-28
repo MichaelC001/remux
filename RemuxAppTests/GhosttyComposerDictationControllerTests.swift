@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import Remux
 
@@ -274,6 +275,37 @@ final class GhosttyComposerDictationControllerTests: XCTestCase {
         second.start(draft: "", onTranscript: { _ in }, onFailure: { _ in })
         await waitUntil { secondBackend.actions.contains(.start(1)) }
         second.stopImmediately()
+    }
+
+    func testAudioLevelOnlyInvalidatesMeterModel() async {
+        let backend = DictationBackendSpy()
+        let controller = GhosttyComposerDictationController(
+            backend: backend,
+            authorizationClient: .authorizedForTests,
+            lease: GhosttyComposerDictationLease()
+        )
+
+        controller.start(draft: "", onTranscript: { _ in }, onFailure: { _ in })
+        await waitUntil { backend.actions.contains(.start(1)) }
+        backend.emit(.started, for: 1)
+        await waitUntil { controller.phase == .recording }
+
+        var controllerUpdateCount = 0
+        var meterUpdateCount = 0
+        let controllerObservation = controller.objectWillChange.sink {
+            controllerUpdateCount += 1
+        }
+        let meterObservation = controller.audioLevelModel.objectWillChange.sink {
+            meterUpdateCount += 1
+        }
+
+        backend.emit(.audioLevel(0.75), for: 1)
+        await waitUntil { controller.audioLevelModel.levels.last == 0.75 }
+
+        XCTAssertEqual(controllerUpdateCount, 0)
+        XCTAssertEqual(meterUpdateCount, 1)
+        withExtendedLifetime((controllerObservation, meterObservation)) {}
+        controller.stopImmediately()
     }
 
     private func waitUntil(

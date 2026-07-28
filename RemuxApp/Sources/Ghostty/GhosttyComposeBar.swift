@@ -64,7 +64,7 @@ struct GhosttyComposeBar: View {
     let keyboardActivationToken: Int
     let submissionState: GhosttyComposeBarSubmissionState
     let dictationPhase: GhosttyComposerDictationPhase
-    let dictationAudioLevels: [CGFloat]
+    let dictationAudioLevelModel: GhosttyComposerAudioLevelModel
     let statusMessage: String?
     let attachmentUploadCount: Int
     let attachmentTransferProgress: GhosttyAttachmentTransferProgress?
@@ -195,7 +195,7 @@ struct GhosttyComposeBar: View {
         case .starting:
             dictationStatus("Starting…")
         case .recording:
-            GhosttyComposerDictationMeter(levels: dictationAudioLevels)
+            GhosttyComposerDictationMeter(model: dictationAudioLevelModel)
         case .transcribing:
             dictationStatus("Transcribing")
         }
@@ -360,16 +360,16 @@ private struct GhosttyComposerPressButtonStyle: ButtonStyle {
 }
 
 private struct GhosttyComposerDictationMeter: View {
-    let levels: [CGFloat]
+    @ObservedObject var model: GhosttyComposerAudioLevelModel
 
     var body: some View {
         HStack(spacing: 2) {
-            ForEach(levels.indices, id: \.self) { index in
+            ForEach(model.levels.indices, id: \.self) { index in
                 Capsule()
                     .fill(GhosttyPhoneChromePalette.chromeForeground.opacity(0.72))
                     .frame(
                         width: 2.5,
-                        height: max(4, 6 + (levels[index] * 24))
+                        height: max(4, 6 + (model.levels[index] * 24))
                     )
             }
         }
