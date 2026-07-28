@@ -136,7 +136,10 @@ final class RemuxAppUITests: XCTestCase {
         let host = app.textFields["connection.host"]
         host.tap()
         host.typeText(".changed")
-        XCTAssertFalse(inlineStatus.exists)
+        XCTAssertTrue(
+            waitForElementToDisappear(inlineStatus, timeout: 3),
+            "Editing the host should invalidate the install confirmation."
+        )
 
         XCTAssertTrue(app.buttons["connection.private-key.change"].waitForExistence(timeout: 2))
         XCTAssertFalse(app.staticTexts["Ready"].exists)

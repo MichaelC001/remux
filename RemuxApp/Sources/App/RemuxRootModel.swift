@@ -470,7 +470,15 @@ final class RemuxRootModel: ObservableObject {
 
         switch state {
         case .setup(let draft, _, .newServer):
-            try? dependencies.trustedHostStore.deleteIdentity(for: draft.serverID)
+            do {
+                try dependencies.trustedHostStore.deleteIdentity(for: draft.serverID)
+            } catch {
+                NSLog(
+                    "Remux provisional trusted-host cleanup failed for server %@: %@",
+                    draft.serverID.uuidString,
+                    String(describing: error)
+                )
+            }
         case .setup(_, _, .editServer(let serverID, _)):
             do {
                 try restoreEditServerTrustSnapshot(

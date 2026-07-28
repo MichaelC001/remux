@@ -278,17 +278,21 @@ The default Unix path follows `ssh-copy-id` semantics:
 - start from the remote user's home directory;
 - set `umask 077`;
 - create `.ssh` when absent;
+- enforce mode `0700` on `.ssh` and `0600` on `authorized_keys`;
+- serialize authorized-key updates with an atomic lock directory;
 - ensure an existing `authorized_keys` file ends with a newline before
   appending;
-- append the public-key line received on stdin; and
+- append the public-key line received on stdin only when the exact line is
+  absent; and
 - run `restorecon` on the directory and file when available.
 
 The command invokes `exec sh -c` so it does not depend on the user's login
 shell syntax. The public key is never interpolated into the command string.
 The command itself contains no host, username, password, or key material.
 
-The installer relies on key-authenticated preflight for idempotency, as
-`ssh-copy-id` does. It does not append when the key already authenticates.
+Key-authenticated preflight avoids unnecessary installation, while exact-line
+deduplication in the remote installer makes retries and concurrent installation
+requests idempotent after partial success.
 
 The command will be represented as an independently executable unit and
 tested by running it against a temporary home directory. Tests will not
@@ -345,6 +349,8 @@ public keys. Verify real filesystem behavior:
 - adds the missing separator newline before appending;
 - preserves existing authorized keys;
 - writes exactly one complete public-key line;
+- leaves one copy of the key after repeated and concurrent installation;
+- repairs permissive pre-existing `.ssh` and `authorized_keys` modes;
 - fails when the target cannot be created or written; and
 - returns the expected exit status.
 

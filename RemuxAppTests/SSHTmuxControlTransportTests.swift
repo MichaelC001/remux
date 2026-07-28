@@ -1116,7 +1116,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
     }
 
     func testChannelDataRouterForwardsOnlyStdoutAsControlOutput() {
-        var router = SSHTmuxControlChannelDataRouter()
+        let router = SSHTmuxControlChannelDataRouter()
         let first = Data("%begin 1 0\\n".utf8)
         let second = Data("%end 1 0\\n".utf8)
 
@@ -1136,7 +1136,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
     }
 
     func testChannelDataRouterCapturesStderrWithoutControlOutput() {
-        var router = SSHTmuxControlChannelDataRouter()
+        let router = SSHTmuxControlChannelDataRouter()
         let stderr = Data("tmux: no server running\\n".utf8)
 
         XCTAssertEqual(router.route(type: .stdErr, data: stderr), .stderr)
@@ -1149,7 +1149,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
     }
 
     func testChannelDataRouterCapturesUnknownExtendedDataWithoutControlOutput() {
-        var router = SSHTmuxControlChannelDataRouter()
+        let router = SSHTmuxControlChannelDataRouter()
         let extended = Data("extended diagnostic\\n".utf8)
 
         XCTAssertEqual(
@@ -1165,7 +1165,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
     }
 
     func testStartupDiagnosticsBoundsStderrPreview() {
-        var router = SSHTmuxControlChannelDataRouter()
+        let router = SSHTmuxControlChannelDataRouter()
         let stderr = Data(String(repeating: "x", count: 500).utf8)
 
         XCTAssertEqual(router.route(type: .stdErr, data: stderr), .stderr)
@@ -1214,7 +1214,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             stderrPreview: "tmux failed",
             extendedDataPreview: nil
         )
-        var completionState = SSHTmuxControlChannelCompletionState()
+        let completionState = SSHTmuxControlChannelCompletionState()
 
         completionState.recordExitStatus(1)
 

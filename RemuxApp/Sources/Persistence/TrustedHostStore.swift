@@ -56,6 +56,10 @@ final class TrustedHostStore: @unchecked Sendable {
         }
     }
 
+    /// Restores a previously captured identity during snapshot rollback.
+    ///
+    /// This intentionally bypasses host-key challenge and trust-transition
+    /// validation. Callers must not use it to establish new trust.
     func restoreIdentity(
         _ identity: TrustedHostIdentity?,
         for serverID: SavedServer.ID

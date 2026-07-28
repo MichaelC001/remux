@@ -2,11 +2,23 @@
 import Foundation
 import NIOCore
 
-private enum RemuxConnectionTimeouts {
+enum RemuxConnectionTimeouts {
     static let terminalSSHConnect: TimeAmount = .seconds(10)
+    static let publicKeyInstallSSHConnect: TimeAmount = .seconds(10)
     static let tmuxControlNoResponse: TimeAmount = .seconds(15)
     static let sftpSSHConnect: TimeAmount = .seconds(15)
     static let sftpOperation: TimeAmount = .seconds(15)
+}
+
+private extension ResolvedSSHAuth {
+    var sshCredential: SSHCredential {
+        switch credential {
+        case .password(let password):
+            .password(password)
+        case .privateKey(let privateKey):
+            .privateKey(privateKey)
+        }
+    }
 }
 
 struct RemuxAppDependencies: Sendable {
@@ -188,14 +200,7 @@ struct RemuxAppDependencies: Sendable {
             authenticationMethod: {
                 try SSHAuthenticationMethodFactory.make(
                     username: target.sshAuth.username,
-                    credential: {
-                        switch target.sshAuth.credential {
-                        case .password(let password):
-                            .password(password)
-                        case .privateKey(let privateKey):
-                            .privateKey(privateKey)
-                        }
-                    }()
+                    credential: target.sshAuth.sshCredential
                 )
             },
             hostKeyValidator: trustedHostStore.validator(for: target.server),
@@ -248,14 +253,7 @@ struct RemuxAppDependencies: Sendable {
             authenticationMethod: {
                 try SSHAuthenticationMethodFactory.make(
                     username: target.sshAuth.username,
-                    credential: {
-                        switch target.sshAuth.credential {
-                        case .password(let password):
-                            .password(password)
-                        case .privateKey(let privateKey):
-                            .privateKey(privateKey)
-                        }
-                    }()
+                    credential: target.sshAuth.sshCredential
                 )
             },
             hostKeyValidator: trustedHostStore.validator(for: target.server),

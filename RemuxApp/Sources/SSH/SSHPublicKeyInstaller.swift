@@ -255,7 +255,7 @@ struct SSHPublicKeyInstaller: Sendable {
                     )
                 },
                 hostKeyValidator: trustedHostStore.validator(for: server),
-                connectTimeout: .seconds(10)
+                connectTimeout: RemuxConnectionTimeouts.publicKeyInstallSSHConnect
             )
             let trace = RemuxTransportStartupTrace(
                 flowID: "public-key-install.\(target.serverID.uuidString)"

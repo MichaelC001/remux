@@ -801,39 +801,16 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertTrue(harness.model.isSetupActionInProgress)
 
         await harness.model.cancelSetup()
-        let cancellationReplacedSetup: Bool
-        if case .library = harness.model.state {
-            cancellationReplacedSetup = true
-        } else {
-            cancellationReplacedSetup = false
-        }
-        var latestAcceptedOpenSSHPublicKey = replacementChallenge.receivedOpenSSHPublicKey
-        if cancellationReplacedSetup {
-            await harness.model.beginEditServer(serverID: pair.server.id)
-            let currentIdentity = try XCTUnwrap(
-                loadTrustedHostIdentities(root: harness.trustedHostRoot).first
-            )
-            let secondReplacementChallenge = makeChangedHostKeyChallenge(
-                serverID: pair.server.id,
-                host: "second-replacement.example.test",
-                trustedIdentity: currentIdentity,
-                receivedOpenSSHPublicKey: "ssh-ed25519 second-replacement-host-key"
-            )
-            try harness.model.trustSetupHostKey(
-                secondReplacementChallenge,
-                setupSessionID: harness.model.setupSessionID
-            )
-            latestAcceptedOpenSSHPublicKey = secondReplacementChallenge.receivedOpenSSHPublicKey
+        guard case .setup = harness.model.state else {
+            await harness.profileRepository.resumeSuspendedLoad()
+            await saveTask.value
+            return XCTFail("expected save to retain ownership of setup")
         }
 
         await harness.profileRepository.resumeSuspendedLoad()
         await saveTask.value
 
         XCTAssertFalse(harness.model.isSetupActionInProgress)
-        XCTAssertFalse(
-            cancellationReplacedSetup,
-            "a suspended save must retain ownership of its setup session"
-        )
         guard case .failed = harness.model.state else {
             return XCTFail("expected the post-commit refresh failure")
         }
@@ -842,7 +819,7 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(
             try loadTrustedHostIdentities(root: harness.trustedHostRoot)
                 .map(\.openSSHPublicKey),
-            [latestAcceptedOpenSSHPublicKey],
+            [replacementChallenge.receivedOpenSSHPublicKey],
             "an older save failure must not consume a newer same-server trust snapshot"
         )
     }

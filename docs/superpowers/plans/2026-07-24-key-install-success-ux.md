@@ -202,9 +202,11 @@ Use a local completion guard so repeated SwiftUI updates cannot invoke the callb
 
 In `ConnectionSetupView`:
 
-- replace the boolean `canInstallPublicKey` callback with a callback that returns `SSHPublicKeyInstallTarget?`;
+- replace the boolean `canInstallPublicKey` callback with a throwing callback that returns `SSHPublicKeyInstallTarget`;
 - add `@State private var publicKeyInstallConfirmation: SSHPublicKeyInstallConfirmation?`;
-- on sheet success, rebuild the target from the current draft, record the confirmation, and set `isPublicKeyInstallPresented = false`;
+- capture the target and setup-session identity when presenting the sheet;
+- return that target and setup-session identity in `SSHPublicKeyInstallCompletion`;
+- on sheet success, record the confirmation only when both completion values still match the active setup, then dismiss the sheet;
 - render a green checkmark and `confirmation.success.message` in the Install on Host row only when `confirmation.matches(currentTarget)`; and
 - keep the Install on Host button enabled so it can rerun preflight.
 
@@ -212,11 +214,12 @@ At the root wiring site, provide:
 
 ```swift
 publicKeyInstallTarget: { draft in
-    try? model.publicKeyInstallTarget(for: draft)
+    try model.publicKeyInstallTarget(for: draft)
 }
 ```
 
-The current target is computed, not retained, so its private key does not enter view state.
+Only the non-secret confirmation identity is retained after the sheet closes;
+`target.privateKey` does not enter confirmation state.
 
 - [ ] **Step 7: Run focused tests and verify GREEN**
 
