@@ -10,8 +10,27 @@ lock_directory="${authorized_key_file}.remux-lock"
 mkdir -p "${authorized_key_directory}"
 chmod 700 "${authorized_key_directory}"
 
+owns_lock=false
+was_interrupted=false
+cleanup_lock() {
+  if [ "${owns_lock}" = true ]; then
+    rmdir "${lock_directory}" 2>/dev/null || true
+  fi
+}
+handle_signal() {
+  was_interrupted=true
+  if [ "${owns_lock}" = true ]; then
+    exit 1
+  fi
+}
+trap cleanup_lock 0
+trap handle_signal HUP INT TERM
+
 lock_attempt=0
 until mkdir "${lock_directory}" 2>/dev/null; do
+  if [ "${was_interrupted}" = true ]; then
+    exit 1
+  fi
   lock_attempt=$((lock_attempt + 1))
   if [ "${lock_attempt}" -ge 100 ]; then
     printf 'Timed out waiting to update %s\n' "${authorized_key_file}" >&2
@@ -19,11 +38,10 @@ until mkdir "${lock_directory}" 2>/dev/null; do
   fi
   sleep 0.1
 done
-cleanup_lock() {
-  rmdir "${lock_directory}" 2>/dev/null || true
-}
-trap cleanup_lock 0
-trap 'exit 1' HUP INT TERM
+owns_lock=true
+if [ "${was_interrupted}" = true ]; then
+  exit 1
+fi
 
 public_key="$(cat)"
 case "${public_key}" in
