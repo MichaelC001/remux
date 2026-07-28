@@ -350,7 +350,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         statusMessage: composerStatusMessage,
                         attachmentUploadCount: attachmentTransferUploadCount,
                         attachmentTransferProgress: attachmentTransferProgress,
-                        onKeyboardFocusChange: handleComposerKeyboardFocusChange,
+                        onKeyboardFocusRequest: handleComposerKeyboardFocusRequest,
                         onChoosePhotos: openAttachmentPhotosPicker,
                         onChooseFiles: openAttachmentFilePicker,
                         onOpenAttachments: showPendingAttachmentPreview,
@@ -801,13 +801,11 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         composerDictationController.interrupt(message: "Dictation interrupted")
     }
 
-    private func handleComposerKeyboardFocusChange(_ isFocused: Bool) {
+    private func handleComposerKeyboardFocusRequest() {
         guard isComposerPresented else { return }
-        if isFocused {
-            showComposerKeyboard()
-        } else if inputCoordinator.keyboardOwner == .composer {
-            inputCoordinator.dismissKeyboard()
-        }
+        guard inputCoordinator.keyboardMode != .system
+                || inputCoordinator.keyboardOwner != .composer else { return }
+        showComposerKeyboard()
     }
 
     private func showComposerKeyboard() {

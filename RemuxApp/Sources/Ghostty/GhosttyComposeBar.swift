@@ -68,7 +68,7 @@ struct GhosttyComposeBar: View {
     let statusMessage: String?
     let attachmentUploadCount: Int
     let attachmentTransferProgress: GhosttyAttachmentTransferProgress?
-    let onKeyboardFocusChange: (Bool) -> Void
+    let onKeyboardFocusRequest: () -> Void
     let onChoosePhotos: () -> Void
     let onChooseFiles: () -> Void
     let onOpenAttachments: () -> Void
@@ -97,26 +97,28 @@ struct GhosttyComposeBar: View {
                 }
             }
 
-            if dictationPhase.isActive {
-                dictationRow
-            } else {
-                composerRow
-            }
+            composerRow
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 3)
         .frame(minHeight: Self.collapsedHeight)
         .frame(maxWidth: 560)
         .ghosttyComposerSurface()
+        .overlay {
+            Color.clear
+                .accessibilityElement()
+                .accessibilityIdentifier("terminal.composer.bounds")
+        }
         .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("terminal.composer")
     }
 
     private var composerRow: some View {
         HStack(alignment: .bottom, spacing: 2) {
-            attachmentMenu
+            leadingControl
 
             VStack(alignment: .leading, spacing: 0) {
-                if let statusMessage {
+                if !dictationPhase.isActive, let statusMessage {
                     Text(statusMessage)
                         .font(.caption)
                         .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
@@ -131,74 +133,92 @@ struct GhosttyComposeBar: View {
                             .padding(.leading, 4)
                             .padding(.top, 8)
                             .allowsHitTesting(false)
-                            .accessibilityHidden(submissionState != .awaitingSubmit)
+                            .accessibilityHidden(
+                                dictationPhase.isActive || submissionState != .awaitingSubmit
+                            )
                     }
 
                     GhosttyComposerTextView(
                         text: $text,
                         caretColor: UIColor(chromeStyle.accent),
                         isEditable: submissionState.allowsComposerInput,
+                        allowsUserEdits: !dictationPhase.isActive,
                         wantsFirstResponder: wantsKeyboardFocus,
                         activationToken: keyboardActivationToken,
-                        onFirstResponderChange: onKeyboardFocusChange,
+                        onFocusRequest: onKeyboardFocusRequest,
                         onPasteAttachment: onPasteAttachment
                     )
+                    .opacity(dictationPhase.isActive ? 0 : 1)
+                    .allowsHitTesting(!dictationPhase.isActive)
+                    .accessibilityHidden(dictationPhase.isActive)
+                    .overlay {
+                        if dictationPhase.isActive {
+                            dictationCenterContent
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 32)
+                        }
+                    }
                 }
             }
 
-            dictationButton
+            dictationControl
 
             sendButton(
                 state: submissionState,
+                allowsTap: !dictationPhase.isActive
+                    || (dictationPhase == .recording && submissionState.isSendEnabled),
                 action: onSend
             )
         }
+        .frame(height: dictationPhase.isActive ? 42 : nil, alignment: .bottom)
     }
 
-    private var dictationRow: some View {
-        HStack(spacing: 2) {
+    @ViewBuilder
+    private var leadingControl: some View {
+        if dictationPhase.isActive {
             dictationModeButton(
                 systemName: "xmark",
                 accessibilityLabel: "Cancel dictation",
                 accessibilityIdentifier: "terminal.composer.dictation.cancel",
                 action: onCancelDictation
             )
-
-            Group {
-                switch dictationPhase {
-                case .idle:
-                    EmptyView()
-                case .starting:
-                    dictationStatus("Starting…")
-                case .recording:
-                    GhosttyComposerDictationMeter(levels: dictationAudioLevels)
-                case .transcribing:
-                    dictationStatus("Transcribing")
-                }
-            }
-            .frame(maxWidth: .infinity)
-
-            if dictationPhase == .recording {
-                dictationModeButton(
-                    systemName: "stop.fill",
-                    accessibilityLabel: "Stop dictation",
-                    accessibilityIdentifier: "terminal.composer.dictation.stop",
-                    action: onFinishDictation
-                )
-            } else {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(GhosttyPhoneChromePalette.chromeForeground)
-                    .frame(width: 42, height: 42)
-            }
-
-            sendButton(
-                state: submissionState,
-                allowsTap: dictationPhase == .recording && submissionState.isSendEnabled,
-                action: onSend
-            )
+        } else {
+            attachmentMenu
         }
-        .frame(minHeight: 42)
+    }
+
+    @ViewBuilder
+    private var dictationCenterContent: some View {
+        switch dictationPhase {
+        case .idle:
+            EmptyView()
+        case .starting:
+            dictationStatus("Starting…")
+        case .recording:
+            GhosttyComposerDictationMeter(levels: dictationAudioLevels)
+        case .transcribing:
+            dictationStatus("Transcribing")
+        }
+    }
+
+    @ViewBuilder
+    private var dictationControl: some View {
+        switch dictationPhase {
+        case .idle:
+            dictationButton
+        case .recording:
+            dictationModeButton(
+                systemName: "stop.fill",
+                accessibilityLabel: "Stop dictation",
+                accessibilityIdentifier: "terminal.composer.dictation.stop",
+                action: onFinishDictation
+            )
+        case .starting, .transcribing:
+            ProgressView()
+                .controlSize(.small)
+                .tint(GhosttyPhoneChromePalette.chromeForeground)
+                .frame(width: 42, height: 42)
+        }
     }
 
     private func dictationStatus(_ title: String) -> some View {
@@ -343,27 +363,19 @@ private struct GhosttyComposerDictationMeter: View {
     let levels: [CGFloat]
 
     var body: some View {
-        GeometryReader { geometry in
-            let spacing = CGFloat(2)
-            let availableWidth = max(
-                geometry.size.width - (spacing * CGFloat(max(levels.count - 1, 0))),
-                0
-            )
-            let barWidth = max(min(availableWidth / CGFloat(max(levels.count, 1)), 3), 1.5)
-
-            HStack(spacing: spacing) {
-                ForEach(Array(levels.enumerated()), id: \.offset) { _, level in
-                    Capsule()
-                        .fill(GhosttyPhoneChromePalette.chromeForeground.opacity(0.72))
-                        .frame(
-                            width: barWidth,
-                            height: max(4, 6 + (level * 24))
-                        )
-                }
+        HStack(spacing: 2) {
+            ForEach(levels.indices, id: \.self) { index in
+                Capsule()
+                    .fill(GhosttyPhoneChromePalette.chromeForeground.opacity(0.72))
+                    .frame(
+                        width: 2.5,
+                        height: max(4, 6 + (levels[index] * 24))
+                    )
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity)
         .frame(height: 32)
+        .clipped()
         .accessibilityLabel("Recording audio")
         .accessibilityIdentifier("terminal.composer.dictation.meter")
     }
@@ -412,9 +424,10 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
     @Binding var text: String
     let caretColor: UIColor
     let isEditable: Bool
+    let allowsUserEdits: Bool
     let wantsFirstResponder: Bool
     let activationToken: Int
-    let onFirstResponderChange: (Bool) -> Void
+    let onFocusRequest: () -> Void
     let onPasteAttachment: () -> Bool
 
     func makeCoordinator() -> Coordinator {
@@ -487,22 +500,27 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: GhosttyComposerTextView
         private var appliedActivationToken = -1
+        private var reconciliationGeneration: UInt64 = 0
 
         init(parent: GhosttyComposerTextView) {
             self.parent = parent
         }
 
         func textViewDidBeginEditing(_ textView: UITextView) {
-            parent.onFirstResponderChange(true)
-        }
-
-        func textViewDidEndEditing(_ textView: UITextView) {
-            parent.onFirstResponderChange(false)
+            parent.onFocusRequest()
         }
 
         func textViewDidChange(_ textView: UITextView) {
             parent.text = textView.text
             textView.invalidateIntrinsicContentSize()
+        }
+
+        func textView(
+            _ textView: UITextView,
+            shouldChangeTextIn range: NSRange,
+            replacementText text: String
+        ) -> Bool {
+            parent.allowsUserEdits
         }
 
         func reconcileFirstResponder(
@@ -512,16 +530,33 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
         ) {
             let activationChanged = appliedActivationToken != activationToken
             appliedActivationToken = activationToken
+            reconciliationGeneration &+= 1
+            let requestedGeneration = reconciliationGeneration
 
             if wantsFirstResponder {
-                guard activationChanged || !textView.isFirstResponder else { return }
-                DispatchQueue.main.async { [weak textView] in
-                    guard let textView, textView.window != nil else { return }
-                    textView.becomeFirstResponder()
+                guard !textView.isFirstResponder else { return }
+                guard activationChanged || textView.window != nil else { return }
+                DispatchQueue.main.async { [weak self, weak textView] in
+                    guard let self,
+                          self.reconciliationGeneration == requestedGeneration,
+                          self.parent.wantsFirstResponder,
+                          let textView,
+                          textView.window != nil,
+                          !textView.isFirstResponder else {
+                        return
+                    }
+                    _ = textView.becomeFirstResponder()
                 }
             } else if textView.isFirstResponder {
-                DispatchQueue.main.async { [weak textView] in
-                    textView?.resignFirstResponder()
+                DispatchQueue.main.async { [weak self, weak textView] in
+                    guard let self,
+                          self.reconciliationGeneration == requestedGeneration,
+                          !self.parent.wantsFirstResponder,
+                          let textView,
+                          textView.isFirstResponder else {
+                        return
+                    }
+                    _ = textView.resignFirstResponder()
                 }
             }
         }

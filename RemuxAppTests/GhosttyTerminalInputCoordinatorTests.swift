@@ -83,6 +83,30 @@ final class GhosttyTerminalInputCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.isSoftwareKeyboardVisible)
     }
 
+    func testLateKeyboardShowDoesNotRestoreDismissedComposerOwnership() {
+        var coordinator = GhosttyTerminalInputCoordinator()
+        coordinator.showSystemKeyboard(
+            owner: .composer,
+            isOwnerAvailable: true
+        )
+        coordinator.toggleKeyboard(
+            owner: .composer,
+            isOwnerAvailable: true
+        )
+
+        coordinator.updateSoftwareKeyboardVisibility(true)
+
+        XCTAssertEqual(coordinator.keyboardMode, .hidden)
+        XCTAssertEqual(coordinator.keyboardOwner, .none)
+        XCTAssertTrue(coordinator.isDismissSystemKeyboardRequested)
+
+        coordinator.updateSoftwareKeyboardVisibility(false)
+
+        XCTAssertEqual(coordinator.keyboardMode, .hidden)
+        XCTAssertEqual(coordinator.keyboardOwner, .none)
+        XCTAssertFalse(coordinator.isDismissSystemKeyboardRequested)
+    }
+
     func testKeyboardVisibilityHidePreservesSystemModeWithoutExplicitDismissal() {
         var coordinator = GhosttyTerminalInputCoordinator()
         coordinator.showSystemKeyboard(isInputAvailable: true)

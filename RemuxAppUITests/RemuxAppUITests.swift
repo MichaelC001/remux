@@ -58,6 +58,11 @@ final class RemuxAppUITests: XCTestCase {
         let composerToggle = app.buttons["terminal.composer.toggle"]
         XCTAssertTrue(composerToggle.waitForExistence(timeout: 5))
         composerToggle.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "composer opened without keyboard"))
+        let composer = app.otherElements["terminal.composer.bounds"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        let compactComposerFrame = composer.frame
+        XCTAssertLessThanOrEqual(compactComposerFrame.height, 60)
 
         let mic = app.buttons["terminal.composer.mic"]
         XCTAssertTrue(mic.waitForExistence(timeout: 3))
@@ -69,7 +74,9 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(cancel.waitForExistence(timeout: 3))
         XCTAssertTrue(stop.waitForExistence(timeout: 3))
         XCTAssertTrue(meter.waitForExistence(timeout: 3))
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "dictation started with keyboard hidden"))
         attachScreenshot(named: "composer-dictation-recording")
+        XCTAssertEqual(composer.frame.height, compactComposerFrame.height, accuracy: 1)
 
         openHomeFromTerminal()
         let activeSession = activeSessionRows.firstMatch
@@ -90,22 +97,39 @@ final class RemuxAppUITests: XCTestCase {
         let field = app.textViews["terminal.composer.field"]
         XCTAssertTrue(field.waitForExistence(timeout: 3))
         XCTAssertEqual(field.value as? String, transcript)
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "dictation stopped with keyboard hidden"))
         attachScreenshot(named: "composer-dictation-result")
 
         field.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "composer field focused"))
         field.typeText(" Keep this draft")
+        let visibleKeyboardFrame = app.keyboards.firstMatch.frame
         guard let originalDraft = field.value as? String else {
             XCTFail("Composer field did not expose its edited draft")
             return
         }
         mic.tap()
         XCTAssertTrue(cancel.waitForExistence(timeout: 3))
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "dictation started with keyboard visible"))
+        XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
         RunLoop.current.run(until: Date().addingTimeInterval(0.6))
         cancel.tap()
 
         XCTAssertTrue(field.waitForExistence(timeout: 3))
         XCTAssertEqual(field.value as? String, originalDraft)
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "dictation cancelled with keyboard visible"))
+        XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
         attachScreenshot(named: "composer-dictation-cancelled")
+
+        mic.tap()
+        XCTAssertTrue(stop.waitForExistence(timeout: 3))
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "second dictation started with keyboard visible"))
+        XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
+        stop.tap()
+
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "dictation stopped with keyboard visible"))
+        XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
     }
 
     func testComposerDictationCanRestartAfterNoSpeech() {
