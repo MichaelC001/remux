@@ -1,9 +1,163 @@
 import Combine
+import AVFoundation
 import XCTest
 @testable import Remux
 
 @MainActor
 final class GhosttyComposerDictationControllerTests: XCTestCase {
+    func testCaptureBoundaryStartsOnlyAfterFirstForwardedBuffer() throws {
+        var boundary = GhosttyComposerAudioCaptureBoundary()
+        let buffer = try captureBuffer(frameLength: 4_800)
+        let startHostTime = AVAudioTime.hostTime(forSeconds: 10)
+        let time = AVAudioTime(
+            hostTime: startHostTime,
+            sampleTime: 0,
+            atRate: 48_000
+        )
+
+        XCTAssertEqual(
+            boundary.didForward(buffer, at: time, deliveredAt: startHostTime),
+            .recording(firstBuffer: true)
+        )
+        XCTAssertEqual(
+            boundary.didForward(
+                buffer,
+                at: AVAudioTime(
+                    hostTime: startHostTime + AVAudioTime.hostTime(forSeconds: 0.1),
+                    sampleTime: 4_800,
+                    atRate: 48_000
+                ),
+                deliveredAt: startHostTime + AVAudioTime.hostTime(forSeconds: 0.1)
+            ),
+            .recording(firstBuffer: false)
+        )
+    }
+
+    func testCaptureBoundaryWaitsUntilForwardedAudioCoversStopTime() throws {
+        var boundary = GhosttyComposerAudioCaptureBoundary()
+        let buffer = try captureBuffer(frameLength: 4_800)
+        let startHostTime = AVAudioTime.hostTime(forSeconds: 10)
+        let bufferDuration = AVAudioTime.hostTime(forSeconds: 0.1)
+        let stopHostTime = startHostTime + AVAudioTime.hostTime(forSeconds: 0.15)
+
+        XCTAssertTrue(boundary.requestStop(at: stopHostTime))
+        XCTAssertEqual(
+            boundary.didForward(
+                buffer,
+                at: AVAudioTime(
+                    hostTime: startHostTime,
+                    sampleTime: 0,
+                    atRate: 48_000
+                ),
+                deliveredAt: startHostTime + bufferDuration
+            ),
+            .draining
+        )
+        XCTAssertEqual(
+            boundary.didForward(
+                buffer,
+                at: AVAudioTime(
+                    hostTime: startHostTime + bufferDuration,
+                    sampleTime: 4_800,
+                    atRate: 48_000
+                ),
+                deliveredAt: startHostTime + (bufferDuration * 2)
+            ),
+            .covered
+        )
+        XCTAssertGreaterThanOrEqual(
+            try XCTUnwrap(boundary.latestCoveredHostTime),
+            stopHostTime
+        )
+    }
+
+    func testCaptureBoundaryExtrapolatesHostTimeFromCompleteAnchor() throws {
+        var boundary = GhosttyComposerAudioCaptureBoundary()
+        let buffer = try captureBuffer(frameLength: 4_800)
+        let startHostTime = AVAudioTime.hostTime(forSeconds: 10)
+        let bufferDuration = AVAudioTime.hostTime(forSeconds: 0.1)
+
+        _ = boundary.didForward(
+            buffer,
+            at: AVAudioTime(
+                hostTime: startHostTime,
+                sampleTime: 0,
+                atRate: 48_000
+            ),
+            deliveredAt: startHostTime + bufferDuration
+        )
+        XCTAssertTrue(
+            boundary.requestStop(
+                at: startHostTime + AVAudioTime.hostTime(forSeconds: 0.15)
+            )
+        )
+
+        XCTAssertEqual(
+            boundary.didForward(
+                buffer,
+                at: AVAudioTime(sampleTime: 4_800, atRate: 48_000),
+                deliveredAt: startHostTime + (bufferDuration * 2)
+            ),
+            .covered
+        )
+        XCTAssertTrue(boundary.hasReliableTimeline)
+    }
+
+    func testCaptureBoundaryUsesMeasuredCadenceForHardwareWatchdog() throws {
+        var boundary = GhosttyComposerAudioCaptureBoundary()
+        let buffer = try captureBuffer(frameLength: 4_800)
+        let startHostTime = AVAudioTime.hostTime(forSeconds: 10)
+        let interval = AVAudioTime.hostTime(forSeconds: 0.12)
+
+        _ = boundary.didForward(
+            buffer,
+            at: AVAudioTime(
+                hostTime: startHostTime,
+                sampleTime: 0,
+                atRate: 48_000
+            ),
+            deliveredAt: startHostTime
+        )
+        _ = boundary.didForward(
+            buffer,
+            at: AVAudioTime(
+                hostTime: startHostTime + interval,
+                sampleTime: 5_760,
+                atRate: 48_000
+            ),
+            deliveredAt: startHostTime + interval
+        )
+
+        XCTAssertEqual(boundary.drainWatchdogDuration, 0.6, accuracy: 0.001)
+    }
+
+    func testCaptureBoundaryCountsDroppedSampleFrames() throws {
+        var boundary = GhosttyComposerAudioCaptureBoundary()
+        let buffer = try captureBuffer(frameLength: 4_800)
+        let startHostTime = AVAudioTime.hostTime(forSeconds: 10)
+
+        _ = boundary.didForward(
+            buffer,
+            at: AVAudioTime(
+                hostTime: startHostTime,
+                sampleTime: 0,
+                atRate: 48_000
+            ),
+            deliveredAt: startHostTime
+        )
+        _ = boundary.didForward(
+            buffer,
+            at: AVAudioTime(
+                hostTime: startHostTime + AVAudioTime.hostTime(forSeconds: 0.125),
+                sampleTime: 6_000,
+                atRate: 48_000
+            ),
+            deliveredAt: startHostTime + AVAudioTime.hostTime(forSeconds: 0.125)
+        )
+
+        XCTAssertEqual(boundary.droppedSampleFrames, 1_200)
+    }
+
     func testProgressiveTranscriptPreservesFinalizedPassages() {
         var transcript = GhosttyComposerProgressiveTranscript()
 
@@ -421,6 +575,17 @@ final class GhosttyComposerDictationControllerTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(5))
         }
         XCTFail("Timed out waiting for dictation state")
+    }
+
+    private func captureBuffer(frameLength: AVAudioFrameCount) throws -> AVAudioPCMBuffer {
+        let format = try XCTUnwrap(
+            AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)
+        )
+        let buffer = try XCTUnwrap(
+            AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameLength)
+        )
+        buffer.frameLength = frameLength
+        return buffer
     }
 }
 

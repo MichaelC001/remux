@@ -104,6 +104,7 @@ private extension GhosttySpeechAnalyzerComposerDictationBackend {
         typealias EventHandler = @Sendable (GhosttyComposerDictationBackendEvent) -> Void
 
         private enum RunPhase {
+            case starting
             case recording
             case transcribing
         }
@@ -133,10 +134,9 @@ private extension GhosttySpeechAnalyzerComposerDictationBackend {
             let handler: EventHandler
             let analyzer: SpeechAnalyzer
             let transcriber: SpeechTranscriber
-            var phase = RunPhase.recording
+            var phase = RunPhase.starting
             var transcript = GhosttyComposerProgressiveTranscript()
-            var audioEngine: AVAudioEngine?
-            var audioProcessor: GhosttySpeechAnalyzerAudioProcessor?
+            var captureSession: GhosttyComposerAudioCaptureSession?
             var resultsTask: Task<Void, Never>?
             var resultsError: Error?
 
@@ -158,8 +158,6 @@ private extension GhosttySpeechAnalyzerComposerDictationBackend {
         private var activeRun: Run?
         private var preparedSession: PreparedSession?
         private var preparationTask: Task<PreparedSession, Error>?
-        private var isAudioSessionActive = false
-
         func prepare(locale: Locale) async {
             guard activeRun == nil else { return }
             let startedAt = GhosttyRuntimeTrace.nowNanos()
@@ -199,16 +197,6 @@ private extension GhosttySpeechAnalyzerComposerDictationBackend {
                 didFinishPreparation = true
 
                 handler(.starting)
-                try configureAudioSession()
-                try AVAudioSession.sharedInstance().setActive(true)
-                isAudioSessionActive = true
-                traceStartup("analyzer.audioSessionActivated", id: id, requestedAt: requestedAt)
-                guard isDesired() else {
-                    returnPreparedSession(prepared)
-                    deactivateAudioSession()
-                    return
-                }
-
                 let (inputSequence, inputContinuation) = AsyncStream.makeStream(
                     of: AnalyzerInput.self
                 )
@@ -229,54 +217,47 @@ private extension GhosttySpeechAnalyzerComposerDictationBackend {
                     return
                 }
 
-                let engine = AVAudioEngine()
-                let inputNode = engine.inputNode
-                let recordingFormat = inputNode.outputFormat(forBus: 0)
-                guard recordingFormat.sampleRate > 0,
-                      recordingFormat.channelCount > 0 else {
-                    throw GhosttySpeechAnalyzerError.unavailableAudioInput
-                }
-
-                let processor = try GhosttySpeechAnalyzerAudioProcessor(
-                    inputFormat: recordingFormat,
-                    analyzerFormat: prepared.analyzerFormat,
-                    continuation: inputContinuation,
-                    onLevel: { [weak self] level in
-                        Task {
-                            await self?.publishAudioLevel(level, runID: id)
-                        }
-                    },
-                    onFailure: { [weak self] in
-                        Task {
-                            await self?.audioProcessingFailed(runID: id)
-                        }
+                let captureSession = GhosttyComposerAudioCaptureSession()
+                run.captureSession = captureSession
+                let audioLevelHandler: @Sendable (CGFloat) -> Void = { [weak self] level in
+                    Task { [weak self] in
+                        await self?.publishAudioLevel(level, runID: id)
                     }
-                )
-                inputNode.installTap(
-                    onBus: 0,
-                    bufferSize: 1_024,
-                    format: recordingFormat
-                ) { buffer, _ in
-                    processor.process(buffer)
                 }
-                run.audioEngine = engine
-                run.audioProcessor = processor
-
-                engine.prepare()
-                try engine.start()
+                do {
+                    try captureSession.start(
+                        makeConsumer: { recordingFormat in
+                            try GhosttySpeechAnalyzerAudioProcessor(
+                                inputFormat: recordingFormat,
+                                analyzerFormat: prepared.analyzerFormat,
+                                continuation: inputContinuation,
+                                onLevel: audioLevelHandler
+                            )
+                        },
+                        onStarted: { [weak self] in
+                            Task {
+                                await self?.captureStarted(
+                                    runID: id,
+                                    requestedAt: requestedAt
+                                )
+                            }
+                        },
+                        onFailure: { [weak self] in
+                            Task {
+                                await self?.audioProcessingFailed(runID: id)
+                            }
+                        }
+                    )
+                } catch {
+                    inputContinuation.finish()
+                    throw error
+                }
                 guard activeRun === run, isDesired() else {
                     await cancelActiveRun()
                     return
                 }
-
-                GhosttyRuntimeTrace.perf(
-                    "composer.dictation.startup event=analyzer.started id=\(id) "
-                        + "elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: requestedAt))"
-                )
-                handler(.started)
             } catch {
                 await cancelActiveRun()
-                deactivateAudioSession()
                 handler(
                     .failed(
                         userMessage(
@@ -296,7 +277,13 @@ private extension GhosttySpeechAnalyzerComposerDictationBackend {
             }
 
             run.phase = .transcribing
-            guard stopCapture(run, finishInput: true) else {
+            let inputFinished = await withCheckedContinuation { continuation in
+                run.captureSession?.finish { inputFinished in
+                    continuation.resume(returning: inputFinished)
+                }
+            }
+            guard activeRun === run else { return }
+            guard inputFinished else {
                 run.handler(.recognitionFailed)
                 await run.analyzer.cancelAndFinishNow()
                 release(run)
@@ -321,6 +308,20 @@ private extension GhosttySpeechAnalyzerComposerDictationBackend {
                 run.handler(.recognitionFailed)
                 release(run)
             }
+        }
+
+        private func captureStarted(runID: UInt64, requestedAt: UInt64) {
+            guard let run = activeRun,
+                  run.id == runID,
+                  run.phase == .starting else {
+                return
+            }
+            run.phase = .recording
+            GhosttyRuntimeTrace.perf(
+                "composer.dictation.startup event=analyzer.firstForwardedAudioBuffer id=\(runID) "
+                    + "elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: requestedAt))"
+            )
+            run.handler(.started)
         }
 
         func cancel(id: UInt64) async {
@@ -370,7 +371,7 @@ private extension GhosttySpeechAnalyzerComposerDictationBackend {
             guard let run = activeRun, run.id == runID else { return }
             run.resultsError = error
 
-            if run.phase == .recording {
+            if run.phase == .starting || run.phase == .recording {
                 run.handler(.recognitionFailed)
                 release(run)
             }
@@ -379,7 +380,7 @@ private extension GhosttySpeechAnalyzerComposerDictationBackend {
         private func publishAudioLevel(_ level: CGFloat, runID: UInt64) {
             guard let run = activeRun,
                   run.id == runID,
-                  run.phase == .recording else {
+                  run.phase == .starting || run.phase == .recording else {
                 return
             }
             run.handler(.audioLevel(level))
@@ -489,18 +490,16 @@ private extension GhosttySpeechAnalyzerComposerDictationBackend {
         private func cancelActiveRun() async {
             guard let run = activeRun else { return }
             activeRun = nil
-            stopCapture(run, finishInput: false)
+            run.captureSession?.cancel()
             run.resultsTask?.cancel()
             await run.analyzer.cancelAndFinishNow()
-            deactivateAudioSession()
         }
 
         private func release(_ run: Run) {
             guard activeRun === run else { return }
             activeRun = nil
-            stopCapture(run, finishInput: false)
+            run.captureSession?.cancel()
             run.resultsTask?.cancel()
-            deactivateAudioSession()
             schedulePreparation(locale: run.locale)
         }
 
@@ -512,44 +511,6 @@ private extension GhosttySpeechAnalyzerComposerDictationBackend {
             preparationTask = Task {
                 try await Self.makePreparedSession(locale: locale)
             }
-        }
-
-        @discardableResult
-        private func stopCapture(_ run: Run, finishInput: Bool) -> Bool {
-            if let engine = run.audioEngine {
-                engine.stop()
-                engine.inputNode.removeTap(onBus: 0)
-                engine.reset()
-                run.audioEngine = nil
-            }
-
-            let inputFinished: Bool
-            if finishInput {
-                inputFinished = run.audioProcessor?.finish() ?? true
-            } else {
-                run.audioProcessor?.cancel()
-                inputFinished = true
-            }
-            run.audioProcessor = nil
-            deactivateAudioSession()
-            return inputFinished
-        }
-
-        private func configureAudioSession() throws {
-            try AVAudioSession.sharedInstance().setCategory(
-                .record,
-                mode: .measurement,
-                options: [.allowBluetoothHFP]
-            )
-        }
-
-        private func deactivateAudioSession() {
-            guard isAudioSessionActive else { return }
-            isAudioSessionActive = false
-            try? AVAudioSession.sharedInstance().setActive(
-                false,
-                options: .notifyOthersOnDeactivation
-            )
         }
 
         private func userMessage(
@@ -583,14 +544,16 @@ private extension GhosttySpeechAnalyzerComposerDictationBackend {
 }
 
 @available(iOS 26.0, *)
-private final class GhosttySpeechAnalyzerAudioProcessor: @unchecked Sendable {
+private final class GhosttySpeechAnalyzerAudioProcessor:
+    GhosttyComposerAudioCaptureConsumer,
+    @unchecked Sendable
+{
     private static let levelPublishInterval = 0.075
 
     private let converter: AVAudioConverter
     private let analyzerFormat: AVAudioFormat
     private let continuation: AsyncStream<AnalyzerInput>.Continuation
     private let onLevel: @Sendable (CGFloat) -> Void
-    private let onFailure: @Sendable () -> Void
     private let lock = NSLock()
     private var lastLevelPublishTime: CFTimeInterval = 0
     private var isFinished = false
@@ -601,8 +564,7 @@ private final class GhosttySpeechAnalyzerAudioProcessor: @unchecked Sendable {
         inputFormat: AVAudioFormat,
         analyzerFormat: AVAudioFormat,
         continuation: AsyncStream<AnalyzerInput>.Continuation,
-        onLevel: @escaping @Sendable (CGFloat) -> Void,
-        onFailure: @escaping @Sendable () -> Void
+        onLevel: @escaping @Sendable (CGFloat) -> Void
     ) throws {
         guard let converter = AVAudioConverter(from: inputFormat, to: analyzerFormat) else {
             throw GhosttySpeechAnalyzerError.unavailableAudioFormat
@@ -611,13 +573,12 @@ private final class GhosttySpeechAnalyzerAudioProcessor: @unchecked Sendable {
         self.analyzerFormat = analyzerFormat
         self.continuation = continuation
         self.onLevel = onLevel
-        self.onFailure = onFailure
     }
 
-    func process(_ buffer: AVAudioPCMBuffer) {
+    func accept(_ buffer: AVAudioPCMBuffer, at _: AVAudioTime) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard !isFinished else { return }
+        guard !isFinished else { return false }
 
         let now = CACurrentMediaTime()
         if now - lastLevelPublishTime >= Self.levelPublishInterval {
@@ -632,7 +593,9 @@ private final class GhosttySpeechAnalyzerAudioProcessor: @unchecked Sendable {
         outputCapacity = max(outputCapacity, requiredCapacity)
         if !convert(buffer, outputCapacity: requiredCapacity) {
             failProcessing()
+            return false
         }
+        return true
     }
 
     func finish() -> Bool {
@@ -682,7 +645,7 @@ private final class GhosttySpeechAnalyzerAudioProcessor: @unchecked Sendable {
             return false
         }
         if converted.frameLength > 0 {
-            continuation.yield(AnalyzerInput(buffer: converted))
+            guard inputWasEnqueued(converted) else { return false }
         }
         return true
     }
@@ -708,7 +671,7 @@ private final class GhosttySpeechAnalyzerAudioProcessor: @unchecked Sendable {
                 return false
             }
             if converted.frameLength > 0 {
-                continuation.yield(AnalyzerInput(buffer: converted))
+                guard inputWasEnqueued(converted) else { return false }
             }
             if status != .haveData {
                 return true
@@ -721,7 +684,17 @@ private final class GhosttySpeechAnalyzerAudioProcessor: @unchecked Sendable {
         didFail = true
         isFinished = true
         continuation.finish()
-        onFailure()
+    }
+
+    private func inputWasEnqueued(_ buffer: AVAudioPCMBuffer) -> Bool {
+        switch continuation.yield(AnalyzerInput(buffer: buffer)) {
+        case .enqueued:
+            true
+        case .dropped, .terminated:
+            false
+        @unknown default:
+            false
+        }
     }
 
     private func normalizedPeak(for buffer: AVAudioPCMBuffer) -> CGFloat {
@@ -740,7 +713,6 @@ private final class GhosttySpeechAnalyzerAudioProcessor: @unchecked Sendable {
 @available(iOS 26.0, *)
 private enum GhosttySpeechAnalyzerError: Error {
     case unavailable
-    case unavailableAudioInput
     case unavailableAudioFormat
     case unsupportedLocale
 }

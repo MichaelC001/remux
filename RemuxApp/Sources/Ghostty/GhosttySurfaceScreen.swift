@@ -1,6 +1,5 @@
 import SwiftUI
 import UIKit
-import AVFoundation
 import CoreTransferable
 import GhosttyKit
 import PhotosUI
@@ -457,10 +456,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 GhosttyRuntimeTrace.perf("kbd.didHide")
                 completeKeyboardDidHide()
             }
-            .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) {
-                notification in
-                handleComposerAudioSessionInterruption(notification)
-            }
             .sheet(item: selectionSheetBinding) { sheet in
                 selectionSheetContent(sheet)
                     .presentationDetents(selectionSheetDetents(for: sheet))
@@ -842,17 +837,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private func finishComposerDictation() {
         GhosttyRuntimeTrace.perf("composer.dictation.stopTapped")
         composerDictationController.finish()
-    }
-
-    private func handleComposerAudioSessionInterruption(_ notification: Notification) {
-        guard
-            let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-            AVAudioSession.InterruptionType(rawValue: rawType) == .began
-        else {
-            return
-        }
-
-        composerDictationController.interrupt(message: "Dictation interrupted")
     }
 
     private func handleComposerKeyboardFocusRequest() {
