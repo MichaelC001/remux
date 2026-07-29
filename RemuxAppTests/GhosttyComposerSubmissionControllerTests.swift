@@ -31,6 +31,13 @@ final class GhosttyComposerSubmissionControllerTests: XCTestCase {
 
         session.attachments = [.file(url: URL(fileURLWithPath: "/tmp/report.txt"))]
         XCTAssertTrue(session.areAttachmentsReady)
+
+        session.attachments = [
+            GhosttyPendingAttachment
+                .pasteboardImagePlaceholder()
+                .updating(detail: "Couldn’t load", preparationState: .failed),
+        ]
+        XCTAssertFalse(session.areAttachmentsReady)
     }
 
     @MainActor

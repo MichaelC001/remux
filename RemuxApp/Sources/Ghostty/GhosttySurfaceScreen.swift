@@ -62,6 +62,18 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         var progress: GhosttyAttachmentTransferProgress?
     }
 
+    private enum AttachmentPreparationSource {
+        case photo(PhotosPickerItem)
+        case pastedFile(URL)
+        case pastedImage(GhosttyAttachmentPasteboardSnapshot.ImageProviderRequest)
+    }
+
+    private struct AttachmentPreparationJob {
+        let source: AttachmentPreparationSource
+        let attemptID: UUID
+        var task: Task<Void, Never>?
+    }
+
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
     @ObservedObject private var model: Model
@@ -96,6 +108,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var isAttachmentFileImporterPresented = false
     @State private var attachmentPhotoSelections: [PhotosPickerItem] = []
     @State private var attachmentPreviewRequest: AttachmentPreviewRequest?
+    @State private var attachmentPreparationJobs: [GhosttyPendingAttachment.ID: AttachmentPreparationJob] = [:]
     @State private var attachmentTransferState: AttachmentTransferState?
     @State private var attachmentNotice: GhosttyAttachmentNotice?
 #if DEBUG
@@ -411,6 +424,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                                 onChoosePhotos: openAttachmentPhotosPicker,
                                 onChooseFiles: openAttachmentFilePicker,
                                 onOpenAttachment: showPendingAttachmentPreview,
+                                onRetryAttachment: retryPendingAttachment,
                                 onRemoveAttachment: removePendingAttachment,
                                 onPasteAttachment: handleComposerAttachmentPaste,
                                 onStartDictation: startComposerDictation,
@@ -1175,6 +1189,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             return
         }
 
+        attachmentPreparationJobs.removeValue(forKey: id)?.task?.cancel()
         let attachment = composerSession.attachments[index]
         _ = withAnimation(.easeOut(duration: 0.14)) {
             composerSession.attachments.remove(at: index)
@@ -1191,6 +1206,215 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
 
         attachmentPreviewRequest = AttachmentPreviewRequest(attachmentID: attachmentID)
+    }
+
+    private func retryPendingAttachment(_ attachmentID: GhosttyPendingAttachment.ID) {
+        guard let attachment = composerSession.attachments.first(where: { $0.id == attachmentID }),
+              attachment.didFailPreparingTransferSource,
+              let source = attachmentPreparationJobs[attachmentID]?.source else {
+            return
+        }
+
+        beginAttachmentPreparation(attachmentID, from: source)
+    }
+
+    private func beginAttachmentPreparation(
+        _ attachmentID: GhosttyPendingAttachment.ID,
+        from source: AttachmentPreparationSource
+    ) {
+        guard composerSession.attachments.contains(where: { $0.id == attachmentID }) else {
+            return
+        }
+
+        attachmentPreparationJobs[attachmentID]?.task?.cancel()
+        updatePendingAttachment(
+            id: attachmentID,
+            detail: "Preparing…",
+            preparationState: .preparing
+        )
+
+        let attemptID = UUID()
+        attachmentPreparationJobs[attachmentID] = AttachmentPreparationJob(
+            source: source,
+            attemptID: attemptID,
+            task: nil
+        )
+
+        let task = Task { @MainActor in
+            switch source {
+            case .photo(let item):
+                await preparePhotoAttachment(
+                    item,
+                    attachmentID: attachmentID,
+                    attemptID: attemptID
+                )
+            case .pastedFile(let url):
+                await preparePastedFileAttachment(
+                    url,
+                    attachmentID: attachmentID,
+                    attemptID: attemptID
+                )
+            case .pastedImage(let request):
+                await preparePastedImageAttachment(
+                    request,
+                    attachmentID: attachmentID,
+                    attemptID: attemptID
+                )
+            }
+        }
+
+        guard attachmentPreparationJobs[attachmentID]?.attemptID == attemptID else {
+            task.cancel()
+            return
+        }
+        attachmentPreparationJobs[attachmentID]?.task = task
+    }
+
+    private func preparePhotoAttachment(
+        _ item: PhotosPickerItem,
+        attachmentID: GhosttyPendingAttachment.ID,
+        attemptID: UUID
+    ) async {
+        guard item.supportedContentTypes.contains(where: { $0.conforms(to: .image) }),
+              let title = composerSession.attachments.first(where: { $0.id == attachmentID })?.title else {
+            failAttachmentPreparation(attachmentID, attemptID: attemptID)
+            return
+        }
+
+        var stagedURL: URL?
+        do {
+            guard let transfer = try await item.loadTransferable(
+                type: GhosttyPhotoPickerTransfer.self
+            ) else {
+                failAttachmentPreparation(attachmentID, attemptID: attemptID)
+                return
+            }
+            stagedURL = transfer.stagedURL
+            try Task.checkCancellation()
+
+            let renamedURL = try await GhosttyAttachmentStagingStore.renameStagedFile(
+                transfer.stagedURL,
+                filename: GhosttyAttachmentStagingStore.imageFilename(
+                    title: title,
+                    contentTypes: item.supportedContentTypes,
+                    uniqueID: attachmentID
+                )
+            )
+            stagedURL = renamedURL
+            guard let photo = await GhosttyPendingAttachment.photo(
+                title: title,
+                stagedFileURL: renamedURL
+            ) else {
+                failAttachmentPreparation(attachmentID, attemptID: attemptID)
+                return
+            }
+
+            applyPreparedAttachment(
+                photo,
+                to: attachmentID,
+                attemptID: attemptID
+            )
+        } catch is CancellationError {
+            if let stagedURL {
+                GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
+            }
+            return
+        } catch {
+            if let stagedURL {
+                GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
+            }
+            failAttachmentPreparation(attachmentID, attemptID: attemptID)
+        }
+    }
+
+    private func preparePastedFileAttachment(
+        _ url: URL,
+        attachmentID: GhosttyPendingAttachment.ID,
+        attemptID: UUID
+    ) async {
+        var stagedURL: URL?
+        do {
+            let preparedURL = try await GhosttyAttachmentStagingStore.stageFileURL(url)
+            stagedURL = preparedURL
+            try Task.checkCancellation()
+            applyPreparedAttachment(
+                .file(url: preparedURL),
+                to: attachmentID,
+                attemptID: attemptID
+            )
+        } catch is CancellationError {
+            if let stagedURL {
+                GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
+            }
+            return
+        } catch {
+            if let stagedURL {
+                GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
+            }
+            failAttachmentPreparation(attachmentID, attemptID: attemptID)
+        }
+    }
+
+    private func preparePastedImageAttachment(
+        _ request: GhosttyAttachmentPasteboardSnapshot.ImageProviderRequest,
+        attachmentID: GhosttyPendingAttachment.ID,
+        attemptID: UUID
+    ) async {
+        guard let attachment = await GhosttyAttachmentPasteboardSnapshot.imageAttachment(
+            from: request
+        )
+        else {
+            failAttachmentPreparation(attachmentID, attemptID: attemptID)
+            return
+        }
+
+        applyPreparedAttachment(
+            attachment,
+            to: attachmentID,
+            attemptID: attemptID
+        )
+    }
+
+    private func applyPreparedAttachment(
+        _ preparedAttachment: GhosttyPendingAttachment,
+        to attachmentID: GhosttyPendingAttachment.ID,
+        attemptID: UUID
+    ) {
+        guard attachmentPreparationJobs[attachmentID]?.attemptID == attemptID,
+              composerSession.attachments.contains(where: { $0.id == attachmentID }) else {
+            GhosttyAttachmentStagingStore.cleanup([preparedAttachment])
+            return
+        }
+
+        updatePendingAttachment(
+            id: attachmentID,
+            payload: preparedAttachment.payload,
+            previewPayload: preparedAttachment.previewPayload,
+            detail: preparedAttachment.detail,
+            preparationState: .ready
+        )
+        attachmentPreparationJobs.removeValue(forKey: attachmentID)
+    }
+
+    private func failAttachmentPreparation(
+        _ attachmentID: GhosttyPendingAttachment.ID,
+        attemptID: UUID,
+        detail: String = "Couldn’t load"
+    ) {
+        guard attachmentPreparationJobs[attachmentID]?.attemptID == attemptID else {
+            return
+        }
+        guard composerSession.attachments.contains(where: { $0.id == attachmentID }) else {
+            attachmentPreparationJobs.removeValue(forKey: attachmentID)
+            return
+        }
+
+        updatePendingAttachment(
+            id: attachmentID,
+            detail: detail,
+            preparationState: .failed
+        )
+        attachmentPreparationJobs[attachmentID]?.task = nil
     }
 
     private func pendingAttachmentSendFailureMessage(for error: Error) -> String {
@@ -1242,79 +1466,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
 
         for (item, attachment) in zip(items, attachments) {
-            loadPhotoPreview(item, for: attachment)
-        }
-    }
-
-    private func loadPhotoPreview(_ item: PhotosPickerItem, for attachment: GhosttyPendingAttachment) {
-        let attachmentID = attachment.id
-
-        guard item.supportedContentTypes.contains(where: { $0.conforms(to: .image) }) else {
-            updatePendingAttachment(
-                id: attachmentID,
-                detail: "Preview unavailable"
-            )
-            return
-        }
-
-        Task {
-            do {
-                guard let transfer = try await item.loadTransferable(
-                    type: GhosttyPhotoPickerTransfer.self
-                ) else {
-                    await MainActor.run {
-                        updatePendingAttachment(
-                            id: attachmentID,
-                            detail: "Preview unavailable"
-                        )
-                    }
-                    return
-                }
-
-                let stagedURL = try await GhosttyAttachmentStagingStore.renameStagedFile(
-                    transfer.stagedURL,
-                    filename: GhosttyAttachmentStagingStore.imageFilename(
-                        title: attachment.title,
-                        contentTypes: item.supportedContentTypes,
-                        uniqueID: attachment.id
-                    )
-                )
-                guard let photo = await GhosttyPendingAttachment.photo(
-                    title: attachment.title,
-                    stagedFileURL: stagedURL
-                ) else {
-                    await MainActor.run {
-                        updatePendingAttachment(
-                            id: attachmentID,
-                            detail: "Preview unavailable"
-                        )
-                    }
-                    return
-                }
-
-                let didApply = await MainActor.run { () -> Bool in
-                    guard composerSession.attachments.contains(where: { $0.id == attachmentID }) else {
-                        return false
-                    }
-                    updatePendingAttachment(
-                        id: attachmentID,
-                        payload: photo.payload,
-                        previewPayload: photo.previewPayload,
-                        detail: photo.detail
-                    )
-                    return true
-                }
-                if !didApply {
-                    GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
-                }
-            } catch {
-                await MainActor.run {
-                    updatePendingAttachment(
-                        id: attachmentID,
-                        detail: "Preview unavailable"
-                    )
-                }
-            }
+            beginAttachmentPreparation(attachment.id, from: .photo(item))
         }
     }
 
@@ -1322,13 +1474,15 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         id: UUID,
         payload: GhosttyAttachmentPayload? = nil,
         previewPayload: GhosttyAttachmentPreviewPayload? = nil,
-        detail: String
+        detail: String,
+        preparationState: GhosttyPendingAttachment.PreparationState? = nil
     ) {
         guard let index = composerSession.attachments.firstIndex(where: { $0.id == id }) else { return }
         composerSession.attachments[index] = composerSession.attachments[index].updating(
             payload: payload,
             previewPayload: previewPayload,
-            detail: detail
+            detail: detail,
+            preparationState: preparationState
         )
     }
 
@@ -1375,12 +1529,20 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         let pasteboard = UIPasteboard.general
 
         if pasteboard.hasImages {
+            guard let request = GhosttyAttachmentPasteboardSnapshot.currentImageProviderRequest()
+            else {
+                presentAttachmentNotice("Clipboard image could not be read.")
+                return false
+            }
             let attachment = GhosttyPendingAttachment.pasteboardImagePlaceholder()
             withAnimation(.easeOut(duration: 0.16)) {
                 composerSession.attachments.append(attachment)
                 attachmentNotice = nil
             }
-            loadPasteboardImageAttachment(for: attachment.id)
+            beginAttachmentPreparation(
+                attachment.id,
+                from: .pastedImage(request)
+            )
             return true
         }
 
@@ -1397,7 +1559,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         let placeholder = GhosttyPendingAttachment(
             kind: .file,
             title: filename.isEmpty ? "File" : filename,
-            detail: "Loading preview"
+            detail: "Preparing…",
+            preparationState: .preparing
         )
 
         withAnimation(.easeOut(duration: 0.16)) {
@@ -1405,62 +1568,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             attachmentNotice = nil
         }
 
-        Task {
-            do {
-                let stagedURL = try await GhosttyAttachmentStagingStore.stageFileURL(url)
-                let stagedAttachment = GhosttyPendingAttachment.file(url: stagedURL)
-                let didApply = await MainActor.run { () -> Bool in
-                    guard composerSession.attachments.contains(where: { $0.id == placeholder.id }) else {
-                        return false
-                    }
-                    updatePendingAttachment(
-                        id: placeholder.id,
-                        payload: stagedAttachment.payload,
-                        previewPayload: stagedAttachment.previewPayload,
-                        detail: stagedAttachment.detail
-                    )
-                    return true
-                }
-                if !didApply {
-                    GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
-                }
-            } catch {
-                await MainActor.run {
-                    removePendingAttachment(placeholder.id)
-                    presentAttachmentNotice("Could not attach pasted file.")
-                }
-            }
-        }
-    }
-
-    private func loadPasteboardImageAttachment(for attachmentID: UUID) {
-        Task {
-            let attachment = await GhosttyAttachmentPasteboardSnapshot.currentImageAttachment()
-
-            let didApply = await MainActor.run { () -> Bool in
-                guard composerSession.attachments.contains(where: { $0.id == attachmentID }) else {
-                    return false
-                }
-                guard let attachment else {
-                    updatePendingAttachment(
-                        id: attachmentID,
-                        detail: "Preview unavailable"
-                    )
-                    return true
-                }
-
-                updatePendingAttachment(
-                    id: attachmentID,
-                    payload: attachment.payload,
-                    previewPayload: attachment.previewPayload,
-                    detail: "Image"
-                )
-                return true
-            }
-            if !didApply, let attachment {
-                GhosttyAttachmentStagingStore.cleanup([attachment])
-            }
-        }
+        beginAttachmentPreparation(placeholder.id, from: .pastedFile(url))
     }
 
     private func presentAttachmentNotice(_ message: String) {
@@ -1751,7 +1859,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
 
         guard session.areAttachmentsReady else {
-            composerStatusMessage = "Attachment is still loading"
+            composerStatusMessage = composerAttachmentPreparationMessage(for: session.attachments)
             return
         }
 
@@ -1762,7 +1870,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 attachments: session.attachments
             )
         } catch {
-            composerStatusMessage = "Attachment is still loading"
+            composerStatusMessage = composerAttachmentPreparationMessage(for: session.attachments)
             return
         }
 
@@ -1800,6 +1908,18 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 }
             }
         }
+    }
+
+    private func composerAttachmentPreparationMessage(
+        for attachments: [GhosttyPendingAttachment]
+    ) -> String {
+        if let failed = attachments.first(where: \.didFailPreparingTransferSource) {
+            return "\(failed.title) couldn’t load — retry or remove"
+        }
+        if let preparing = attachments.first(where: \.isPreparingTransferSource) {
+            return "\(preparing.title) is still preparing"
+        }
+        return "Attachment is not ready"
     }
 
     private func completeComposerAttachmentTransfer(

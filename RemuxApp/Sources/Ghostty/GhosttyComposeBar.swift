@@ -210,6 +210,7 @@ struct GhosttyComposeBar: View {
     let onChoosePhotos: () -> Void
     let onChooseFiles: () -> Void
     let onOpenAttachment: (GhosttyPendingAttachment.ID) -> Void
+    let onRetryAttachment: (GhosttyPendingAttachment.ID) -> Void
     let onRemoveAttachment: (GhosttyPendingAttachment.ID) -> Void
     let onPasteAttachment: () -> Bool
     let onStartDictation: () -> Void
@@ -224,6 +225,7 @@ struct GhosttyComposeBar: View {
                     attachments: attachments,
                     isEnabled: submissionState.allowsComposerInput,
                     onOpen: onOpenAttachment,
+                    onRetry: onRetryAttachment,
                     onRemove: onRemoveAttachment
                 )
 
@@ -738,6 +740,7 @@ private struct GhosttyComposerAttachmentStrip: View {
     let attachments: [GhosttyPendingAttachment]
     let isEnabled: Bool
     let onOpen: (GhosttyPendingAttachment.ID) -> Void
+    let onRetry: (GhosttyPendingAttachment.ID) -> Void
     let onRemove: (GhosttyPendingAttachment.ID) -> Void
 
     var body: some View {
@@ -756,13 +759,24 @@ private struct GhosttyComposerAttachmentStrip: View {
         ZStack(alignment: .topTrailing) {
             Button {
                 Haptic.chromeControlPress()
-                onOpen(attachment.id)
+                if attachment.didFailPreparingTransferSource {
+                    onRetry(attachment.id)
+                } else {
+                    onOpen(attachment.id)
+                }
             } label: {
                 attachmentPreview(attachment)
             }
             .buttonStyle(.plain)
-            .disabled(!isEnabled || !attachment.isPreviewable)
-            .accessibilityLabel("Preview \(attachment.title)")
+            .disabled(
+                !isEnabled
+                    || (!attachment.isPreviewable && !attachment.didFailPreparingTransferSource)
+            )
+            .accessibilityLabel(
+                attachment.didFailPreparingTransferSource
+                    ? "Retry \(attachment.title)"
+                    : "Preview \(attachment.title)"
+            )
 
             Button {
                 Haptic.chromeControlPress()
@@ -817,6 +831,15 @@ private struct GhosttyComposerAttachmentStrip: View {
             if attachment.isPreparingTransferSource {
                 ProgressView()
                     .controlSize(.small)
+            } else if attachment.didFailPreparingTransferSource {
+                VStack(spacing: 3) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 14, weight: .semibold))
+
+                    Text("Retry")
+                        .font(.system(size: 9, weight: .semibold))
+                }
+                .foregroundStyle(.orange)
             } else {
                 Image(systemName: attachment.systemName)
                     .font(.system(size: 18, weight: .semibold))
@@ -835,6 +858,10 @@ private struct GhosttyComposerAttachmentStrip: View {
                 if attachment.isPreparingTransferSource {
                     ProgressView()
                         .controlSize(.mini)
+                } else if attachment.didFailPreparingTransferSource {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.orange)
                 } else {
                     Text(fileTypeLabel(for: attachment))
                         .font(.system(size: 9, weight: .bold, design: .rounded))
@@ -844,12 +871,21 @@ private struct GhosttyComposerAttachmentStrip: View {
             }
             .frame(width: 34, height: 40)
 
-            Text(attachment.title)
-                .font(.system(size: 12.5, weight: .medium))
-                .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(attachment.title)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
+                    .lineLimit(attachment.didFailPreparingTransferSource ? 1 : 2)
+
+                if attachment.didFailPreparingTransferSource {
+                    Text("Tap to retry")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.orange)
+                        .lineLimit(1)
+                }
+            }
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 9)
         .frame(width: 154, height: 58)

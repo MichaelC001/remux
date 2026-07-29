@@ -3,6 +3,11 @@ import UIKit
 import UniformTypeIdentifiers
 
 struct GhosttyAttachmentPasteboardSnapshot: Equatable {
+    struct ImageProviderRequest {
+        let provider: NSItemProvider
+        let typeIdentifier: String
+    }
+
     let hasImages: Bool
     let hasURLs: Bool
     let hasStrings: Bool
@@ -69,6 +74,20 @@ struct GhosttyAttachmentPasteboardSnapshot: Equatable {
             return nil
         }
 
+        return await imageAttachment(from: request)
+    }
+
+    @MainActor
+    static func currentImageProviderRequest(
+        _ pasteboard: UIPasteboard = .general
+    ) -> ImageProviderRequest? {
+        imageProviderRequest(in: pasteboard)
+    }
+
+    @MainActor
+    static func imageAttachment(
+        from request: ImageProviderRequest
+    ) async -> GhosttyPendingAttachment? {
         if let fileURL = await loadImageFileCopy(
             from: request.provider,
             typeIdentifier: request.typeIdentifier
@@ -282,8 +301,4 @@ struct GhosttyAttachmentPasteboardSnapshot: Equatable {
         ]
     }
 
-    private struct ImageProviderRequest {
-        let provider: NSItemProvider
-        let typeIdentifier: String
-    }
 }
