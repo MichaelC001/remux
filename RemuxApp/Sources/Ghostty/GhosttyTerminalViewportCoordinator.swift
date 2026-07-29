@@ -3,7 +3,6 @@ import Foundation
 
 enum GhosttyTerminalViewportHoldReason: Hashable {
     case sheet
-    case composer
     case coveredPresentation
     case keyboardTransition
     case topologyRefocus
@@ -13,8 +12,6 @@ enum GhosttyTerminalViewportHoldReason: Hashable {
         switch self {
         case .sheet:
             return "sheet"
-        case .composer:
-            return "composer"
         case .coveredPresentation:
             return "coveredPresentation"
         case .keyboardTransition:
@@ -193,19 +190,6 @@ struct GhosttyTerminalViewportCoordinator: Equatable {
     }
 
     @discardableResult
-    mutating func setComposerPresented(
-        _ isPresented: Bool,
-        liveSize: CGSize
-    ) -> GhosttyTerminalViewportGeometryHoldEffect {
-        setGeometryHold(
-            .composer,
-            isActive: isPresented,
-            liveSize: liveSize,
-            releasePolicy: .preserveCurrentEffective
-        )
-    }
-
-    @discardableResult
     mutating func setCoveredPresentation(
         _ isCovered: Bool,
         liveSize: CGSize
@@ -294,7 +278,7 @@ struct GhosttyTerminalViewportCoordinator: Equatable {
 
     private static func isGeometryHold(_ reason: GhosttyTerminalViewportHoldReason) -> Bool {
         switch reason {
-        case .sheet, .composer, .coveredPresentation, .topologyRefocus, .unsizedInitialLayout:
+        case .sheet, .coveredPresentation, .topologyRefocus, .unsizedInitialLayout:
             return true
         case .keyboardTransition:
             return false

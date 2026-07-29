@@ -34,6 +34,11 @@ enum GhosttyKeyboardChromeSizing {
     static let dockButtonHeight: CGFloat = 38
     static let dockButtonWidth: CGFloat = 38
     static let dockButtonCornerRadius: CGFloat = 17
+    static let controlGroupVerticalPadding: CGFloat = 4
+
+    /// The bottom chrome always reserves one dock row. Composer content may
+    /// grow above this baseline without changing the terminal viewport.
+    static let baselineHeight = dockButtonHeight + (controlGroupVerticalPadding * 2)
 
     static func keyboardReplacementHeight(
         keyboardOverlapHeight: CGFloat,
@@ -103,8 +108,17 @@ extension TerminalTheme {
     }
 }
 
-struct GhosttyKeyboardChrome: View {
+enum GhosttyKeyboardChromeAnimation {
+    static let composerTransition = Animation.spring(
+        response: 0.34,
+        dampingFraction: 0.88,
+        blendDuration: 0
+    )
+}
+
+struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
+    @Namespace private var inputControlTransition
 
     let keyboardMode: GhosttyKeyboardChromeMode
     let isEnabled: Bool
@@ -124,35 +138,57 @@ struct GhosttyKeyboardChrome: View {
     let onToggleControl: () -> Void
     let onShowShortcuts: () -> Void
     let sendKey: (GhosttySurfaceKeyEvent) -> Bool
+    let composerContent: () -> ComposerContent
 
     var body: some View {
         selectorRow
+            .fixedSize(horizontal: false, vertical: true)
             .onAppear { Haptic.prewarmChromeFeedback() }
-            .transaction { transaction in
-                transaction.animation = nil
-            }
-            .transaction { transaction in
-                transaction.animation = nil
-                transaction.disablesAnimations = true
-            }
     }
 
     @ViewBuilder
     private var selectorRow: some View {
-        if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: isCompact ? 8 : 10) {
-                selectorRowContent
-            }
+        if isComposerPresented {
+            composerSelectorRow
         } else {
-            selectorRowContent
+            standardSelectorRowContainer
         }
     }
 
-    private var selectorRowContent: some View {
+    @ViewBuilder
+    private var standardSelectorRowContainer: some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: isCompact ? 8 : 10) {
+                standardSelectorRow
+            }
+        } else {
+            standardSelectorRow
+        }
+    }
+
+    private var standardSelectorRow: some View {
         HStack(spacing: isCompact ? 8 : 10) {
             terminalKeyControls
             navigationControls
             inputControls
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private var composerSelectorRow: some View {
+        HStack(alignment: .bottom, spacing: isCompact ? 8 : 10) {
+            standaloneControlGroup {
+                composerToggleButton(systemName: "xmark")
+            }
+
+            composerContent()
+                .frame(maxWidth: .infinity)
+                .layoutPriority(1)
+                .transition(.opacity)
+
+            standaloneControlGroup {
+                keyboardToggleButton
+            }
         }
         .frame(maxWidth: .infinity, alignment: .center)
     }
@@ -224,40 +260,62 @@ struct GhosttyKeyboardChrome: View {
     private var inputControls: some View {
         controlGroup {
             HStack(spacing: 2) {
-                GhosttyKeyboardChromeDockButton(
-                    systemName: "square.and.pencil",
-                    badge: nil,
-                    chromeStyle: chromeStyle,
-                    accessibilityLabel: isComposerPresented ? "Close composer" : "Open composer",
-                    accessibilityHint: isComposerPresented
-                        ? "Hide the compose field while preserving its draft."
-                        : "Prepare an editable message before sending it to the terminal.",
-                    accessibilityIdentifier: "terminal.composer.toggle",
-                    isActive: isComposerPresented,
-                    isEnabled: !isInteractionLocked,
-                    action: onToggleComposer
-                )
-
-                GhosttyKeyboardChromeDockButton(
-                    systemName: "keyboard",
-                    badge: nil,
-                    chromeStyle: chromeStyle,
-                    accessibilityLabel: keyboardMode == .hidden ? "Show keyboard controls" : "Hide keyboard controls",
-                    accessibilityHint: nil,
-                    accessibilityIdentifier: "terminal.keyboard",
-                    isActive: keyboardMode != .hidden,
-                    isEnabled: isEnabled || isComposerPresented,
-                    action: onToggleKeyboard
-                )
+                composerToggleButton(systemName: "square.and.pencil")
+                keyboardToggleButton
             }
         }
+    }
+
+    private func composerToggleButton(systemName: String) -> some View {
+        GhosttyKeyboardChromeDockButton(
+            systemName: systemName,
+            badge: nil,
+            chromeStyle: chromeStyle,
+            accessibilityLabel: isComposerPresented ? "Close composer" : "Open composer",
+            accessibilityHint: isComposerPresented
+                ? "Hide the compose field while preserving its draft."
+                : "Prepare an editable message before sending it to the terminal.",
+            accessibilityIdentifier: "terminal.composer.toggle",
+            isActive: isComposerPresented,
+            isEnabled: !isInteractionLocked,
+            action: onToggleComposer
+        )
+        .matchedGeometryEffect(
+            id: "terminal.composer.toggle",
+            in: inputControlTransition
+        )
+    }
+
+    private var keyboardToggleButton: some View {
+        GhosttyKeyboardChromeDockButton(
+            systemName: "keyboard",
+            badge: nil,
+            chromeStyle: chromeStyle,
+            accessibilityLabel: keyboardMode == .hidden ? "Show keyboard controls" : "Hide keyboard controls",
+            accessibilityHint: nil,
+            accessibilityIdentifier: "terminal.keyboard",
+            isActive: keyboardMode != .hidden,
+            isEnabled: isEnabled || isComposerPresented,
+            action: onToggleKeyboard
+        )
+        .matchedGeometryEffect(
+            id: "terminal.keyboard",
+            in: inputControlTransition
+        )
     }
 
     private func controlGroup<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         content()
             .padding(.horizontal, 5)
-            .padding(.vertical, 4)
+            .padding(.vertical, GhosttyKeyboardChromeSizing.controlGroupVerticalPadding)
             .ghosttyToolbarGroupSurface()
+    }
+
+    private func standaloneControlGroup<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        controlGroup(content: content)
+            .fixedSize()
     }
 
     private func accessoryKey(
@@ -331,6 +389,7 @@ private struct GhosttyKeyboardChromeDockButton: View {
                 Image(systemName: systemName)
                     .font(.system(size: 16.5, weight: .semibold))
                     .symbolRenderingMode(.monochrome)
+                    .contentTransition(.symbolEffect(.replace))
 
                 if let badge {
                     dockBadge(badge)

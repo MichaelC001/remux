@@ -74,9 +74,127 @@ enum GhosttyComposeBarSubmissionState: Equatable {
     }
 }
 
-struct GhosttyComposeBar: View {
-    static let collapsedHeight: CGFloat = 50
+private struct GhosttyComposerInputLayout: Layout {
+    let isDictationActive: Bool
+    let horizontalSpacing: CGFloat
+    let verticalSpacing: CGFloat
+    let expandedContentInset: CGFloat
 
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        guard subviews.count == 4 else { return .zero }
+        guard let width = proposal.width, width.isFinite, width > 0 else {
+            let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+            return CGSize(
+                width: sizes.reduce(0) { $0 + $1.width } + (horizontalSpacing * 3),
+                height: sizes.map(\.height).max() ?? 0
+            )
+        }
+
+        let metrics = metrics(width: width, subviews: subviews)
+        return CGSize(width: width, height: metrics.height)
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        guard subviews.count == 4 else { return }
+        let metrics = metrics(width: bounds.width, subviews: subviews)
+
+        if metrics.isExpanded {
+            subviews[1].place(
+                at: CGPoint(
+                    x: bounds.minX + expandedContentInset,
+                    y: bounds.minY + expandedContentInset
+                ),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(
+                    width: max(0, bounds.width - (expandedContentInset * 2)),
+                    height: metrics.center.height
+                )
+            )
+            subviews[0].place(
+                at: CGPoint(x: bounds.minX, y: bounds.maxY),
+                anchor: .bottomLeading,
+                proposal: ProposedViewSize(metrics.leading)
+            )
+            subviews[3].place(
+                at: CGPoint(x: bounds.maxX, y: bounds.maxY),
+                anchor: .bottomTrailing,
+                proposal: ProposedViewSize(metrics.send)
+            )
+            subviews[2].place(
+                at: CGPoint(
+                    x: bounds.maxX - metrics.send.width - horizontalSpacing,
+                    y: bounds.maxY
+                ),
+                anchor: .bottomTrailing,
+                proposal: ProposedViewSize(metrics.dictation)
+            )
+            return
+        }
+
+        var x = bounds.minX
+        for (index, size) in metrics.compactSizes.enumerated() {
+            subviews[index].place(
+                at: CGPoint(x: x, y: bounds.maxY),
+                anchor: .bottomLeading,
+                proposal: ProposedViewSize(size)
+            )
+            x += size.width + horizontalSpacing
+        }
+    }
+
+    private func metrics(width: CGFloat, subviews: Subviews) -> Metrics {
+        let leading = subviews[0].sizeThatFits(.unspecified)
+        let dictation = subviews[2].sizeThatFits(.unspecified)
+        let send = subviews[3].sizeThatFits(.unspecified)
+        let compactCenterWidth = max(
+            0,
+            width - leading.width - dictation.width - send.width - (horizontalSpacing * 3)
+        )
+        let compactCenter = subviews[1].sizeThatFits(
+            ProposedViewSize(width: compactCenterWidth, height: nil)
+        )
+        let controlsHeight = max(leading.height, max(dictation.height, send.height))
+        let isExpanded = !isDictationActive && compactCenter.height > controlsHeight
+        let expandedCenterWidth = max(0, width - (expandedContentInset * 2))
+        let center = isExpanded
+            ? subviews[1].sizeThatFits(ProposedViewSize(width: expandedCenterWidth, height: nil))
+            : compactCenter
+        let height = isExpanded
+            ? expandedContentInset + center.height + verticalSpacing + controlsHeight
+            : max(controlsHeight, center.height)
+
+        return Metrics(
+            leading: leading,
+            center: center,
+            dictation: dictation,
+            send: send,
+            compactSizes: [leading, center, dictation, send],
+            isExpanded: isExpanded,
+            height: height
+        )
+    }
+
+    private struct Metrics {
+        let leading: CGSize
+        let center: CGSize
+        let dictation: CGSize
+        let send: CGSize
+        let compactSizes: [CGSize]
+        let isExpanded: Bool
+        let height: CGFloat
+    }
+}
+
+struct GhosttyComposeBar: View {
     @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
 
     @Binding var text: String
@@ -125,8 +243,8 @@ struct GhosttyComposeBar: View {
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 3)
-        .frame(minHeight: Self.collapsedHeight)
-        .frame(maxWidth: 560)
+        .frame(minHeight: GhosttyKeyboardChromeSizing.baselineHeight)
+        .frame(maxWidth: .infinity)
         .ghosttyComposerSurface()
         .overlay {
             Color.clear
@@ -138,40 +256,15 @@ struct GhosttyComposeBar: View {
     }
 
     private var composerRow: some View {
-        HStack(alignment: .bottom, spacing: 2) {
+        GhosttyComposerInputLayout(
+            isDictationActive: dictationPhase.isActive,
+            horizontalSpacing: 2,
+            verticalSpacing: 2,
+            expandedContentInset: 8
+        ) {
             leadingControl
 
-            VStack(alignment: .leading, spacing: 0) {
-                if !dictationPhase.isActive, let statusMessage {
-                    Text(statusMessage)
-                        .font(.caption)
-                        .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
-                        .padding(.leading, 4)
-                        .accessibilityIdentifier("terminal.composer.status")
-                }
-
-                ZStack(alignment: .topLeading) {
-                    GhosttyComposerTextView(
-                        text: $text,
-                        caretColor: UIColor(chromeStyle.accent),
-                        isEditable: submissionState.allowsComposerInput,
-                        allowsUserEdits: !dictationPhase.isActive,
-                        wantsFirstResponder: wantsKeyboardFocus,
-                        activationToken: keyboardActivationToken,
-                        responderHandoff: keyboardResponderHandoff,
-                        onFocusRequest: onKeyboardFocusRequest,
-                        onResponderAttached: onKeyboardResponderAttached,
-                        onPasteAttachment: onPasteAttachment
-                    )
-                    .frame(height: dictationPhase.isActive ? 32 : nil)
-                    .opacity(dictationPhase.isActive ? 0 : 1)
-                    .allowsHitTesting(!dictationPhase.isActive)
-                    .accessibilityHidden(dictationPhase.isActive)
-                    .overlay(alignment: .topLeading) {
-                        composerCenterPresentation
-                    }
-                }
-            }
+            composerTextRegion
 
             dictationControl
 
@@ -182,7 +275,41 @@ struct GhosttyComposeBar: View {
                 action: onSend
             )
         }
-        .frame(height: dictationPhase.isActive ? 42 : nil, alignment: .bottom)
+    }
+
+    private var composerTextRegion: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if !dictationPhase.isActive, let statusMessage {
+                Text(statusMessage)
+                    .font(.caption)
+                    .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
+                    .padding(.leading, 4)
+                    .accessibilityIdentifier("terminal.composer.status")
+            }
+
+            ZStack(alignment: .topLeading) {
+                GhosttyComposerTextView(
+                    text: $text,
+                    caretColor: UIColor(chromeStyle.accent),
+                    allowsUserEdits: submissionState.allowsComposerInput
+                        && !dictationPhase.isActive,
+                    wantsFirstResponder: wantsKeyboardFocus,
+                    activationToken: keyboardActivationToken,
+                    responderHandoff: keyboardResponderHandoff,
+                    onFocusRequest: onKeyboardFocusRequest,
+                    onResponderAttached: onKeyboardResponderAttached,
+                    onPasteAttachment: onPasteAttachment
+                )
+                .frame(height: dictationPhase.isActive ? 32 : nil)
+                .opacity(dictationPhase.isActive ? 0 : 1)
+                .allowsHitTesting(!dictationPhase.isActive)
+                .accessibilityHidden(dictationPhase.isActive)
+                .overlay(alignment: .topLeading) {
+                    composerCenterPresentation
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -450,7 +577,6 @@ private extension View {
 private struct GhosttyComposerTextView: UIViewRepresentable {
     @Binding var text: String
     let caretColor: UIColor
-    let isEditable: Bool
     let allowsUserEdits: Bool
     let wantsFirstResponder: Bool
     let activationToken: Int
@@ -474,13 +600,14 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
         textView.tintColor = caretColor
         textView.autocapitalizationType = .none
         textView.autocorrectionType = .no
-        textView.spellCheckingType = .yes
+        // Keep the keyboard's assistance geometry identical when ownership
+        // moves between the terminal and composer responders.
+        textView.spellCheckingType = .no
         textView.smartDashesType = .no
         textView.smartQuotesType = .no
         textView.smartInsertDeleteType = .no
         textView.textContainerInset = UIEdgeInsets(top: 5, left: 0, bottom: 5, right: 0)
         textView.textContainer.lineFragmentPadding = 4
-        textView.isEditable = isEditable
         textView.isScrollEnabled = false
         textView.accessibilityIdentifier = "terminal.composer.field"
         textView.onAttachedToWindow = onResponderAttached
@@ -490,7 +617,6 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
 
     func updateUIView(_ textView: GhosttyComposerUITextView, context: Context) {
         context.coordinator.parent = self
-        textView.isEditable = isEditable
         textView.tintColor = caretColor
         textView.onPasteAttachment = onPasteAttachment
         textView.onAttachedToWindow = onResponderAttached

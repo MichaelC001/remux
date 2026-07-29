@@ -263,6 +263,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                                 keyboardWillHideCount: uiTestKeyboardWillHideCount,
                                 liveViewportSize: liveTerminalViewportSize,
                                 effectiveViewportSize: terminalViewportSize,
+                                bottomChromeHeight: bottomChromeHeight,
+                                screenSafeAreaBottom: screenProxy.safeAreaInsets.bottom,
                                 isKeyboardTransitionActive: terminalViewportCoordinator.isKeyboardTransitionActive,
                                 isAwaitingSystemKeyboard: isAwaitingSystemKeyboardPresentation
                             )
@@ -358,72 +360,69 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             .overlay(alignment: .bottom) {
                 attachmentNoticeLayer()
             }
-            .overlay(alignment: .bottom) {
-                if isComposerPresented {
-                    GhosttyComposeBar(
-                        text: $composerSession.draft,
-                        attachments: $composerSession.attachments,
-                        wantsKeyboardFocus: inputCoordinator.keyboardMode == .system
-                            && inputCoordinator.keyboardOwner == .composer,
-                        keyboardActivationToken: inputCoordinator.composerActivationToken,
-                        keyboardResponderHandoff: keyboardResponderHandoff,
-                        submissionState: composerSubmissionState,
-                        dictationPhase: composerDictationController.phase,
-                        dictationAudioLevelModel: composerDictationController.audioLevelModel,
-                        statusMessage: composerStatusMessage,
-                        attachmentUploadCount: attachmentTransferUploadCount,
-                        attachmentTransferProgress: attachmentTransferProgress,
-                        onKeyboardFocusRequest: handleComposerKeyboardFocusRequest,
-                        onKeyboardResponderAttached: handleComposerKeyboardResponderAttached,
-                        onChoosePhotos: openAttachmentPhotosPicker,
-                        onChooseFiles: openAttachmentFilePicker,
-                        onOpenAttachments: showPendingAttachmentPreview,
-                        onRemoveAttachment: removePendingAttachment,
-                        onPasteAttachment: handleComposerAttachmentPaste,
-                        onStartDictation: startComposerDictation,
-                        onCancelDictation: cancelComposerDictation,
-                        onFinishDictation: finishComposerDictation,
-                        onSend: submitComposer
-                    )
-                    .padding(.horizontal, chrome.surfaceHorizontalPadding)
-                    .padding(.bottom, 4)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .zIndex(1)
-                }
-            }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                GhosttyKeyboardChrome(
-                    keyboardMode: renderedKeyboardMode,
-                    isEnabled: interactionProjection.isInputAvailable,
-                    isInteractionLocked: composerSubmissionState.isSending,
-                    isCompact: chrome.isCompact,
-                    isControlArmed: terminalInputController.isControlArmed,
-                    selectedWindowIndex: interactionProjection.selectedWindowIndex,
-                    windowCount: interactionProjection.windowCount,
-                    selectedPaneIndex: interactionProjection.selectedPaneIndex,
-                    paneCount: interactionProjection.paneCount,
-                    isComposerPresented: isComposerPresented,
-                    onShowHome: onEditConnection,
-                    onShowWindows: showWindows,
-                    onShowPanes: showPanes,
-                    onToggleComposer: toggleComposer,
-                    onToggleKeyboard: toggleKeyboardChrome,
-                    onToggleControl: toggleControlModifier,
-                    onShowShortcuts: showShortcutPalette,
-                    sendKey: sendTerminalKeyEvent
-                )
-                .padding(.horizontal, chrome.surfaceHorizontalPadding)
-                .padding(.top, 4)
-                .padding(.bottom, chrome.bottomPadding)
-                .frame(maxWidth: .infinity, alignment: .bottom)
-                .background {
-                    GeometryReader { chromeProxy in
-                        Color.clear.preference(
-                            key: GhosttyBottomChromeHeightPreferenceKey.self,
-                            value: chromeProxy.size.height
-                        )
+                Color.clear
+                    .frame(height: GhosttyKeyboardChromeSizing.baselineHeight)
+                    .overlay(alignment: .bottom) {
+                        GhosttyKeyboardChrome(
+                            keyboardMode: renderedKeyboardMode,
+                            isEnabled: interactionProjection.isInputAvailable,
+                            isInteractionLocked: composerSubmissionState.isSending,
+                            isCompact: chrome.isCompact,
+                            isControlArmed: terminalInputController.isControlArmed,
+                            selectedWindowIndex: interactionProjection.selectedWindowIndex,
+                            windowCount: interactionProjection.windowCount,
+                            selectedPaneIndex: interactionProjection.selectedPaneIndex,
+                            paneCount: interactionProjection.paneCount,
+                            isComposerPresented: isComposerPresented,
+                            onShowHome: onEditConnection,
+                            onShowWindows: showWindows,
+                            onShowPanes: showPanes,
+                            onToggleComposer: toggleComposer,
+                            onToggleKeyboard: toggleKeyboardChrome,
+                            onToggleControl: toggleControlModifier,
+                            onShowShortcuts: showShortcutPalette,
+                            sendKey: sendTerminalKeyEvent
+                        ) {
+                            GhosttyComposeBar(
+                                text: $composerSession.draft,
+                                attachments: $composerSession.attachments,
+                                wantsKeyboardFocus: inputCoordinator.keyboardMode == .system
+                                    && inputCoordinator.keyboardOwner == .composer,
+                                keyboardActivationToken: inputCoordinator.composerActivationToken,
+                                keyboardResponderHandoff: keyboardResponderHandoff,
+                                submissionState: composerSubmissionState,
+                                dictationPhase: composerDictationController.phase,
+                                dictationAudioLevelModel: composerDictationController.audioLevelModel,
+                                statusMessage: composerStatusMessage,
+                                attachmentUploadCount: attachmentTransferUploadCount,
+                                attachmentTransferProgress: attachmentTransferProgress,
+                                onKeyboardFocusRequest: handleComposerKeyboardFocusRequest,
+                                onKeyboardResponderAttached: handleComposerKeyboardResponderAttached,
+                                onChoosePhotos: openAttachmentPhotosPicker,
+                                onChooseFiles: openAttachmentFilePicker,
+                                onOpenAttachments: showPendingAttachmentPreview,
+                                onRemoveAttachment: removePendingAttachment,
+                                onPasteAttachment: handleComposerAttachmentPaste,
+                                onStartDictation: startComposerDictation,
+                                onCancelDictation: cancelComposerDictation,
+                                onFinishDictation: finishComposerDictation,
+                                onSend: submitComposer
+                            )
+                        }
                     }
-                }
+                    .padding(.horizontal, chrome.surfaceHorizontalPadding)
+                    .padding(.top, 4)
+                    .padding(.bottom, chrome.bottomPadding)
+                    .frame(maxWidth: .infinity, alignment: .bottom)
+                    .background {
+                        GeometryReader { chromeProxy in
+                            Color.clear.preference(
+                                key: GhosttyBottomChromeHeightPreferenceKey.self,
+                                value: chromeProxy.size.height
+                            )
+                        }
+                    }
             }
             .onPreferenceChange(GhosttyBottomChromeHeightPreferenceKey.self) { newHeight in
                 let normalizedHeight = GhosttySelectionSheetSizing.normalizedHeight(newHeight)
@@ -778,15 +777,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func openComposer() {
         composerDictationController.prepare()
-        let liveSize = terminalViewportCoordinator.latestLiveSize
-        let effect = terminalViewportCoordinator.setComposerPresented(
-            true,
-            liveSize: liveSize
-        )
-        GhosttyRuntimeTrace.tmuxViewport(
-            "viewport.freeze begin reason=composer effect=\(effect) live=\(liveSize.traceLabel) holdReasons=\(terminalViewportCoordinator.holdReasonTraceLabel)"
-        )
-        withAnimation(.easeOut(duration: 0.16)) {
+        withAnimation(GhosttyKeyboardChromeAnimation.composerTransition) {
             isComposerPresented = true
         }
     }
@@ -807,15 +798,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             )
         }
 
-        let liveSize = terminalViewportCoordinator.latestLiveSize
-        let effect = terminalViewportCoordinator.setComposerPresented(
-            false,
-            liveSize: liveSize
-        )
-        GhosttyRuntimeTrace.tmuxViewport(
-            "viewport.freeze end reason=composer effect=\(effect) live=\(liveSize.traceLabel) holdReasons=\(terminalViewportCoordinator.holdReasonTraceLabel)"
-        )
-        withAnimation(.easeOut(duration: 0.16)) {
+        withAnimation(GhosttyKeyboardChromeAnimation.composerTransition) {
             isComposerPresented = false
         }
     }
@@ -2479,6 +2462,8 @@ private struct GhosttyKeyboardContinuityAccessibilityMarker: View {
     let keyboardWillHideCount: Int
     let liveViewportSize: CGSize
     let effectiveViewportSize: CGSize
+    let bottomChromeHeight: CGFloat
+    let screenSafeAreaBottom: CGFloat
     let isKeyboardTransitionActive: Bool
     let isAwaitingSystemKeyboard: Bool
 
@@ -2498,6 +2483,8 @@ private struct GhosttyKeyboardContinuityAccessibilityMarker: View {
                 "owner=\(ownerLabel);willHide=\(keyboardWillHideCount);"
                     + "liveViewport=\(liveViewportSize.traceLabel);"
                     + "effectiveViewport=\(effectiveViewportSize.traceLabel);"
+                    + "bottomChrome=\(bottomChromeHeight.traceLabel);"
+                    + "safeAreaBottom=\(screenSafeAreaBottom.traceLabel);"
                     + "transitionActive=\(isKeyboardTransitionActive);"
                     + "awaitingSystemKeyboard=\(isAwaitingSystemKeyboard)"
             )
