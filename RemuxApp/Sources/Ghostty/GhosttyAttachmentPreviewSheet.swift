@@ -67,8 +67,14 @@ struct GhosttyAttachmentPreviewSheet: View {
             GhosttyAttachmentPreviewHeader(
                 title: previewTitle
             )
+            .layoutPriority(1)
 
-            Spacer()
+            Spacer(minLength: 0)
+
+            if let selectedAttachment,
+               selectedAttachment.supportsImageMarkup {
+                markupButton(for: selectedAttachment)
+            }
 
             Button {
                 Haptic.tap()
@@ -144,15 +150,7 @@ struct GhosttyAttachmentPreviewSheet: View {
     }
 
     private func attachmentPreviewCard(_ attachment: GhosttyPendingAttachment) -> some View {
-        ZStack(alignment: .topTrailing) {
-            attachmentPreviewBody(attachment)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            if attachment.supportsImageMarkup {
-                markupButton(for: attachment)
-                    .padding(12)
-            }
-        }
+        attachmentPreviewBody(attachment)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
@@ -166,12 +164,12 @@ struct GhosttyAttachmentPreviewSheet: View {
             if isPreparingSelectedMarkup {
                 ProgressView()
                     .controlSize(.mini)
-                    .frame(width: 34, height: 34)
+                    .frame(width: 38, height: 38)
             } else {
                 Image(systemName: "pencil.tip")
                     .font(.system(size: 14, weight: .semibold))
                     .symbolRenderingMode(.monochrome)
-                    .frame(width: 34, height: 34)
+                    .frame(width: 38, height: 38)
             }
         }
         .buttonStyle(

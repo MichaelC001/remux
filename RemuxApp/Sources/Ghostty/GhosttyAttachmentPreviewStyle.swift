@@ -43,7 +43,7 @@ struct GhosttyAttachmentPreviewActionButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundStyle(foreground)
-            .ghosttyAttachmentPreviewOverlayActionSurface(isPressed: configuration.isPressed)
+            .ghosttyAttachmentPreviewActionSurface(isPressed: configuration.isPressed)
             .scaleEffect(configuration.isPressed ? 0.94 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
@@ -131,34 +131,19 @@ extension View {
             .contentShape(shape)
     }
 
-    @ViewBuilder
-    func ghosttyAttachmentPreviewOverlayActionSurface(isPressed: Bool) -> some View {
+    func ghosttyAttachmentPreviewActionSurface(isPressed: Bool) -> some View {
         let shape = Circle()
 
-        if #available(iOS 26.0, *) {
-            self
-                .glassEffect(
-                    .regular
-                        .tint(GhosttyAttachmentSurfaceStyle.panelGlassTint)
-                        .interactive(),
-                    in: shape
-                )
-                .overlay {
-                    shape.strokeBorder(GhosttyAttachmentSurfaceStyle.panelGlassStroke, lineWidth: 0.75)
-                }
-                .shadow(color: GhosttyAttachmentSurfaceStyle.panelGlassShadow, radius: 12, y: 7)
-                .contentShape(shape)
-        } else {
-            self
-                .background(.regularMaterial, in: shape)
-                .background {
-                    shape.fill(isPressed ? GhosttyAttachmentPreviewStyle.controlPressedFill : GhosttyAttachmentPreviewStyle.controlFill)
-                }
-                .overlay {
-                    shape.strokeBorder(GhosttyAttachmentPreviewStyle.controlStroke, lineWidth: 0.75)
-                }
-                .shadow(color: GhosttyAttachmentSurfaceStyle.fallbackShadow, radius: 12, y: 7)
-                .contentShape(shape)
-        }
+        return self
+            .background(
+                isPressed
+                    ? GhosttyAttachmentPreviewStyle.controlPressedFill
+                    : GhosttyAttachmentPreviewStyle.controlFill,
+                in: shape
+            )
+            .overlay {
+                shape.strokeBorder(GhosttyAttachmentPreviewStyle.controlStroke, lineWidth: 1)
+            }
+            .contentShape(shape)
     }
 }
