@@ -54,6 +54,8 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
+        NSMicrophoneUsageDescription: Remux uses the microphone to transcribe speech into composer drafts.
+        NSSpeechRecognitionUsageDescription: Remux uses on-device speech recognition to transcribe speech into composer drafts.
         UILaunchScreen: {}
         UIApplicationSupportsIndirectInputEvents: true
         UISupportedInterfaceOrientations:

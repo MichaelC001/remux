@@ -220,6 +220,8 @@ struct GhosttyComposeBar: View {
         switch dictationPhase {
         case .idle:
             EmptyView()
+        case .preparing:
+            dictationStatus("Preparing dictation…")
         case .starting:
             dictationStatus("Starting…")
         case .recording:
@@ -241,7 +243,7 @@ struct GhosttyComposeBar: View {
                 accessibilityIdentifier: "terminal.composer.dictation.stop",
                 action: onFinishDictation
             )
-        case .starting, .transcribing:
+        case .preparing, .starting, .transcribing:
             ProgressView()
                 .controlSize(.small)
                 .tint(GhosttyPhoneChromePalette.chromeForeground)

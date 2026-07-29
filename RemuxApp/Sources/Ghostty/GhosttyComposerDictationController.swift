@@ -5,6 +5,7 @@ import Combine
 
 enum GhosttyComposerDictationPhase: Equatable {
     case idle
+    case preparing
     case starting
     case recording
     case transcribing
@@ -60,14 +61,18 @@ final class GhosttyComposerAudioLevelModel: ObservableObject {
 }
 
 enum GhosttyComposerDictationBackendEvent: Sendable {
+    case preparing
+    case starting
     case started
     case audioLevel(CGFloat)
-    case hypothesis(String, isFinal: Bool)
+    case hypothesis(String)
+    case completed
     case recognitionFailed
     case failed(String)
 }
 
 protocol GhosttyComposerDictationBackendProtocol: Sendable {
+    var requiresSpeechRecognitionAuthorization: Bool { get }
     func prepare(locale: Locale)
     func start(
         id: UInt64,
@@ -80,6 +85,15 @@ protocol GhosttyComposerDictationBackendProtocol: Sendable {
     func cancelAll(completion: @escaping @Sendable () -> Void)
 }
 
+enum GhosttyComposerDictationBackendFactory {
+    static func makeDefault() -> any GhosttyComposerDictationBackendProtocol {
+        if #available(iOS 26.0, *) {
+            return GhosttySpeechAnalyzerComposerDictationBackend()
+        }
+        return GhosttyLegacyComposerDictationBackend()
+    }
+}
+
 struct GhosttyComposerDictationAuthorizationClient: Sendable {
     enum Result: Sendable {
         case authorized
@@ -88,15 +102,17 @@ struct GhosttyComposerDictationAuthorizationClient: Sendable {
         case cancelled
     }
 
-    let knownResult: @Sendable () -> Result?
+    let knownResult: @Sendable (_ requiresSpeechRecognition: Bool) -> Result?
     let requestSpeechAuthorization: @Sendable () async -> SFSpeechRecognizerAuthorizationStatus
     let requestMicrophoneAuthorization: @Sendable () async -> Bool
 
-    func resolve() async -> Result {
-        let speechAuthorization = await requestSpeechAuthorization()
-        guard !Task.isCancelled else { return .cancelled }
-        guard speechAuthorization == .authorized else {
-            return .speechRecognitionDenied
+    func resolve(requiresSpeechRecognition: Bool) async -> Result {
+        if requiresSpeechRecognition {
+            let speechAuthorization = await requestSpeechAuthorization()
+            guard !Task.isCancelled else { return .cancelled }
+            guard speechAuthorization == .authorized else {
+                return .speechRecognitionDenied
+            }
         }
 
         let microphoneAuthorized = await requestMicrophoneAuthorization()
@@ -105,17 +121,19 @@ struct GhosttyComposerDictationAuthorizationClient: Sendable {
     }
 
     static let live = Self(
-        knownResult: {
-            let speechAuthorization = SFSpeechRecognizer.authorizationStatus()
-            switch speechAuthorization {
-            case .denied, .restricted:
-                return .speechRecognitionDenied
-            case .notDetermined:
-                return nil
-            case .authorized:
-                break
-            @unknown default:
-                return .speechRecognitionDenied
+        knownResult: { requiresSpeechRecognition in
+            if requiresSpeechRecognition {
+                let speechAuthorization = SFSpeechRecognizer.authorizationStatus()
+                switch speechAuthorization {
+                case .denied, .restricted:
+                    return .speechRecognitionDenied
+                case .notDetermined:
+                    return nil
+                case .authorized:
+                    break
+                @unknown default:
+                    return .speechRecognitionDenied
+                }
             }
 
             switch AVAudioApplication.shared.recordPermission {
@@ -204,9 +222,11 @@ final class GhosttyComposerDictationLease: @unchecked Sendable {
 
 /// Owns Speech and AVAudioEngine on one serial queue. The UI controller never
 /// waits for teardown and never touches audio objects directly.
-final class GhosttyComposerDictationBackend: GhosttyComposerDictationBackendProtocol,
+final class GhosttyLegacyComposerDictationBackend: GhosttyComposerDictationBackendProtocol,
     @unchecked Sendable
 {
+    let requiresSpeechRecognitionAuthorization = true
+
     typealias EventHandler = @Sendable (GhosttyComposerDictationBackendEvent) -> Void
 
     private enum RunPhase {
@@ -319,6 +339,7 @@ final class GhosttyComposerDictationBackend: GhosttyComposerDictationBackendProt
     }
 
     private func start(_ run: Run, locale: Locale) {
+        run.handler(.starting)
         do {
             traceStartup("backend.audioSessionCategory.begin", run: run)
             try configureAudioSession()
@@ -437,10 +458,11 @@ final class GhosttyComposerDictationBackend: GhosttyComposerDictationBackendProt
                 run.hasReportedFirstHypothesis = true
                 traceStartup("backend.firstHypothesis", run: run)
             }
-            run.handler(.hypothesis(hypothesis, isFinal: isFinal))
+            run.handler(.hypothesis(hypothesis))
         }
 
         if isFinal {
+            run.handler(.completed)
             clearDesiredRunID(ifMatching: run.id)
             releaseCompletedRun(run)
             return
@@ -664,10 +686,9 @@ final class GhosttyComposerDictationController: ObservableObject {
     private let lease: GhosttyComposerDictationLease
     private let leaseOwnerID: UUID
     private let startDeadline: Duration
-    private let finalizationDeadline: Duration
     private var authorizationTask: Task<Void, Never>?
     private var startDeadlineTask: Task<Void, Never>?
-    private var finalizationTask: Task<Void, Never>?
+    private var debugCompletionTask: Task<Void, Never>?
     private var sessionID: UInt64 = 0
     private var leaseGeneration: UInt64 = 0
     private var backendRunRequested = false
@@ -683,18 +704,16 @@ final class GhosttyComposerDictationController: ObservableObject {
 #endif
 
     init(
-        backend: any GhosttyComposerDictationBackendProtocol = GhosttyComposerDictationBackend(),
+        backend: any GhosttyComposerDictationBackendProtocol = GhosttyComposerDictationBackendFactory.makeDefault(),
         authorizationClient: GhosttyComposerDictationAuthorizationClient = .live,
         lease: GhosttyComposerDictationLease = .shared,
-        startDeadline: Duration = .seconds(8),
-        finalizationDeadline: Duration = .seconds(3)
+        startDeadline: Duration = .seconds(8)
     ) {
         self.backend = backend
         self.authorizationClient = authorizationClient
         self.lease = lease
         leaseOwnerID = UUID()
         self.startDeadline = startDeadline
-        self.finalizationDeadline = finalizationDeadline
         audioLevelModel = GhosttyComposerAudioLevelModel()
     }
 
@@ -752,7 +771,9 @@ final class GhosttyComposerDictationController: ObservableObject {
         }
 #endif
 
-        if let knownAuthorizationResult = authorizationClient.knownResult() {
+        if let knownAuthorizationResult = authorizationClient.knownResult(
+            backend.requiresSpeechRecognitionAuthorization
+        ) {
             handleAuthorizationResult(
                 knownAuthorizationResult,
                 sessionID: requestedSessionID,
@@ -762,8 +783,11 @@ final class GhosttyComposerDictationController: ObservableObject {
         }
 
         let authorizationClient = authorizationClient
+        let requiresSpeechRecognition = backend.requiresSpeechRecognitionAuthorization
         authorizationTask = Task { [weak self, authorizationClient] in
-            let result = await authorizationClient.resolve()
+            let result = await authorizationClient.resolve(
+                requiresSpeechRecognition: requiresSpeechRecognition
+            )
             guard let self else { return }
             handleAuthorizationResult(
                 result,
@@ -787,7 +811,7 @@ final class GhosttyComposerDictationController: ObservableObject {
             let completionDelay: Duration = debugTranscript == nil
                 ? .milliseconds(250)
                 : .milliseconds(1_250)
-            finalizationTask = Task { [weak self] in
+            debugCompletionTask = Task { [weak self] in
                 do {
                     try await Task.sleep(for: completionDelay)
                 } catch {
@@ -808,7 +832,6 @@ final class GhosttyComposerDictationController: ObservableObject {
 #endif
 
         backend.finish(id: sessionID)
-        scheduleFinalizationDeadline(sessionID: sessionID)
     }
 
     func cancel() {
@@ -867,7 +890,6 @@ final class GhosttyComposerDictationController: ObservableObject {
 
     private func beginBackend(sessionID requestedSessionID: UInt64, requestedAt: UInt64) {
         backendRunRequested = true
-        scheduleStartDeadline(sessionID: requestedSessionID)
         backend.start(
             id: requestedSessionID,
             locale: .current,
@@ -898,6 +920,17 @@ final class GhosttyComposerDictationController: ObservableObject {
         guard requestedSessionID == sessionID, phase.isActive else { return }
 
         switch event {
+        case .preparing:
+            guard phase == .starting || phase == .preparing else { return }
+            startDeadlineTask?.cancel()
+            startDeadlineTask = nil
+            phase = .preparing
+
+        case .starting:
+            guard phase == .starting || phase == .preparing else { return }
+            phase = .starting
+            scheduleStartDeadline(sessionID: requestedSessionID)
+
         case .started:
             guard phase == .starting else { return }
             startDeadlineTask?.cancel()
@@ -909,7 +942,7 @@ final class GhosttyComposerDictationController: ObservableObject {
             guard phase == .recording else { return }
             audioLevelModel.append(level)
 
-        case .hypothesis(let hypothesis, let isFinal):
+        case .hypothesis(let hypothesis):
             if latestHypothesis.isEmpty, !hypothesis.isEmpty {
                 traceStartupFromUI("ui.firstHypothesis", id: requestedSessionID)
             }
@@ -920,19 +953,22 @@ final class GhosttyComposerDictationController: ObservableObject {
                     hypothesis: hypothesis
                 )
             )
-            if isFinal {
+
+        case .completed:
+            if latestHypothesis.isEmpty {
+                fail(
+                    sessionID: requestedSessionID,
+                    message: "No speech detected — try again"
+                )
+            } else {
                 complete(sessionID: requestedSessionID)
             }
 
         case .recognitionFailed:
-            if phase == .transcribing, !latestHypothesis.isEmpty {
-                complete(sessionID: requestedSessionID)
-            } else {
-                fail(
-                    sessionID: requestedSessionID,
-                    message: "Dictation stopped — try again"
-                )
-            }
+            fail(
+                sessionID: requestedSessionID,
+                message: "Dictation stopped — try again"
+            )
 
         case .failed(let message):
             fail(sessionID: requestedSessionID, message: message)
@@ -964,32 +1000,6 @@ final class GhosttyComposerDictationController: ObservableObject {
         }
     }
 
-    private func scheduleFinalizationDeadline(sessionID requestedSessionID: UInt64) {
-        finalizationTask?.cancel()
-        let finalizationDeadline = finalizationDeadline
-        finalizationTask = Task { [weak self] in
-            do {
-                try await Task.sleep(for: finalizationDeadline)
-            } catch {
-                return
-            }
-            guard let self,
-                  requestedSessionID == sessionID,
-                  phase == .transcribing else {
-                return
-            }
-
-            if latestHypothesis.isEmpty {
-                fail(
-                    sessionID: requestedSessionID,
-                    message: "No speech detected — try again"
-                )
-            } else {
-                complete(sessionID: requestedSessionID)
-            }
-        }
-    }
-
     private func complete(sessionID requestedSessionID: UInt64) {
         guard requestedSessionID == sessionID else { return }
         let completion = afterTranscription
@@ -1015,8 +1025,8 @@ final class GhosttyComposerDictationController: ObservableObject {
         authorizationTask = nil
         startDeadlineTask?.cancel()
         startDeadlineTask = nil
-        finalizationTask?.cancel()
-        finalizationTask = nil
+        debugCompletionTask?.cancel()
+        debugCompletionTask = nil
 
         phase = .idle
         audioLevelModel.reset()

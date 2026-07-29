@@ -4,6 +4,18 @@ import XCTest
 
 @MainActor
 final class GhosttyComposerDictationControllerTests: XCTestCase {
+    func testProgressiveTranscriptPreservesFinalizedPassages() {
+        var transcript = GhosttyComposerProgressiveTranscript()
+
+        transcript.apply(AttributedString("First draft"), isFinal: false)
+        transcript.apply(AttributedString("First passage. "), isFinal: true)
+        transcript.apply(AttributedString("Second dra"), isFinal: false)
+        XCTAssertEqual(transcript.text, "First passage. Second dra")
+
+        transcript.apply(AttributedString("Second passage."), isFinal: true)
+        XCTAssertEqual(transcript.text, "First passage. Second passage.")
+    }
+
     func testHypothesisBecomesDraftWhenSnapshotIsEmpty() {
         XCTAssertEqual(
             GhosttyComposerDictationDraft.merging(
@@ -89,6 +101,23 @@ final class GhosttyComposerDictationControllerTests: XCTestCase {
         controller.stopImmediately()
     }
 
+    func testModernBackendAuthorizationOnlyRequestsMicrophoneAccess() async {
+        let client = GhosttyComposerDictationAuthorizationClient(
+            knownResult: { _ in nil },
+            requestSpeechAuthorization: {
+                XCTFail("SpeechAnalyzer must not request SFSpeechRecognizer authorization")
+                return .denied
+            },
+            requestMicrophoneAuthorization: { true }
+        )
+
+        let result = await client.resolve(requiresSpeechRecognition: false)
+
+        guard case .authorized = result else {
+            return XCTFail("Expected microphone-only authorization to succeed")
+        }
+    }
+
     func testKnownAuthorizationStartsBackendWithoutTaskHop() {
         let backend = DictationBackendSpy()
         let controller = GhosttyComposerDictationController(
@@ -118,10 +147,39 @@ final class GhosttyComposerDictationControllerTests: XCTestCase {
             onTranscript: { _ in },
             onFailure: { failures.append($0) }
         )
+        backend.emit(.starting, for: 1)
 
         await waitUntil { controller.phase == .idle }
         XCTAssertEqual(failures, ["Dictation couldn’t start — try again"])
         XCTAssertEqual(backend.actions, [.start(1), .cancel(1)])
+    }
+
+    func testBackendPreparationDoesNotConsumeAudioStartDeadline() async {
+        let backend = DictationBackendSpy()
+        let controller = GhosttyComposerDictationController(
+            backend: backend,
+            authorizationClient: .authorizedForTests,
+            lease: GhosttyComposerDictationLease(),
+            startDeadline: .milliseconds(20)
+        )
+        var failures: [String] = []
+
+        controller.start(
+            draft: "",
+            onTranscript: { _ in },
+            onFailure: { failures.append($0) }
+        )
+        backend.emit(.preparing, for: 1)
+
+        try? await Task.sleep(for: .milliseconds(40))
+        XCTAssertEqual(controller.phase, .preparing)
+        XCTAssertTrue(failures.isEmpty)
+
+        backend.emit(.starting, for: 1)
+        backend.emit(.started, for: 1)
+        await waitUntil { controller.phase == .recording }
+        XCTAssertTrue(failures.isEmpty)
+        controller.stopImmediately()
     }
 
     func testCancelRestoresSnapshotAndIgnoresStaleBackendEvents() async {
@@ -144,7 +202,8 @@ final class GhosttyComposerDictationControllerTests: XCTestCase {
         await waitUntil { controller.phase == .recording }
 
         controller.cancel()
-        backend.emit(.hypothesis("stale text", isFinal: true), for: 1)
+        backend.emit(.hypothesis("stale text"), for: 1)
+        backend.emit(.completed, for: 1)
         backend.emit(.failed("stale failure"), for: 1)
         try? await Task.sleep(for: .milliseconds(20))
 
@@ -159,8 +218,7 @@ final class GhosttyComposerDictationControllerTests: XCTestCase {
         let controller = GhosttyComposerDictationController(
             backend: backend,
             authorizationClient: .authorizedForTests,
-            lease: GhosttyComposerDictationLease(),
-            finalizationDeadline: .seconds(1)
+            lease: GhosttyComposerDictationLease()
         )
         var transcripts: [String] = []
         var completionCount = 0
@@ -178,13 +236,43 @@ final class GhosttyComposerDictationControllerTests: XCTestCase {
         XCTAssertEqual(controller.phase, .transcribing)
         XCTAssertEqual(backend.actions, [.start(1), .finish(1)])
 
-        backend.emit(.hypothesis("review this", isFinal: true), for: 1)
+        backend.emit(.hypothesis("review this"), for: 1)
+        backend.emit(.completed, for: 1)
         await waitUntil { controller.phase == .idle }
-        backend.emit(.hypothesis("duplicate", isFinal: true), for: 1)
+        backend.emit(.hypothesis("duplicate"), for: 1)
+        backend.emit(.completed, for: 1)
         try? await Task.sleep(for: .milliseconds(20))
 
         XCTAssertEqual(transcripts, ["Please review this"])
         XCTAssertEqual(completionCount, 1)
+        XCTAssertEqual(backend.actions, [.start(1), .finish(1), .cancel(1)])
+    }
+
+    func testFinalizationFailureDoesNotSubmitPartialTranscript() async {
+        let backend = DictationBackendSpy()
+        let controller = GhosttyComposerDictationController(
+            backend: backend,
+            authorizationClient: .authorizedForTests,
+            lease: GhosttyComposerDictationLease()
+        )
+        var failures: [String] = []
+        var completionCount = 0
+
+        controller.start(
+            draft: "Keep",
+            onTranscript: { _ in },
+            onFailure: { failures.append($0) }
+        )
+        backend.emit(.started, for: 1)
+        await waitUntil { controller.phase == .recording }
+        backend.emit(.hypothesis("this partial"), for: 1)
+
+        controller.finish { completionCount += 1 }
+        backend.emit(.recognitionFailed, for: 1)
+        await waitUntil { controller.phase == .idle }
+
+        XCTAssertEqual(completionCount, 0)
+        XCTAssertEqual(failures, ["Dictation stopped — try again"])
         XCTAssertEqual(backend.actions, [.start(1), .finish(1), .cancel(1)])
     }
 
@@ -339,6 +427,8 @@ final class GhosttyComposerDictationControllerTests: XCTestCase {
 private final class DictationBackendSpy: GhosttyComposerDictationBackendProtocol,
     @unchecked Sendable
 {
+    let requiresSpeechRecognitionAuthorization = true
+
     enum Action: Equatable {
         case start(UInt64)
         case finish(UInt64)
@@ -429,14 +519,14 @@ private final class DictationBackendSpy: GhosttyComposerDictationBackendProtocol
 
 private extension GhosttyComposerDictationAuthorizationClient {
     static let authorizedForTests = Self(
-        knownResult: { .authorized },
+        knownResult: { _ in .authorized },
         requestSpeechAuthorization: { .authorized },
         requestMicrophoneAuthorization: { true }
     )
 
     static func delayedAuthorization(_ delay: Duration) -> Self {
         Self(
-            knownResult: { nil },
+            knownResult: { _ in nil },
             requestSpeechAuthorization: {
                 try? await Task.sleep(for: delay)
                 return .authorized
