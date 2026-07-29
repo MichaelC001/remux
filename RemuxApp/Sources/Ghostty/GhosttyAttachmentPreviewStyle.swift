@@ -10,11 +10,11 @@ enum GhosttyAttachmentSurfaceStyle {
     static let fallbackShadow = Color.black.opacity(0.20)
 }
 
-struct GhosttyAttachmentPreviewDoneButtonStyle: ButtonStyle {
+struct GhosttyAttachmentPreviewCloseButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundStyle(GhosttySheetPalette.primary)
-            .ghosttyAttachmentPreviewDoneButtonSurface(isPressed: configuration.isPressed)
+            .ghosttyAttachmentPreviewCloseButtonSurface(isPressed: configuration.isPressed)
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
@@ -62,7 +62,7 @@ enum GhosttyAttachmentPreviewStyle {
 }
 
 extension View {
-    func ghosttyAttachmentPreviewDoneButtonSurface(isPressed: Bool) -> some View {
+    func ghosttyAttachmentPreviewCloseButtonSurface(isPressed: Bool) -> some View {
         let shape = Capsule()
 
         return self

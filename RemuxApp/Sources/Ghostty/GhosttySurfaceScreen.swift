@@ -49,6 +49,14 @@ enum GhosttyTerminalCoverPhase: Equatable {
 }
 
 struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
+    private struct AttachmentPreviewRequest: Identifiable {
+        let attachmentID: GhosttyPendingAttachment.ID
+
+        var id: GhosttyPendingAttachment.ID {
+            attachmentID
+        }
+    }
+
     private struct AttachmentTransferState {
         let uploadCount: Int
         var progress: GhosttyAttachmentTransferProgress?
@@ -87,8 +95,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var isAttachmentPhotosPickerPresented = false
     @State private var isAttachmentFileImporterPresented = false
     @State private var attachmentPhotoSelections: [PhotosPickerItem] = []
-    @State private var isAttachmentPreviewPresented = false
-    @State private var attachmentPreviewDetent: PresentationDetent = .medium
+    @State private var attachmentPreviewRequest: AttachmentPreviewRequest?
     @State private var attachmentTransferState: AttachmentTransferState?
     @State private var attachmentNotice: GhosttyAttachmentNotice?
 #if DEBUG
@@ -403,7 +410,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                                 onKeyboardResponderAttached: handleComposerKeyboardResponderAttached,
                                 onChoosePhotos: openAttachmentPhotosPicker,
                                 onChooseFiles: openAttachmentFilePicker,
-                                onOpenAttachments: showPendingAttachmentPreview,
+                                onOpenAttachment: showPendingAttachmentPreview,
                                 onRemoveAttachment: removePendingAttachment,
                                 onPasteAttachment: handleComposerAttachmentPaste,
                                 onStartDictation: startComposerDictation,
@@ -499,11 +506,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     chromeStyle: presentation.terminalTheme.terminalChromeStyle
                 )
             }
-            .sheet(isPresented: $isAttachmentPreviewPresented) {
+            .sheet(item: $attachmentPreviewRequest) { request in
                 GhosttyAttachmentPreviewSheet(
-                    attachments: $composerSession.attachments
+                    attachments: $composerSession.attachments,
+                    initiallySelectedAttachmentID: request.attachmentID
                 )
-                .presentationDetents([.medium, .large], selection: $attachmentPreviewDetent)
+                .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
                 .ghosttySelectionSheetPresentationBackground()
                 .ghosttyTerminalChromePresentation(
@@ -536,12 +544,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             .onChange(of: composerSession.attachments) { _, attachments in
                 composerStatusMessage = nil
                 if attachments.isEmpty {
-                    isAttachmentPreviewPresented = false
+                    attachmentPreviewRequest = nil
                 }
-            }
-            .onChange(of: isAttachmentPreviewPresented) { _, isPresented in
-                guard !isPresented else { return }
-                attachmentPreviewDetent = .medium
             }
             .onChange(of: interactionProjection.selectedActiveLeafID) { _, activeLeafID in
                 handleActiveLeafChange(activeLeafID)
@@ -605,14 +609,14 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         isSelected
             && !isShortcutsSettingsPresented
             && shortcutEditorRequest == nil
-            && !isAttachmentPreviewPresented
+            && attachmentPreviewRequest == nil
     }
 
     private var isAttachmentInputOwnerPresented: Bool {
         GhosttyAttachmentInputOwnerProjection(
             isPhotosPickerPresented: isAttachmentPhotosPickerPresented,
             isFileImporterPresented: isAttachmentFileImporterPresented,
-            isPreviewPresented: isAttachmentPreviewPresented
+            isPreviewPresented: attachmentPreviewRequest != nil
         ).isTransientInputOwnerPresented
     }
 
@@ -1178,10 +1182,15 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         GhosttyAttachmentStagingStore.cleanup([attachment])
     }
 
-    private func showPendingAttachmentPreview() {
-        guard pendingAttachmentInteractionProjection.canOpenPreview else { return }
-        attachmentPreviewDetent = .medium
-        isAttachmentPreviewPresented = true
+    private func showPendingAttachmentPreview(_ attachmentID: GhosttyPendingAttachment.ID) {
+        guard pendingAttachmentInteractionProjection.canOpenPreview,
+              composerSession.attachments.contains(where: {
+                  $0.id == attachmentID && $0.isPreviewable
+              }) else {
+            return
+        }
+
+        attachmentPreviewRequest = AttachmentPreviewRequest(attachmentID: attachmentID)
     }
 
     private func pendingAttachmentSendFailureMessage(for error: Error) -> String {
@@ -1762,7 +1771,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             uploadCount: job.uploadSourceCount,
             progress: nil
         )
-        isAttachmentPreviewPresented = false
+        attachmentPreviewRequest = nil
         attachmentNotice = nil
         composerStatusMessage = nil
 
@@ -1908,7 +1917,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         if result.didDeliverDraft {
             composerSession.draft = ""
             composerSession.attachments.removeAll()
-            isAttachmentPreviewPresented = false
+            attachmentPreviewRequest = nil
             GhosttyAttachmentStagingStore.cleanup(session.attachments)
         }
 

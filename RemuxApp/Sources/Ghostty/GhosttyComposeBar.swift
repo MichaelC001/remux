@@ -209,7 +209,7 @@ struct GhosttyComposeBar: View {
     let onKeyboardResponderAttached: () -> Void
     let onChoosePhotos: () -> Void
     let onChooseFiles: () -> Void
-    let onOpenAttachments: () -> Void
+    let onOpenAttachment: (GhosttyPendingAttachment.ID) -> Void
     let onRemoveAttachment: (GhosttyPendingAttachment.ID) -> Void
     let onPasteAttachment: () -> Bool
     let onStartDictation: () -> Void
@@ -223,7 +223,7 @@ struct GhosttyComposeBar: View {
                 GhosttyComposerAttachmentStrip(
                     attachments: attachments,
                     isEnabled: submissionState.allowsComposerInput,
-                    onOpen: onOpenAttachments,
+                    onOpen: onOpenAttachment,
                     onRemove: onRemoveAttachment
                 )
 
@@ -737,7 +737,7 @@ private final class GhosttyComposerUITextView: UITextView {
 private struct GhosttyComposerAttachmentStrip: View {
     let attachments: [GhosttyPendingAttachment]
     let isEnabled: Bool
-    let onOpen: () -> Void
+    let onOpen: (GhosttyPendingAttachment.ID) -> Void
     let onRemove: (GhosttyPendingAttachment.ID) -> Void
 
     var body: some View {
@@ -756,7 +756,7 @@ private struct GhosttyComposerAttachmentStrip: View {
         ZStack(alignment: .topTrailing) {
             Button {
                 Haptic.chromeControlPress()
-                onOpen()
+                onOpen(attachment.id)
             } label: {
                 attachmentPreview(attachment)
             }
