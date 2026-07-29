@@ -118,9 +118,10 @@ struct RemuxAppDependencies: Sendable {
     }
 
     /// Applies the user's host-key policy to the SSH stack. Enabling registers
-    /// RSA host-key support process-wide (see `RemuxSSHAlgorithmRegistration`);
-    /// because NIOSSH registration is sticky, disabling only takes full effect
-    /// after the next launch, so we simply skip registration when off.
+    /// legacy `ssh-rsa` host-key support process-wide (see
+    /// `RemuxSSHAlgorithmRegistration`); because NIOSSH registration is sticky,
+    /// disabling only takes full effect after the next launch, so we simply skip
+    /// registration when off.
     func applyHostKeyPolicy(allowInsecureRSA: Bool) {
         if allowInsecureRSA {
             RemuxSSHAlgorithmRegistration.ensureRegistered()

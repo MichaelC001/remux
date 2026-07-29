@@ -120,7 +120,8 @@ struct TerminalSettings: Equatable, Codable, Sendable {
     var fontSize: Float32?
     var theme: TerminalTheme
 
-    /// Opt-in to accepting servers that present only an RSA host key.
+    /// Opt-in to the legacy `ssh-rsa` host-key algorithm, which uses SHA-1
+    /// signatures.
     /// Defaults to `false` when absent from persisted settings.
     var allowInsecureRSAHostKeys: Bool
 
@@ -149,6 +150,10 @@ struct TerminalSettings: Equatable, Codable, Sendable {
             theme: try container.decodeIfPresent(TerminalTheme.self, forKey: .theme) ?? .ghosttyDefault,
             allowInsecureRSAHostKeys: try container.decodeIfPresent(Bool.self, forKey: .allowInsecureRSAHostKeys) ?? false
         )
+    }
+
+    func hasSameTerminalAppearance(as other: TerminalSettings) -> Bool {
+        fontSize == other.fontSize && theme == other.theme
     }
 
     var ghosttyConfigContents: String? {

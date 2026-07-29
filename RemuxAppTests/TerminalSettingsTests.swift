@@ -18,6 +18,29 @@ final class TerminalSettingsTests: XCTestCase {
         XCTAssertNil(TerminalSettings(fontSize: .nan, theme: .ghosttyDefault).fontSize)
     }
 
+    func testDecodingOlderSettingsDefaultsLegacyRSAHostKeysToDisabled() throws {
+        let data = Data(#"{"fontSize":16,"theme":"remuxLight"}"#.utf8)
+
+        let settings = try JSONDecoder().decode(TerminalSettings.self, from: data)
+
+        XCTAssertFalse(settings.allowInsecureRSAHostKeys)
+    }
+
+    func testTerminalAppearanceComparisonIgnoresLegacyRSAHostKeyPolicy() {
+        let settings = TerminalSettings(fontSize: 13, theme: .remuxDark)
+        let rsaOnly = TerminalSettings(
+            fontSize: 13,
+            theme: .remuxDark,
+            allowInsecureRSAHostKeys: true
+        )
+        let fontChanged = TerminalSettings(fontSize: 14, theme: .remuxDark)
+        let themeChanged = TerminalSettings(fontSize: 13, theme: .remuxLight)
+
+        XCTAssertTrue(settings.hasSameTerminalAppearance(as: rsaOnly))
+        XCTAssertFalse(settings.hasSameTerminalAppearance(as: fontChanged))
+        XCTAssertFalse(settings.hasSameTerminalAppearance(as: themeChanged))
+    }
+
     func testGhosttyConfigIncludesOfficialCatppuccinMochaThemeAndFont() {
         let settings = TerminalSettings(fontSize: 13, theme: .remuxDark)
 
