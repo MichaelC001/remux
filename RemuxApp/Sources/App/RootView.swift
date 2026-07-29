@@ -311,7 +311,7 @@ private struct ActiveTerminalSessionView: View {
             )
         )
         _composerDictationController = StateObject(
-            wrappedValue: GhosttyComposerDictationController()
+            wrappedValue: GhosttyComposerDictationController.makeDefault()
         )
         _composerSession = StateObject(
             wrappedValue: GhosttyComposerSessionModel()

@@ -182,6 +182,7 @@
 		F0A7122EB7ED47AC5397B845 /* GhosttyTerminalSurfaceInteractionOutcomeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1886BE69E5F2201A5629E0C /* GhosttyTerminalSurfaceInteractionOutcomeTests.swift */; };
 		F2272E5730FDD1AFE3583BA5 /* ShortcutPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC76333B637D49B9A27CB798 /* ShortcutPalette.swift */; };
 		F24706372357A5BC3B6868F4 /* GhosttyComposerAudioCaptureSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9609462531196C3FE49E751B /* GhosttyComposerAudioCaptureSession.swift */; };
+		D1C7B96F3E8A4D2C9F510001 /* GhosttyDebugComposerDictationBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C7B96F3E8A4D2C9F510002 /* GhosttyDebugComposerDictationBackend.swift */; };
 		F3A21C20385E6E8D75397B15 /* TerminalPreviewSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4494B99A635444622AEC6970 /* TerminalPreviewSessionTests.swift */; };
 		F4176AEAA1F4C62E48B7BA4C /* RemuxAppUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25F0019F1714AE6BD9F41209 /* RemuxAppUITests.swift */; };
 		F449EE977979EE035E476622 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 21B59E540592993567162928 /* PrivacyInfo.xcprivacy */; };
@@ -317,6 +318,7 @@
 		94DD2F30DD98DCF438F312FA /* ShortcutStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutStoreTests.swift; sourceTree = "<group>"; };
 		94F9DD0E0F418199C5E8C0F1 /* GhosttyModifierState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyModifierState.swift; sourceTree = "<group>"; };
 		9609462531196C3FE49E751B /* GhosttyComposerAudioCaptureSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyComposerAudioCaptureSession.swift; sourceTree = "<group>"; };
+		D1C7B96F3E8A4D2C9F510002 /* GhosttyDebugComposerDictationBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyDebugComposerDictationBackend.swift; sourceTree = "<group>"; };
 		96D76300C343320C6DE2D629 /* RemuxUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = RemuxUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		96F24A0810E927B327E82D59 /* GhosttyKeyboardChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyKeyboardChrome.swift; sourceTree = "<group>"; };
 		99082CEC90EA6D04B5BE5874 /* GhosttyTerminalDisconnectReasonClassifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyTerminalDisconnectReasonClassifier.swift; sourceTree = "<group>"; };
@@ -655,6 +657,7 @@
 				49261496FE7B949CF84D913B /* GhosttyComposeBar.swift */,
 				9609462531196C3FE49E751B /* GhosttyComposerAudioCaptureSession.swift */,
 				C97501167D8C7BDC3DDE46DD /* GhosttyComposerDictationController.swift */,
+				D1C7B96F3E8A4D2C9F510002 /* GhosttyDebugComposerDictationBackend.swift */,
 				2C034CA49D392AB2574E8403 /* GhosttyComposerSubmissionController.swift */,
 				A7D47826A3796D23B6B88804 /* GhosttyIOSurfaceFrame.swift */,
 				96F24A0810E927B327E82D59 /* GhosttyKeyboardChrome.swift */,
@@ -870,6 +873,7 @@
 				B6A5A3D0FFED9CD4D416591E /* GhosttyComposeBar.swift in Sources */,
 				F24706372357A5BC3B6868F4 /* GhosttyComposerAudioCaptureSession.swift in Sources */,
 				48E4932B39671011046FEB04 /* GhosttyComposerDictationController.swift in Sources */,
+				D1C7B96F3E8A4D2C9F510001 /* GhosttyDebugComposerDictationBackend.swift in Sources */,
 				ED6093ABA6E192BEB2219157 /* GhosttyComposerSubmissionController.swift in Sources */,
 				94A57D3CB3FD2BC74E023697 /* GhosttyIOSurfaceFrame.swift in Sources */,
 				7726730DFA9B5E99BF5686EA /* GhosttyKeyboardChrome.swift in Sources */,

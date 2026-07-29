@@ -28,7 +28,7 @@ enum GhosttyComposerDictationDraft {
 
 @MainActor
 final class GhosttyComposerAudioLevelModel: ObservableObject {
-    static let barCount = 28
+    nonisolated static let barCount = 28
 
     @Published private(set) var levels: [CGFloat]
 
@@ -662,7 +662,6 @@ final class GhosttyComposerDictationController: ObservableObject {
     private let startDeadline: Duration
     private var authorizationTask: Task<Void, Never>?
     private var startDeadlineTask: Task<Void, Never>?
-    private var debugCompletionTask: Task<Void, Never>?
     private var sessionID: UInt64 = 0
     private var leaseGeneration: UInt64 = 0
     private var backendRunRequested = false
@@ -672,10 +671,18 @@ final class GhosttyComposerDictationController: ObservableObject {
     private var onTranscript: ((String) -> Void)?
     private var onFailure: ((String) -> Void)?
     private var afterTranscription: (() -> Void)?
+
+    static func makeDefault() -> GhosttyComposerDictationController {
 #if DEBUG
-    private var isDebugSession = false
-    private var debugTranscript: String?
+        if let configuration = GhosttyDebugComposerDictationConfiguration.current() {
+            return GhosttyComposerDictationController(
+                backend: GhosttyDebugComposerDictationBackend(configuration: configuration),
+                authorizationClient: .debugAuthorized
+            )
+        }
 #endif
+        return GhosttyComposerDictationController()
+    }
 
     init(
         backend: any GhosttyComposerDictationBackendProtocol = GhosttyComposerDictationBackendFactory.makeDefault(),
@@ -729,22 +736,6 @@ final class GhosttyComposerDictationController: ObservableObject {
             "composer.dictation.startup event=ui.tap id=\(requestedSessionID) elapsed_ms=0.000"
         )
 
-#if DEBUG
-        if ProcessInfo.processInfo.environment[
-            "REMUX_DEBUG_DICTATION_NO_SPEECH"
-        ] == "1" {
-            startDebugSession(transcript: nil, sessionID: requestedSessionID)
-            return
-        }
-
-        if let transcript = ProcessInfo.processInfo.environment[
-            "REMUX_DEBUG_DICTATION_TRANSCRIPT"
-        ], !transcript.isEmpty {
-            startDebugSession(transcript: transcript, sessionID: requestedSessionID)
-            return
-        }
-#endif
-
         if let knownAuthorizationResult = authorizationClient.knownResult(
             backend.requiresSpeechRecognitionAuthorization
         ) {
@@ -779,31 +770,6 @@ final class GhosttyComposerDictationController: ObservableObject {
         startDeadlineTask?.cancel()
         startDeadlineTask = nil
         GhosttyRuntimeTrace.perf("composer.dictation.finishRequested id=\(sessionID)")
-
-#if DEBUG
-        if isDebugSession {
-            let completionDelay: Duration = debugTranscript == nil
-                ? .milliseconds(250)
-                : .milliseconds(1_250)
-            debugCompletionTask = Task { [weak self] in
-                do {
-                    try await Task.sleep(for: completionDelay)
-                } catch {
-                    return
-                }
-                guard let self, phase == .transcribing else { return }
-                if latestHypothesis.isEmpty {
-                    fail(
-                        sessionID: sessionID,
-                        message: "No speech detected — try again"
-                    )
-                } else {
-                    complete(sessionID: sessionID)
-                }
-            }
-            return
-        }
-#endif
 
         backend.finish(id: sessionID)
     }
@@ -992,19 +958,11 @@ final class GhosttyComposerDictationController: ObservableObject {
         authorizationTask = nil
         startDeadlineTask?.cancel()
         startDeadlineTask = nil
-        debugCompletionTask?.cancel()
-        debugCompletionTask = nil
-
         phase = .idle
         audioLevelModel.reset()
         onTranscript = nil
         onFailure = nil
         afterTranscription = nil
-#if DEBUG
-        isDebugSession = false
-        debugTranscript = nil
-#endif
-
         guard shouldCancelBackend else {
             lease.release(ownerID: leaseOwnerID)
             return
@@ -1023,47 +981,6 @@ final class GhosttyComposerDictationController: ObservableObject {
             }
         }
     }
-
-#if DEBUG
-    private func startDebugSession(transcript: String?, sessionID requestedSessionID: UInt64) {
-        isDebugSession = true
-        debugTranscript = transcript
-        authorizationTask = Task { [weak self] in
-            do {
-                try await Task.sleep(for: .milliseconds(180))
-            } catch {
-                return
-            }
-
-            guard let self, isCurrentStartingSession(requestedSessionID) else { return }
-            startDeadlineTask?.cancel()
-            startDeadlineTask = nil
-            phase = .recording
-            audioLevelModel.replace(
-                with: (0..<Self.meterBarCount).map { index in
-                    0.14 + (CGFloat(index % 7) * 0.1)
-                }
-            )
-
-            guard let transcript else { return }
-
-            do {
-                try await Task.sleep(for: .milliseconds(350))
-            } catch {
-                return
-            }
-
-            guard requestedSessionID == sessionID, phase == .recording else { return }
-            latestHypothesis = transcript
-            onTranscript?(
-                GhosttyComposerDictationDraft.merging(
-                    snapshot: draftSnapshot,
-                    hypothesis: transcript
-                )
-            )
-        }
-    }
-#endif
 
     private func isCurrentStartingSession(_ requestedSessionID: UInt64) -> Bool {
         requestedSessionID == sessionID

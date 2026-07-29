@@ -286,6 +286,114 @@ final class GhosttyComposerDictationControllerTests: XCTestCase {
         controller.stopImmediately()
     }
 
+#if DEBUG
+    func testDebugBackendExercisesControllerLifecycle() async {
+        let transcript = "Review the current changes"
+        let controller = GhosttyComposerDictationController(
+            backend: GhosttyDebugComposerDictationBackend(
+                configuration: GhosttyDebugComposerDictationConfiguration(
+                    transcript: transcript
+                )
+            ),
+            authorizationClient: .debugAuthorized,
+            lease: GhosttyComposerDictationLease()
+        )
+        var transcripts: [String] = []
+        var completionCount = 0
+
+        controller.start(
+            draft: "Please",
+            onTranscript: { transcripts.append($0) },
+            onFailure: { _ in XCTFail("Unexpected debug dictation failure") }
+        )
+        await waitUntil { controller.phase == .recording }
+        await waitUntil { transcripts == ["Please \(transcript)"] }
+
+        controller.finish { completionCount += 1 }
+        await waitUntil(timeout: .seconds(2)) { controller.phase == .idle }
+
+        XCTAssertEqual(completionCount, 1)
+        XCTAssertEqual(transcripts, ["Please \(transcript)"])
+    }
+
+    func testDebugBackendNoSpeechUsesControllerFailurePath() async {
+        let controller = GhosttyComposerDictationController(
+            backend: GhosttyDebugComposerDictationBackend(
+                configuration: GhosttyDebugComposerDictationConfiguration(
+                    transcript: nil
+                )
+            ),
+            authorizationClient: .debugAuthorized,
+            lease: GhosttyComposerDictationLease()
+        )
+        var failures: [String] = []
+
+        controller.start(
+            draft: "Keep this",
+            onTranscript: { _ in },
+            onFailure: { failures.append($0) }
+        )
+        await waitUntil { controller.phase == .recording }
+        controller.finish()
+        await waitUntil { controller.phase == .idle }
+
+        XCTAssertEqual(failures, ["No speech detected — try again"])
+    }
+
+    func testDebugBackendCancelSuppressesDelayedTranscriptAndCanRestart() async {
+        let controller = GhosttyComposerDictationController(
+            backend: GhosttyDebugComposerDictationBackend(
+                configuration: GhosttyDebugComposerDictationConfiguration(
+                    transcript: "Delayed transcript"
+                )
+            ),
+            authorizationClient: .debugAuthorized,
+            lease: GhosttyComposerDictationLease()
+        )
+        var transcripts: [String] = []
+
+        controller.start(
+            draft: "Keep this",
+            onTranscript: { transcripts.append($0) },
+            onFailure: { _ in XCTFail("Unexpected debug dictation failure") }
+        )
+        await waitUntil { controller.phase == .recording }
+        controller.cancel()
+        try? await Task.sleep(for: .milliseconds(450))
+
+        XCTAssertEqual(controller.phase, .idle)
+        XCTAssertEqual(transcripts, ["Keep this"])
+
+        controller.start(
+            draft: "",
+            onTranscript: { _ in },
+            onFailure: { _ in XCTFail("Debug dictation did not restart") }
+        )
+        await waitUntil { controller.phase == .recording }
+        controller.stopImmediately()
+    }
+
+    func testDebugConfigurationPreservesNoSpeechPrecedence() {
+        XCTAssertNil(
+            GhosttyDebugComposerDictationConfiguration.current(environment: [:])
+        )
+        XCTAssertEqual(
+            GhosttyDebugComposerDictationConfiguration.current(
+                environment: ["REMUX_DEBUG_DICTATION_TRANSCRIPT": "Transcript"]
+            )?.transcript,
+            "Transcript"
+        )
+        let noSpeech = GhosttyDebugComposerDictationConfiguration.current(
+            environment: [
+                "REMUX_DEBUG_DICTATION_NO_SPEECH": "1",
+                "REMUX_DEBUG_DICTATION_TRANSCRIPT": "Ignored",
+            ]
+        )
+        XCTAssertNotNil(noSpeech)
+        XCTAssertNil(noSpeech?.transcript)
+    }
+#endif
+
     func testBackendStartDeadlineCancelsRunAndReportsFailure() async {
         let backend = DictationBackendSpy()
         let controller = GhosttyComposerDictationController(
