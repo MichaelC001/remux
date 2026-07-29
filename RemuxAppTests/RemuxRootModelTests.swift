@@ -2057,6 +2057,19 @@ final class RemuxRootModelTests: XCTestCase {
             harness.model.activeTerminalScreenEntries.first?.presentation.terminalTheme,
             updated.theme
         )
+
+        var rsaUpdated = updated
+        rsaUpdated.allowInsecureRSAHostKeys = true
+        await harness.model.updateTerminalSettings { settings in
+            settings = rsaUpdated
+        }
+
+        let rsaRefreshedSession = try XCTUnwrap(harness.model.activeSessions.first)
+        XCTAssertEqual(rsaRefreshedSession.instanceID, originalSession.instanceID)
+        XCTAssertEqual(rsaRefreshedSession.target.terminalSettings, rsaUpdated)
+        XCTAssertTrue(originalModel === harness.model.terminalScreenModel(for: rsaRefreshedSession))
+        let savedSettings = try await harness.settingsRepository.loadSettings()
+        XCTAssertEqual(savedSettings, rsaUpdated)
     }
 
     private func makeHarness(
