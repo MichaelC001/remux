@@ -1233,7 +1233,7 @@ private struct TerminalSettingsView: View {
             .libraryHomeListRowSurface()
 
             Section {
-                Toggle("Allow RSA host keys", isOn: allowInsecureRSAHostKeysBinding)
+                Toggle("Allow older RSA host keys", isOn: allowInsecureRSAHostKeysBinding)
                     .tint(LibraryHomePalette.controlAccent)
                     .accessibilityIdentifier("settings.allow-insecure-rsa")
                     .accessibilityHint(
@@ -1244,16 +1244,15 @@ private struct TerminalSettingsView: View {
                 Text("Security")
             } footer: {
                 Text(
-                    "Some servers identify themselves with only an older RSA host key, "
-                        + "verified with a SHA-1 signature. Enabling takes effect immediately; "
-                        + "disabling takes effect after restarting Remux."
+                    "For servers that only support ssh-rsa (SHA-1). Enabling takes effect "
+                        + "immediately; disabling takes effect after restarting Remux."
                 )
             }
             .libraryHomeListRowSurface()
         }
         .libraryHomeGroupedScrollBackground()
         .libraryHomeChrome(theme: settings.theme)
-        .navigationTitle("Terminal")
+        .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("settings.form")
     }

@@ -1138,11 +1138,10 @@ private extension RemuxSSHPreparedRoot {
     }
 }
 
-/// Registers RSA (`ssh-rsa`) host-key verification with NIOSSH so servers that
-/// present only an RSA host key can negotiate. `Insecure.RSA` is Citadel's
-/// namespace label for the type, not a comment on this usage: it verifies the
-/// server's host key via BoringSSL, is never used as our own key material, and
-/// host identity is pinned separately on first use (`TrustedHostStore`).
+/// Registers the legacy `ssh-rsa` host-key algorithm (RSA with SHA-1
+/// signatures) process-wide. This is enabled only after explicit user
+/// opt-in for servers that offer no supported modern host-key algorithm.
+/// Remux's normal trusted-host verification still applies.
 enum RemuxSSHAlgorithmRegistration {
     private static let registerOnce: Void = {
         NIOSSHAlgorithms.register(

@@ -80,6 +80,10 @@ final class RemuxAppUITests: XCTestCase {
         app.buttons["library.settings"].tap()
 
         XCTAssertTrue(settingsForm.waitForExistence(timeout: 2))
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 2))
+        let legacyRSAHostKeys = app.switches["settings.allow-insecure-rsa"]
+        XCTAssertTrue(legacyRSAHostKeys.waitForExistence(timeout: 2))
+        XCTAssertEqual(legacyRSAHostKeys.label, "Allow older RSA host keys")
         tapFontDefaultToggle()
         let fontSize = app.descendants(matching: .any)["settings.font-size"]
         XCTAssertTrue(fontSize.waitForExistence(timeout: 2))
@@ -292,7 +296,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Latte"].waitForExistence(timeout: 2))
         app.buttons["Mocha"].tap()
         app.buttons["Latte"].tap()
-        app.navigationBars["Terminal"].buttons.element(boundBy: 0).tap()
+        app.navigationBars["Settings"].buttons.element(boundBy: 0).tap()
 
         let activeSession = activeSessionRows.firstMatch
         XCTAssertTrue(activeSession.waitForExistence(timeout: 5))
