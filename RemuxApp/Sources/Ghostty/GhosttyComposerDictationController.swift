@@ -1072,7 +1072,7 @@ final class GhosttyComposerDictationController: ObservableObject {
 
 }
 
-private enum GhosttyComposerAudioLevelMeter {
+enum GhosttyComposerAudioLevelMeter {
     static func normalizedPeak(for buffer: AVAudioPCMBuffer) -> CGFloat {
         guard let samples = buffer.floatChannelData?.pointee,
               buffer.frameLength > 0 else {

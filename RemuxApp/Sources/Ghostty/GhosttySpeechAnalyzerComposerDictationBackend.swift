@@ -1,5 +1,4 @@
 @preconcurrency import AVFoundation
-import Accelerate
 import Speech
 
 struct GhosttyComposerProgressiveTranscript {
@@ -583,7 +582,7 @@ private final class GhosttySpeechAnalyzerAudioProcessor:
         let now = CACurrentMediaTime()
         if now - lastLevelPublishTime >= Self.levelPublishInterval {
             lastLevelPublishTime = now
-            onLevel(normalizedPeak(for: buffer))
+            onLevel(GhosttyComposerAudioLevelMeter.normalizedPeak(for: buffer))
         }
 
         let ratio = analyzerFormat.sampleRate / buffer.format.sampleRate
@@ -697,17 +696,6 @@ private final class GhosttySpeechAnalyzerAudioProcessor:
         }
     }
 
-    private func normalizedPeak(for buffer: AVAudioPCMBuffer) -> CGFloat {
-        guard let samples = buffer.floatChannelData?.pointee,
-              buffer.frameLength > 0 else {
-            return 0.08
-        }
-
-        var peak: Float = 0
-        vDSP_maxmgv(samples, 1, &peak, vDSP_Length(buffer.frameLength))
-        let decibels = 20 * log10(max(peak, 0.000_001))
-        return CGFloat(min(max((decibels + 50) / 50, 0.08), 1))
-    }
 }
 
 @available(iOS 26.0, *)
