@@ -92,11 +92,16 @@ final class RemuxAppUITests: XCTestCase {
             "Dictation must not shrink the composer."
         )
 
+        composerToggle.tap()
+        XCTAssertFalse(composer.waitForExistence(timeout: 1))
         openHomeFromTerminal()
         let activeSession = activeSessionRows.firstMatch
         XCTAssertTrue(activeSession.waitForExistence(timeout: 3))
         activeSession.tap()
         XCTAssertTrue(app.otherElements["terminal.screen"].waitForExistence(timeout: 5))
+        XCTAssertTrue(composerToggle.waitForExistence(timeout: 3))
+        composerToggle.tap()
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
         XCTAssertTrue(stop.waitForExistence(timeout: 3))
         XCTAssertTrue(meter.waitForExistence(timeout: 3))
 
