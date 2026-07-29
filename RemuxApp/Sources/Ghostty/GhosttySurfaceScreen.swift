@@ -84,9 +84,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var attachmentPhotoSelections: [PhotosPickerItem] = []
     @State private var isAttachmentPreviewPresented = false
     @State private var attachmentPreviewDetent: PresentationDetent = .medium
-    @State private var isAttachmentTransferInProgress = false
-    @State private var attachmentTransferUploadCount = 0
-    @State private var attachmentTransferProgress: GhosttyAttachmentTransferProgress?
     @State private var attachmentNotice: GhosttyAttachmentNotice?
 #if DEBUG
     @State private var uiTestKeyboardWillHideCount = 0
@@ -641,9 +638,21 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     && composerSession.areAttachmentsReady
                     && !isAttachmentTransferInProgress
             )
-        case .sending:
+        case .transferringAttachments, .sending:
             return .sending
         }
+    }
+
+    private var isAttachmentTransferInProgress: Bool {
+        composerSubmissionController.phase.isAttachmentTransferInProgress
+    }
+
+    private var attachmentTransferUploadCount: Int {
+        composerSubmissionController.phase.attachmentUploadCount
+    }
+
+    private var attachmentTransferProgress: GhosttyAttachmentTransferProgress? {
+        composerSubmissionController.phase.attachmentTransferProgress
     }
 
     private var isTerminalViewportFrozen: Bool {
@@ -1701,7 +1710,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         switch composerSubmissionController.phase {
         case .idle:
             submitComposerContent()
-        case .sending:
+        case .transferringAttachments, .sending:
             break
         }
     }
@@ -1742,9 +1751,13 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             return
         }
 
-        isAttachmentTransferInProgress = true
-        attachmentTransferUploadCount = job.uploadSourceCount
-        attachmentTransferProgress = nil
+        var submissionController = composerSubmissionController
+        guard submissionController.beginAttachmentTransfer(
+            uploadCount: job.uploadSourceCount
+        ) else {
+            return
+        }
+        composerSubmissionController = submissionController
         isAttachmentPreviewPresented = false
         attachmentNotice = nil
         composerStatusMessage = nil
@@ -1754,7 +1767,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             do {
                 let result = try await service.transfer(job) { progress in
                     await MainActor.run {
-                        attachmentTransferProgress = progress
+                        var controller = composerSubmissionController
+                        controller.updateAttachmentTransferProgress(progress)
+                        composerSubmissionController = controller
                     }
                 }
                 let attachmentText = GhosttyAttachmentTerminalInsertionFormatter.insertionText(
@@ -1801,9 +1816,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func resetComposerAttachmentTransfer() {
-        isAttachmentTransferInProgress = false
-        attachmentTransferUploadCount = 0
-        attachmentTransferProgress = nil
+        var controller = composerSubmissionController
+        _ = controller.finishAttachmentTransfer()
+        composerSubmissionController = controller
     }
 
     private func submitComposerMessage(
