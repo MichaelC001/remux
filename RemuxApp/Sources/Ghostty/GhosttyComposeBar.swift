@@ -68,10 +68,6 @@ enum GhosttyComposeBarSubmissionState: Equatable {
     var isSending: Bool {
         self == .sending
     }
-
-    var sendAccessibilityLabel: String {
-        "Send"
-    }
 }
 
 private struct GhosttyComposerInputLayout: Layout {
@@ -462,11 +458,9 @@ struct GhosttyComposeBar: View {
 
     private func sendButton(
         state: GhosttyComposeBarSubmissionState,
-        allowsTap: Bool? = nil,
+        allowsTap: Bool,
         action: @escaping () -> Void
     ) -> some View {
-        let isEnabled = allowsTap ?? state.isSendEnabled
-
         return Button {
             Haptic.chromeControlPress()
             action()
@@ -490,9 +484,9 @@ struct GhosttyComposeBar: View {
                 .frame(width: 42, height: 42)
         }
         .buttonStyle(GhosttyComposerPressButtonStyle())
-        .disabled(!isEnabled)
-        .opacity(isEnabled || state.isSending ? 1 : 0.38)
-        .accessibilityLabel(state.sendAccessibilityLabel)
+        .disabled(!allowsTap)
+        .opacity(allowsTap || state.isSending ? 1 : 0.38)
+        .accessibilityLabel("Send")
         .accessibilityIdentifier("terminal.composer.send")
     }
 }

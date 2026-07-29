@@ -43,24 +43,24 @@ private extension View {
             self
                 .glassEffect(
                     .regular
-                        .tint(GhosttyAttachmentTrayStyle.panelGlassTint),
+                        .tint(GhosttyAttachmentSurfaceStyle.panelGlassTint),
                     in: shape
                 )
                 .overlay {
-                    shape.strokeBorder(GhosttyAttachmentTrayStyle.panelGlassStroke, lineWidth: 0.75)
+                    shape.strokeBorder(GhosttyAttachmentSurfaceStyle.panelGlassStroke, lineWidth: 0.75)
                 }
-                .shadow(color: GhosttyAttachmentTrayStyle.panelGlassShadow, radius: 12, y: 7)
+                .shadow(color: GhosttyAttachmentSurfaceStyle.panelGlassShadow, radius: 12, y: 7)
                 .contentShape(shape)
         } else {
             self
                 .background(.regularMaterial, in: shape)
                 .background {
-                    shape.fill(GhosttyAttachmentTrayStyle.fallbackPanelFill)
+                    shape.fill(GhosttyAttachmentSurfaceStyle.fallbackPanelFill)
                 }
                 .overlay {
-                    shape.strokeBorder(GhosttyAttachmentTrayStyle.fallbackPanelStroke, lineWidth: 1)
+                    shape.strokeBorder(GhosttyAttachmentSurfaceStyle.fallbackPanelStroke, lineWidth: 1)
                 }
-                .shadow(color: GhosttyAttachmentTrayStyle.fallbackShadow, radius: 12, y: 7)
+                .shadow(color: GhosttyAttachmentSurfaceStyle.fallbackShadow, radius: 12, y: 7)
         }
     }
 }

@@ -1,6 +1,15 @@
 import SwiftUI
 import UIKit
 
+enum GhosttyAttachmentSurfaceStyle {
+    static let panelGlassTint = Color.primary.opacity(0.055)
+    static let panelGlassStroke = Color.primary.opacity(0.14)
+    static let panelGlassShadow = Color.black.opacity(0.16)
+    static let fallbackPanelFill = Color(uiColor: .secondarySystemBackground).opacity(0.72)
+    static let fallbackPanelStroke = Color.primary.opacity(0.08)
+    static let fallbackShadow = Color.black.opacity(0.20)
+}
+
 struct GhosttyAttachmentPreviewDoneButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -130,14 +139,14 @@ extension View {
             self
                 .glassEffect(
                     .regular
-                        .tint(GhosttyAttachmentTrayStyle.panelGlassTint)
+                        .tint(GhosttyAttachmentSurfaceStyle.panelGlassTint)
                         .interactive(),
                     in: shape
                 )
                 .overlay {
-                    shape.strokeBorder(GhosttyAttachmentTrayStyle.panelGlassStroke, lineWidth: 0.75)
+                    shape.strokeBorder(GhosttyAttachmentSurfaceStyle.panelGlassStroke, lineWidth: 0.75)
                 }
-                .shadow(color: GhosttyAttachmentTrayStyle.panelGlassShadow, radius: 12, y: 7)
+                .shadow(color: GhosttyAttachmentSurfaceStyle.panelGlassShadow, radius: 12, y: 7)
                 .contentShape(shape)
         } else {
             self
@@ -148,7 +157,7 @@ extension View {
                 .overlay {
                     shape.strokeBorder(GhosttyAttachmentPreviewStyle.controlStroke, lineWidth: 0.75)
                 }
-                .shadow(color: GhosttyAttachmentTrayStyle.fallbackShadow, radius: 12, y: 7)
+                .shadow(color: GhosttyAttachmentSurfaceStyle.fallbackShadow, radius: 12, y: 7)
                 .contentShape(shape)
         }
     }
