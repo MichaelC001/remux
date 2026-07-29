@@ -132,28 +132,4 @@ final class GhosttyComposerSubmissionControllerTests: XCTestCase {
         XCTAssertFalse(controller.beginSubmission("second"))
         XCTAssertEqual(controller.phase, .sending)
     }
-
-    func testAttachmentTransferOwnsItsCountAndProgressAsOnePhase() {
-        var controller = GhosttyComposerSubmissionController()
-        let progress = GhosttyAttachmentTransferProgress(
-            completedUploadCount: 1,
-            totalUploadCount: 2,
-            currentUploadIndex: 1,
-            currentUploadedBytes: 25,
-            currentTotalBytes: 100
-        )
-
-        XCTAssertTrue(controller.beginAttachmentTransfer(uploadCount: 2))
-        XCTAssertTrue(controller.phase.isAttachmentTransferInProgress)
-        XCTAssertEqual(controller.phase.attachmentUploadCount, 2)
-        XCTAssertNil(controller.phase.attachmentTransferProgress)
-        XCTAssertFalse(controller.beginSubmission("message"))
-
-        controller.updateAttachmentTransferProgress(progress)
-        XCTAssertEqual(controller.phase.attachmentTransferProgress, progress)
-        XCTAssertTrue(controller.finishAttachmentTransfer())
-        XCTAssertEqual(controller.phase, .idle)
-        XCTAssertEqual(controller.phase.attachmentUploadCount, 0)
-        XCTAssertNil(controller.phase.attachmentTransferProgress)
-    }
 }
