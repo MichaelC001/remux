@@ -1713,10 +1713,10 @@ final class RemuxAppUITests: XCTestCase {
         guard activeSession.waitForExistence(timeout: 5) else { return }
 
         activeSession.swipeLeft()
-        let close = app.buttons["Close"].firstMatch
-        guard close.waitForExistence(timeout: 3) else { return }
+        let disconnect = app.buttons["Disconnect"].firstMatch
+        guard disconnect.waitForExistence(timeout: 3) else { return }
 
-        close.tap()
+        disconnect.tap()
         RunLoop.current.run(until: Date().addingTimeInterval(2))
     }
 

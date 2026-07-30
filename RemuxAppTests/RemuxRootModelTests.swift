@@ -1313,7 +1313,7 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertTrue(harness.model.terminalScreenModel(for: session) === terminalModel)
     }
 
-    func testCloseActiveSessionStopsOwnedTerminalModel() async throws {
+    func testDisconnectActiveSessionStopsOwnedTerminalModel() async throws {
         let server = SavedServer(
             displayName: "Build Host",
             host: "build.example.test",
@@ -1334,9 +1334,10 @@ final class RemuxRootModelTests: XCTestCase {
         let terminalModel = harness.model.terminalScreenModel(for: session)
         await waitForConnecting(terminalModel)
 
-        harness.model.closeActiveSession(workspace.id)
+        harness.model.disconnectActiveSession(workspace.id)
 
         XCTAssertFalse(harness.model.hasTerminalScreenModel(for: session))
+        XCTAssertEqual(harness.model.state, .library)
         // Teardown ordering (surface -> link -> controller) is owned by
         // the model's async stop; completion nils the session.
         await waitForStopped(terminalModel)
@@ -2054,7 +2055,7 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertNotEqual(freshTransport.id, createdID)
     }
 
-    func testCloseActiveSessionRemovesOnlyThatRuntimeSession() async throws {
+    func testDisconnectSelectedSessionSelectsRemainingRuntimeSession() async throws {
         let server = SavedServer(
             displayName: "Build Host",
             host: "build.example.test",
@@ -2069,10 +2070,35 @@ final class RemuxRootModelTests: XCTestCase {
         await harness.model.connect(to: base.id)
         await harness.model.connect(to: logs.id)
 
-        harness.model.closeActiveSession(logs.id)
+        harness.model.disconnectActiveSession(logs.id)
 
-        XCTAssertEqual(harness.model.state, .library)
+        XCTAssertEqual(harness.model.state, .terminal(base.id))
         XCTAssertEqual(harness.model.activeSessions.map(\.id), [base.id])
+    }
+
+    func testDisconnectSelectedSessionSelectsNextInDisplayedOrder() async throws {
+        let server = SavedServer(
+            displayName: "Build Host",
+            host: "build.example.test",
+            username: "builder"
+        )
+        let zeta = SavedWorkspace(serverID: server.id, sessionName: "zeta")
+        let mid = SavedWorkspace(serverID: server.id, sessionName: "mid")
+        let alpha = SavedWorkspace(serverID: server.id, sessionName: "alpha")
+        let harness = makeHarness(servers: [server], workspaces: [zeta, mid, alpha])
+        try await harness.credentialHelper.savePassword("demo-password", for: server.id)
+
+        await harness.model.load()
+        await harness.model.connect(to: zeta.id)
+        await harness.model.connect(to: mid.id)
+        await harness.model.connect(to: alpha.id)
+        harness.model.showActiveSession(mid.id)
+
+        harness.model.disconnectActiveSession(mid.id)
+
+        // Displayed order is most-recent-first: [alpha, mid, zeta].
+        // The session taking mid's display position is zeta.
+        XCTAssertEqual(harness.model.state, .terminal(zeta.id))
     }
 
     func testUpdateTerminalSettingsPersistsSettings() async throws {

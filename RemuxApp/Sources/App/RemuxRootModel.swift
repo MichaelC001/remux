@@ -790,12 +790,22 @@ final class RemuxRootModel: ObservableObject {
         }
     }
 
-    func closeActiveSession(_ id: SavedWorkspace.ID) {
+    func disconnectActiveSession(_ id: SavedWorkspace.ID) {
+        // Fallback selection follows the order users see in the switcher
+        // and library, not internal activation order.
+        let displayedIndex = RemuxActiveSessionCollection.sortedForDisplay(activeSessions)
+            .firstIndex { $0.id == id }
         closePreparedTransport(for: id)
         stopTerminalScreenModels(workspaceID: id)
         RemuxActiveSessionCollection.removeWorkspace(id, from: &activeSessions)
 
         guard case .terminal(let selectedID) = state, selectedID == id else {
+            return
+        }
+
+        let remaining = RemuxActiveSessionCollection.sortedForDisplay(activeSessions)
+        if let displayedIndex, !remaining.isEmpty {
+            state = .terminal(remaining[min(displayedIndex, remaining.count - 1)].id)
             return
         }
 

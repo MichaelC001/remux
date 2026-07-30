@@ -207,7 +207,7 @@ private struct RemuxWorkspaceShell: View {
                     )
                     model.showActiveSession(workspaceID)
                 },
-                onCloseActiveSession: model.closeActiveSession,
+                onDisconnectActiveSession: model.disconnectActiveSession,
                 onDeleteServer: { serverID in
                     Task { await model.deleteServer(serverID) }
                 },
@@ -381,7 +381,7 @@ private struct ConnectionLibraryView: View {
     let onEditWorkspace: (SavedServer.ID, SavedWorkspace.ID) -> Void
     let onConnect: (SavedWorkspace.ID) -> Void
     let onShowActiveSession: (SavedWorkspace.ID) -> Void
-    let onCloseActiveSession: (SavedWorkspace.ID) -> Void
+    let onDisconnectActiveSession: (SavedWorkspace.ID) -> Void
     let onDeleteServer: (SavedServer.ID) -> Void
     let onDeleteWorkspace: (SavedWorkspace.ID) -> Void
     let onSettingsChange: (TerminalSettings) -> Void
@@ -455,8 +455,8 @@ private struct ConnectionLibraryView: View {
                     }
                     .buttonStyle(.plain)
                     .swipeActions(edge: .trailing) {
-                        Button("Close") {
-                            closeActiveSession(session.id)
+                        Button("Disconnect") {
+                            disconnectActiveSession(session.id)
                         }
                         .tint(.red)
                     }
@@ -618,9 +618,7 @@ private struct ConnectionLibraryView: View {
     }
 
     private var sortedActiveSessions: [ActiveTerminalSession] {
-        activeSessions.sorted {
-            $0.target.workspace.lastOpenedAt > $1.target.workspace.lastOpenedAt
-        }
+        RemuxActiveSessionCollection.sortedForDisplay(activeSessions)
     }
 
     private var visibleConnectedSessions: [ActiveTerminalSession] {
@@ -656,12 +654,12 @@ private struct ConnectionLibraryView: View {
         }.count
     }
 
-    private func closeActiveSession(_ sessionID: SavedWorkspace.ID) {
+    private func disconnectActiveSession(_ sessionID: SavedWorkspace.ID) {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
 
         withTransaction(transaction) {
-            onCloseActiveSession(sessionID)
+            onDisconnectActiveSession(sessionID)
         }
     }
 }

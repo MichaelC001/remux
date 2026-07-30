@@ -1,6 +1,27 @@
 import Foundation
 
 enum RemuxActiveSessionCollection {
+    static func sortedForDisplay(
+        _ activeSessions: [ActiveTerminalSession]
+    ) -> [ActiveTerminalSession] {
+        activeSessions.sorted { lhs, rhs in
+            if lhs.target.workspace.lastOpenedAt != rhs.target.workspace.lastOpenedAt {
+                return lhs.target.workspace.lastOpenedAt > rhs.target.workspace.lastOpenedAt
+            }
+
+            let sessionComparison = lhs.target.workspace.sessionName.localizedStandardCompare(
+                rhs.target.workspace.sessionName
+            )
+            if sessionComparison != .orderedSame {
+                return sessionComparison == .orderedAscending
+            }
+
+            return lhs.target.server.displayName.localizedStandardCompare(
+                rhs.target.server.displayName
+            ) == .orderedAscending
+        }
+    }
+
     static func containsWorkspace(
         _ workspaceID: SavedWorkspace.ID,
         in activeSessions: [ActiveTerminalSession]
