@@ -268,8 +268,8 @@ struct GhosttyComposeBar: View {
 
             sendButton(
                 state: submissionState,
-                allowsTap: !dictationPhase.isActive
-                    || (dictationPhase == .recording && submissionState.isSendEnabled),
+                allowsTap: submissionState.isSendEnabled
+                    && (!dictationPhase.isActive || dictationPhase == .recording),
                 action: onSend
             )
         }
