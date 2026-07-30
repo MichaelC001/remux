@@ -80,37 +80,6 @@ final class GhosttyPhoneChromeLayoutTests: XCTestCase {
         )
     }
 
-    func testSelectionSheetKeepsPreferredHeightWhenBottomStackIsShorter() {
-        let bottomReplacementHeight = GhosttySelectionSheetSizing.bottomReplacementHeight(
-            bottomChromeHeight: 92,
-            softwareKeyboardOverlapHeight: 0
-        )
-
-        XCTAssertEqual(
-            GhosttySelectionSheetSizing.fixedDetentHeight(
-                preferredHeight: 310,
-                bottomReplacementHeight: bottomReplacementHeight
-            ),
-            310
-        )
-    }
-
-    func testSelectionSheetExpandsToReplaceKeyboardAndChromeStack() {
-        let bottomReplacementHeight = GhosttySelectionSheetSizing.bottomReplacementHeight(
-            bottomChromeHeight: 92.2,
-            softwareKeyboardOverlapHeight: 291.4
-        )
-
-        XCTAssertEqual(bottomReplacementHeight, 385)
-        XCTAssertEqual(
-            GhosttySelectionSheetSizing.fixedDetentHeight(
-                preferredHeight: 310,
-                bottomReplacementHeight: bottomReplacementHeight
-            ),
-            385
-        )
-    }
-
     func testKeyboardChromeReplacementHeightExcludesBottomSafeArea() {
         XCTAssertEqual(
             GhosttyKeyboardChromeSizing.keyboardReplacementHeight(

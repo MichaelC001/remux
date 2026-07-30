@@ -60,7 +60,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var inputCoordinator = GhosttyTerminalInputCoordinator()
     @State private var terminalInputController = GhosttyTerminalInputController()
     @State private var selectionSheet: GhosttySurfaceSelectionSheet?
-    @State private var selectionSheetPresentationState = GhosttySelectionSheetPresentationState()
     @State private var bottomChromeHeight: CGFloat = 0
     @State private var softwareKeyboardOverlapHeight: CGFloat = 0
     @State private var lastSoftwareKeyboardOverlapHeight: CGFloat = 0
@@ -372,7 +371,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 }
             }
             .onPreferenceChange(GhosttyBottomChromeHeightPreferenceKey.self) { newHeight in
-                let normalizedHeight = GhosttySelectionSheetSizing.normalizedHeight(newHeight)
+                let normalizedHeight = GhosttyViewportSizing.normalizedHeight(newHeight)
                 guard bottomChromeHeight != normalizedHeight else { return }
                 GhosttyRuntimeTrace.tmuxViewport(
                     "viewport.bottomChrome old=\(bottomChromeHeight.traceLabel) new=\(normalizedHeight.traceLabel) keyboardMode=\(inputCoordinator.keyboardMode.traceLabel) renderedMode=\(renderedKeyboardMode.traceLabel) softwareKeyboardVisible=\(inputCoordinator.isSoftwareKeyboardVisible) overlap=\(softwareKeyboardOverlapHeight.traceLabel)"
@@ -400,11 +399,15 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 completeKeyboardDidHide()
             }
             .sheet(item: selectionSheetBinding) { sheet in
+                // Every input to this height is independent of the sheet's
+                // current height: spec tokens and grid math from screen width.
                 selectionSheetContent(sheet)
-                    .presentationDetents(selectionSheetDetents(for: sheet))
+                    .presentationDetents(
+                        [.height(selectionSheetHeight(for: sheet))]
+                    )
                     .presentationContentInteraction(.scrolls)
-                    .presentationDragIndicator(.visible)
-                    .ghosttySelectionSheetPresentationBackground()
+                    .presentationDragIndicator(.hidden)
+                    .terminalSelectionSheetPresentationBackground()
                     .ghosttyTerminalChromePresentation(
                         presentation.terminalTheme.terminalChromeColorScheme,
                         chromeStyle: presentation.terminalTheme.terminalChromeStyle
@@ -445,7 +448,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 )
                 .presentationDetents([.medium, .large], selection: $attachmentPreviewDetent)
                 .presentationDragIndicator(.visible)
-                .ghosttySelectionSheetPresentationBackground()
+                .terminalSelectionSheetPresentationBackground()
                 .ghosttyTerminalChromePresentation(
                     presentation.terminalTheme.terminalChromeColorScheme,
                     chromeStyle: presentation.terminalTheme.terminalChromeStyle
@@ -1423,7 +1426,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private func showWindows() {
         guard let projection = model.windowSheetPresentationProjection() else { return }
         GhosttyRuntimeTrace.flowEventIfActive("tmux.newWindow", event: "ui.showWindows")
-        captureSelectionSheetBottomReplacementHeight()
         applySelectionSheetPresentation(
             .windows(
                 makeWindowPreviewSession(leafIDs: projection.previewLeafIDs)
@@ -1443,8 +1445,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func applySelectionSheetPresentation(_ newValue: GhosttySurfaceSelectionSheet?) {
-        let change = selectionSheetPresentationState.apply(nextKind: newValue?.presentationKind)
-        if change.shouldCancelCurrentPreviewSession {
+        if selectionSheet != nil, newValue == nil {
             cancelSelectionSheetPreviewSession(selectionSheet)
         }
 
@@ -1460,44 +1461,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
     }
 
-    private func selectionSheetDetents(
-        for sheet: GhosttySurfaceSelectionSheet
-    ) -> Set<PresentationDetent> {
-        switch sheet {
-        case .windows(_):
-            let cellCount = model.windowSheetDetentCellCount()
-            switch PanePreviewLayout.windowMetricsForCurrentScreen(cellCount: cellCount).sheetDetent {
-            case .fixed(let height):
-                return [
-                    .height(
-                        GhosttySelectionSheetSizing.fixedDetentHeight(
-                            preferredHeight: height,
-                            bottomReplacementHeight: selectionSheetPresentationState.bottomReplacementHeight
-                        )
-                    ),
-                ]
-            case .large:
-                return [.large]
-            }
-
-        case .panes(let topLevelID, _):
-            let paneCount = model.paneSheetDetentPaneCount(topLevelID: topLevelID)
-            switch PanePreviewLayout.metricsForCurrentScreen(for: paneCount).sheetDetent {
-            case .fixed(let height):
-                return [
-                    .height(
-                        GhosttySelectionSheetSizing.fixedDetentHeight(
-                            preferredHeight: height,
-                            bottomReplacementHeight: selectionSheetPresentationState.bottomReplacementHeight
-                        )
-                    ),
-                ]
-            case .large:
-                return [.large]
-            }
-        }
-    }
-
     private func showPanes() {
         guard let projection = model.selectedPaneSheetPresentationProjection() else { return }
         GhosttyRuntimeTrace.flowEventIfActive("tmux.splitPane", event: "ui.showPanes")
@@ -1505,7 +1468,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         // Carry the preview session in the sheet payload itself so the pane
         // sheet never renders against a separate optional state that may lag
         // the presentation transaction.
-        captureSelectionSheetBottomReplacementHeight()
         applySelectionSheetPresentation(
             .panes(
                 topLevelID: projection.topLevelID,
@@ -1963,17 +1925,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         withTransaction(transaction, changes)
     }
 
-    private func captureSelectionSheetBottomReplacementHeight() {
-        let replacementHeight = GhosttySelectionSheetSizing.bottomReplacementHeight(
-            bottomChromeHeight: bottomChromeHeight,
-            softwareKeyboardOverlapHeight: softwareKeyboardOverlapHeight
-        )
-        selectionSheetPresentationState.captureBottomReplacementHeight(replacementHeight)
-        GhosttyRuntimeTrace.tmuxViewport(
-            "selectionSheet.captureBottomReplacement bottomChrome=\(bottomChromeHeight.traceLabel) keyboardOverlap=\(softwareKeyboardOverlapHeight.traceLabel) replacement=\(selectionSheetPresentationState.bottomReplacementHeight.traceLabel) keyboardMode=\(inputCoordinator.keyboardMode.traceLabel)"
-        )
-    }
-
     private var sessionOpenFlowID: String {
         "session.open.\(presentation.workspaceID.uuidString)"
     }
@@ -2031,7 +1982,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             "tmux.splitPane",
             event: event,
             fields: [
-                "panesBefore": "\(model.paneSheetDetentPaneCount(topLevelID: topLevelID))",
+                "panesBefore": "\(model.paneCount(topLevelID: topLevelID))",
                 "workspaceID": presentation.workspaceID.uuidString,
             ]
         )
@@ -2073,6 +2024,26 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         performTopologyActionInteraction(effect) {
             model.closeTmuxPane(id)
         }
+    }
+
+    private func selectionSheetHeight(
+        for sheet: GhosttySurfaceSelectionSheet
+    ) -> CGFloat {
+        let gridHeight: CGFloat
+        switch sheet {
+        case .windows:
+            gridHeight = PanePreviewLayout.gridIdealHeight(
+                itemCount: model.windowSelectionSheetRenderProjection().windows.count,
+                metrics: PanePreviewLayout.windowMetricsForCurrentScreen()
+            )
+        case .panes(let topLevelID, _):
+            let paneCount = model.paneSelectionSheetRenderProjection(topLevelID: topLevelID).panes.count
+            gridHeight = PanePreviewLayout.gridIdealHeight(
+                itemCount: paneCount,
+                metrics: PanePreviewLayout.metricsForCurrentScreen(for: paneCount)
+            )
+        }
+        return TerminalSelectionSheetLayout.sheetHeight(gridHeight: gridHeight)
     }
 
     @ViewBuilder
@@ -2159,23 +2130,7 @@ private struct GhosttyBottomChromeHeightPreferenceKey: PreferenceKey {
     }
 }
 
-struct GhosttySelectionSheetSizing {
-    static let windowPreferredHeight: CGFloat = 310
-
-    static func fixedDetentHeight(
-        preferredHeight: CGFloat,
-        bottomReplacementHeight: CGFloat
-    ) -> CGFloat {
-        max(normalizedHeight(preferredHeight), normalizedHeight(bottomReplacementHeight))
-    }
-
-    static func bottomReplacementHeight(
-        bottomChromeHeight: CGFloat,
-        softwareKeyboardOverlapHeight: CGFloat
-    ) -> CGFloat {
-        normalizedHeight(bottomChromeHeight) + normalizedHeight(softwareKeyboardOverlapHeight)
-    }
-
+enum GhosttyViewportSizing {
     static func normalizedHeight(_ height: CGFloat) -> CGFloat {
         guard height.isFinite, height > 0 else { return 0 }
         return ceil(height)
@@ -2345,17 +2300,6 @@ extension TerminalTheme {
             .dark
         @unknown default:
             .default
-        }
-    }
-}
-
-private extension View {
-    @ViewBuilder
-    func ghosttySelectionSheetPresentationBackground() -> some View {
-        if #available(iOS 26.0, *) {
-            self
-        } else {
-            self.presentationBackground(.regularMaterial)
         }
     }
 }

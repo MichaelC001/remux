@@ -13,15 +13,6 @@ enum GhosttySurfaceSelectionSheet: Identifiable {
         }
     }
 
-    var presentationKind: GhosttySelectionSheetPresentationKind {
-        switch self {
-        case .windows(_):
-            return .windows
-        case .panes(_, _):
-            return .panes
-        }
-    }
-
     var paneTopLevelIDForTopologyValidation: UUID? {
         switch self {
         case .windows(_):
@@ -29,69 +20,6 @@ enum GhosttySurfaceSelectionSheet: Identifiable {
         case .panes(let topLevelID, _):
             topLevelID
         }
-    }
-}
-
-enum GhosttySelectionSheetPresentationKind: Equatable, Sendable {
-    case windows
-    case panes
-}
-
-struct GhosttySelectionSheetPresentationChange: Equatable, Sendable {
-    let currentKind: GhosttySelectionSheetPresentationKind?
-    let nextKind: GhosttySelectionSheetPresentationKind?
-    let shouldCancelCurrentPreviewSession: Bool
-    let shouldResetBottomReplacementHeight: Bool
-
-    init(
-        currentKind: GhosttySelectionSheetPresentationKind?,
-        nextKind: GhosttySelectionSheetPresentationKind?
-    ) {
-        self.currentKind = currentKind
-        self.nextKind = nextKind
-        self.shouldCancelCurrentPreviewSession = currentKind != nil && nextKind == nil
-        self.shouldResetBottomReplacementHeight = nextKind == nil
-    }
-}
-
-struct GhosttySelectionSheetPresentationState: Equatable {
-    private(set) var presentedKind: GhosttySelectionSheetPresentationKind?
-    private(set) var bottomReplacementHeight: CGFloat = 0
-
-    mutating func captureBottomReplacementHeight(_ height: CGFloat) {
-        bottomReplacementHeight = height
-    }
-
-    mutating func apply(
-        nextKind: GhosttySelectionSheetPresentationKind?
-    ) -> GhosttySelectionSheetPresentationChange {
-        let change = GhosttySelectionSheetPresentationChange(
-            currentKind: presentedKind,
-            nextKind: nextKind
-        )
-        presentedKind = nextKind
-        if change.shouldResetBottomReplacementHeight {
-            bottomReplacementHeight = 0
-        }
-        return change
-    }
-}
-
-enum GhosttySheetPalette {
-    static let row = Color(uiColor: .secondarySystemFill)
-    static let stroke = Color.primary.opacity(0.12)
-    static let controlFill = Color(uiColor: .secondarySystemFill)
-    static let destructiveControlFill = Color(uiColor: .systemRed).opacity(0.14)
-    static let primary = Color.primary.opacity(0.92)
-    static let secondary = Color.secondary.opacity(0.78)
-    static let tertiary = Color.secondary.opacity(0.56)
-
-    static func rowSelected(_ chromeStyle: GhosttyTerminalChromeStyle) -> Color {
-        chromeStyle.selectedFill
-    }
-
-    static func selectedStroke(_ chromeStyle: GhosttyTerminalChromeStyle) -> Color {
-        chromeStyle.selectedStroke
     }
 }
 
@@ -108,11 +36,13 @@ struct GhosttyWindowSelectionSheet: View {
     let onRemoveWindow: (UUID) -> Void
 
     var body: some View {
-        let layout = PanePreviewLayout.windowMetricsForCurrentScreen(cellCount: projection.cellCount)
+        let layout = PanePreviewLayout.windowMetricsForCurrentScreen()
 
-        VStack(alignment: .leading, spacing: 14) {
-            sheetHeader(caption: "SESSION", title: sessionName)
-
+        TerminalSelectionSheetScaffold(
+            title: "Windows",
+            context: "\(sessionName) · \(projection.windows.count) \(projection.windows.count == 1 ? "window" : "windows")",
+            closeAccessibilityIdentifier: "terminal.windows.close"
+        ) {
             ScrollView(showsIndicators: false) {
                 windowGrid(
                     windows: projection.windows,
@@ -120,21 +50,15 @@ struct GhosttyWindowSelectionSheet: View {
                 )
             }
             .accessibilityIdentifier("terminal.windows.scroll")
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-
-            GhosttySheetBottomActionBar {
-                GhosttySheetActionButton(
-                    title: "New Window",
-                    systemName: "plus",
-                    accessibilityIdentifier: "terminal.window.new",
-                    action: onCreateWindow
-                )
-            }
+            .contentMargins(.horizontal, 16, for: .scrollContent)
+        } actions: {
+            TerminalSelectionSheetActionButton(
+                title: "New Window",
+                systemName: "plus",
+                accessibilityIdentifier: "terminal.window.new",
+                action: onCreateWindow
+            )
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .padding(.bottom, 16)
         .task(id: session.id) {
             session.reconcile(leafIDs: projection.previewLeafIDs)
             await Task.yield()
@@ -173,6 +97,7 @@ struct GhosttyWindowSelectionSheet: View {
         } message: { request in
             Text(windowRemovalMessage(for: request))
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("terminal.windows.sheet")
     }
 
@@ -276,12 +201,11 @@ struct GhosttyPaneSelectionSheet: View {
     var body: some View {
         let layout = PanePreviewLayout.metricsForCurrentScreen(for: projection.paneCount)
 
-        VStack(alignment: .leading, spacing: 14) {
-            sheetHeader(
-                caption: "PANES",
-                title: "\(projection.paneCount) \(projection.paneCount == 1 ? "pane" : "panes")"
-            )
-
+        TerminalSelectionSheetScaffold(
+            title: "Panes",
+            context: "\(projection.paneCount) \(projection.paneCount == 1 ? "pane" : "panes")",
+            closeAccessibilityIdentifier: "terminal.panes.close"
+        ) {
             ScrollView(showsIndicators: false) {
                 paneLayout(
                     panes: projection.panes,
@@ -296,30 +220,24 @@ struct GhosttyPaneSelectionSheet: View {
                 )
             }
             .accessibilityIdentifier("terminal.panes.scroll")
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .contentMargins(.horizontal, 16, for: .scrollContent)
+        } actions: {
+            HStack(spacing: 10) {
+                TerminalSelectionSheetActionButton(
+                    title: "Split",
+                    systemName: "square.split.2x1",
+                    accessibilityIdentifier: "terminal.pane.split",
+                    action: onSplitPane
+                )
 
-            GhosttySheetBottomActionBar {
-                HStack(spacing: 10) {
-                    GhosttySheetActionButton(
-                        title: "Split",
-                        systemName: "square.split.2x1",
-                        accessibilityIdentifier: "terminal.pane.split",
-                        action: onSplitPane
-                    )
-
-                    GhosttySheetActionButton(
-                        title: "Stack",
-                        systemName: "square.split.1x2",
-                        accessibilityIdentifier: "terminal.pane.stack",
-                        action: onStackPane
-                    )
-                }
+                TerminalSelectionSheetActionButton(
+                    title: "Stack",
+                    systemName: "square.split.1x2",
+                    accessibilityIdentifier: "terminal.pane.stack",
+                    action: onStackPane
+                )
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .padding(.bottom, 16)
         .task(id: session.id) {
             // First-render reconcile closes the gap between tap-time session
             // creation and the sheet's initial body render. If pane
@@ -362,6 +280,7 @@ struct GhosttyPaneSelectionSheet: View {
         } message: { request in
             Text(paneRemovalMessage(for: request))
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("terminal.panes.sheet")
     }
 
@@ -562,78 +481,6 @@ private enum GhosttySelectionContextActionPalette {
     static let shadow = Color.black.opacity(0.20)
 }
 
-@ViewBuilder
-private func sheetHeader(caption: String, title: String) -> some View {
-    VStack(alignment: .leading, spacing: 2) {
-        Text(caption)
-            .font(.system(size: 10, weight: .semibold))
-            .tracking(1.0)
-            .foregroundStyle(GhosttySheetPalette.tertiary)
-
-        Text(title)
-            .font(.system(size: 18, weight: .semibold))
-            .foregroundStyle(GhosttySheetPalette.primary)
-            .lineLimit(1)
-            .truncationMode(.middle)
-    }
-}
-
-private struct GhosttySheetBottomActionBar<Content: View>: View {
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        content
-            .padding(.top, 6)
-    }
-}
-
-private struct GhosttySheetActionButton: View {
-    let title: String
-    let systemName: String
-    let accessibilityIdentifier: String
-    let action: (() -> Void)?
-    var isDestructive = false
-
-    var body: some View {
-        Button {
-            Haptic.tap()
-            action?()
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: systemName)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(foreground)
-
-                Text(title)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(foreground)
-            }
-            .frame(maxWidth: .infinity)
-            .frame(height: 44)
-            .padding(.horizontal, 14)
-            .ghosttySheetActionSurface(isDestructive: isDestructive)
-        }
-        .buttonStyle(GhosttySheetActionButtonStyle(isEnabled: action != nil))
-        .accessibilityIdentifier(accessibilityIdentifier)
-        .disabled(action == nil)
-    }
-
-    private var foreground: Color {
-        isDestructive ? Color(uiColor: .systemRed) : GhosttySheetPalette.primary
-    }
-}
-
-private struct GhosttySheetActionButtonStyle: ButtonStyle {
-    let isEnabled: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed && isEnabled ? 0.985 : 1)
-            .opacity(isEnabled ? 1 : 0.45)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-    }
-}
-
 private struct GhosttyRenderedPreviewSurface: View {
     let preview: GhosttyPanePreviewSession.RenderedPreview
     let size: CGSize
@@ -677,14 +524,22 @@ private struct GhosttyWindowSelectionTile: View {
             height: layout.tilePointSize.height,
             alignment: .topLeading
         )
-        .background(isSelected ? GhosttySheetPalette.rowSelected(chromeStyle) : GhosttySheetPalette.row)
+        .background(TerminalSelectionSheetPalette.row)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(
-                    isSelected ? GhosttySheetPalette.selectedStroke(chromeStyle) : GhosttySheetPalette.stroke,
+                    isSelected
+                        ? TerminalSelectionSheetPalette.selectedStroke(chromeStyle)
+                        : TerminalSelectionSheetPalette.stroke,
                     lineWidth: isSelected ? 1.25 : 1
                 )
+        }
+        .overlay(alignment: .topTrailing) {
+            if isSelected {
+                TerminalSelectionTileCheckmark(chromeStyle: chromeStyle)
+                    .padding(6)
+            }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
@@ -717,12 +572,12 @@ private struct GhosttyWindowSelectionTile: View {
                 Text("\(displayIndex)")
                     .font(.system(size: 11, weight: .semibold))
                     .monospacedDigit()
-                    .foregroundStyle(GhosttySheetPalette.tertiary)
+                    .foregroundStyle(TerminalSelectionSheetPalette.tertiary)
 
                 if !displayName.isEmpty {
                     Text(displayName)
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(GhosttySheetPalette.primary)
+                        .foregroundStyle(TerminalSelectionSheetPalette.primary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
@@ -738,7 +593,7 @@ private struct GhosttyWindowSelectionTile: View {
                     Text("panes")
                 }
                 .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(GhosttySheetPalette.secondary)
+                .foregroundStyle(TerminalSelectionSheetPalette.secondary)
                 .lineLimit(1)
             }
         }
@@ -775,14 +630,22 @@ private struct GhosttyPaneSelectionTile: View {
             height: layout.tilePointSize.height,
             alignment: .topLeading
         )
-        .background(isSelected ? GhosttySheetPalette.rowSelected(chromeStyle) : GhosttySheetPalette.row)
+        .background(TerminalSelectionSheetPalette.row)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(
-                    isSelected ? GhosttySheetPalette.selectedStroke(chromeStyle) : GhosttySheetPalette.stroke,
+                    isSelected
+                        ? TerminalSelectionSheetPalette.selectedStroke(chromeStyle)
+                        : TerminalSelectionSheetPalette.stroke,
                     lineWidth: isSelected ? 1.25 : 1
                 )
+        }
+        .overlay(alignment: .topTrailing) {
+            if isSelected {
+                TerminalSelectionTileCheckmark(chromeStyle: chromeStyle)
+                    .padding(6)
+            }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
@@ -829,7 +692,7 @@ private struct GhosttyPaneSelectionTile: View {
             Text("\(displayIndex)")
                 .font(.system(size: 11, weight: .semibold))
                 .monospacedDigit()
-                .foregroundStyle(GhosttySheetPalette.tertiary)
+                .foregroundStyle(TerminalSelectionSheetPalette.tertiary)
 
             Spacer(minLength: 0)
         }
@@ -875,32 +738,4 @@ private extension View {
         }
     }
 
-    @ViewBuilder
-    func ghosttySheetActionSurface(isDestructive: Bool) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
-
-        if #available(iOS 26.0, *) {
-            self
-                .background(
-                    isDestructive
-                        ? GhosttySheetPalette.destructiveControlFill
-                        : GhosttySheetPalette.controlFill,
-                    in: shape
-                )
-                .overlay {
-                    shape.strokeBorder(GhosttySheetPalette.stroke, lineWidth: 1)
-                }
-        } else {
-            self
-                .background(
-                    isDestructive
-                        ? GhosttySheetPalette.destructiveControlFill
-                        : GhosttySheetPalette.controlFill,
-                    in: shape
-                )
-                .overlay {
-                    shape.strokeBorder(GhosttySheetPalette.stroke, lineWidth: 1)
-                }
-        }
-    }
 }
