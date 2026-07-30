@@ -3,9 +3,19 @@ import XCTest
 @testable import Remux
 
 final class GhosttyPhoneChromeLayoutTests: XCTestCase {
-    func testPortraitUsesStableExpandedChrome() {
+    func testNarrowPortraitUsesCompactChrome() {
         let layout = GhosttyPhoneChromeLayout(
             screenSize: CGSize(width: 390, height: 844)
+        )
+
+        XCTAssertTrue(layout.isCompact)
+        XCTAssertEqual(layout.surfaceHorizontalPadding, 8)
+        XCTAssertEqual(layout.bottomPadding, 2)
+    }
+
+    func testWidePortraitUsesExpandedChrome() {
+        let layout = GhosttyPhoneChromeLayout(
+            screenSize: CGSize(width: 430, height: 932)
         )
 
         XCTAssertFalse(layout.isCompact)

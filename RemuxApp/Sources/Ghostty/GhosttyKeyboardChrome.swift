@@ -33,6 +33,7 @@ enum GhosttyKeyboardChromeMode: Equatable {
 enum GhosttyKeyboardChromeSizing {
     static let dockButtonHeight: CGFloat = 38
     static let dockButtonWidth: CGFloat = 38
+    static let compactDockButtonWidth: CGFloat = 35
     static let dockButtonCornerRadius: CGFloat = 17
 
     static func keyboardReplacementHeight(
@@ -117,7 +118,8 @@ struct GhosttyKeyboardChrome: View {
     let isAttachmentControlActive: Bool
     let isAttachmentControlEnabled: Bool
     let pendingAttachmentCount: Int
-    let onShowHome: () -> Void
+    let onShowSessions: () -> Void
+    let onShowLibrary: () -> Void
     let onShowWindows: () -> Void
     let onShowPanes: () -> Void
     let onShowAttachments: () -> Void
@@ -150,7 +152,7 @@ struct GhosttyKeyboardChrome: View {
     }
 
     private var selectorRowContent: some View {
-        HStack(spacing: isCompact ? 8 : 10) {
+        HStack(spacing: isCompact ? 6 : 10) {
             terminalKeyControls
             navigationControls
             inputControls
@@ -160,23 +162,25 @@ struct GhosttyKeyboardChrome: View {
 
     private var navigationControls: some View {
         controlGroup {
-            HStack(spacing: 2) {
+            HStack(spacing: isCompact ? 1 : 2) {
                 GhosttyKeyboardChromeDockButton(
-                    systemName: "house",
+                    systemName: "rectangle.stack",
                     badge: nil,
                     chromeStyle: chromeStyle,
-                    accessibilityLabel: "Home",
-                    accessibilityHint: "Return to the Remux session library.",
-                    accessibilityIdentifier: "terminal.home",
+                    width: dockButtonWidth,
+                    accessibilityLabel: "Sessions",
+                    accessibilityHint: "Switch active sessions or open the Remux library.",
+                    accessibilityIdentifier: "terminal.sessions",
                     isActive: false,
                     isEnabled: true,
-                    action: onShowHome
+                    action: onShowSessions
                 )
 
                 GhosttyKeyboardChromeDockButton(
                     systemName: "rectangle.on.rectangle",
                     badge: windowBadge,
                     chromeStyle: chromeStyle,
+                    width: dockButtonWidth,
                     accessibilityLabel: windowAccessibilityLabel,
                     accessibilityHint: windowDetail,
                     accessibilityIdentifier: "terminal.windows",
@@ -189,6 +193,7 @@ struct GhosttyKeyboardChrome: View {
                     systemName: "square.split.2x1",
                     badge: paneBadge,
                     chromeStyle: chromeStyle,
+                    width: dockButtonWidth,
                     accessibilityLabel: paneAccessibilityLabel,
                     accessibilityHint: paneDetail,
                     accessibilityIdentifier: "terminal.panes",
@@ -202,7 +207,7 @@ struct GhosttyKeyboardChrome: View {
 
     private var terminalKeyControls: some View {
         controlGroup {
-            HStack(spacing: 2) {
+            HStack(spacing: isCompact ? 1 : 2) {
                 accessoryKey(
                     title: "ctrl",
                     accessibilityIdentifier: "terminal.ctrl",
@@ -224,11 +229,25 @@ struct GhosttyKeyboardChrome: View {
 
     private var inputControls: some View {
         controlGroup {
-            HStack(spacing: 2) {
+            HStack(spacing: isCompact ? 1 : 2) {
+                GhosttyKeyboardChromeDockButton(
+                    systemName: "house",
+                    badge: nil,
+                    chromeStyle: chromeStyle,
+                    width: dockButtonWidth,
+                    accessibilityLabel: "Home",
+                    accessibilityHint: "Open the Remux library.",
+                    accessibilityIdentifier: "terminal.home",
+                    isActive: false,
+                    isEnabled: true,
+                    action: onShowLibrary
+                )
+
                 GhosttyKeyboardChromeDockButton(
                     systemName: "paperclip",
                     badge: attachmentBadge,
                     chromeStyle: chromeStyle,
+                    width: dockButtonWidth,
                     accessibilityLabel: attachmentAccessibilityLabel,
                     accessibilityHint: attachmentAccessibilityHint,
                     accessibilityIdentifier: "terminal.attachments",
@@ -241,6 +260,7 @@ struct GhosttyKeyboardChrome: View {
                     systemName: "keyboard",
                     badge: nil,
                     chromeStyle: chromeStyle,
+                    width: dockButtonWidth,
                     accessibilityLabel: keyboardMode == .hidden ? "Show keyboard controls" : "Hide keyboard controls",
                     accessibilityHint: nil,
                     accessibilityIdentifier: "terminal.keyboard",
@@ -276,7 +296,7 @@ struct GhosttyKeyboardChrome: View {
 
     private func controlGroup<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         content()
-            .padding(.horizontal, 5)
+            .padding(.horizontal, isCompact ? 3 : 5)
             .padding(.vertical, 4)
             .ghosttyToolbarGroupSurface()
     }
@@ -293,13 +313,19 @@ struct GhosttyKeyboardChrome: View {
             accessibilityIdentifier: accessibilityIdentifier,
             chromeStyle: chromeStyle,
             fontSize: 12,
-            width: GhosttyKeyboardChromeSizing.dockButtonWidth,
+            width: dockButtonWidth,
             height: GhosttyKeyboardChromeSizing.dockButtonHeight,
             isActive: isActive,
             isEnabled: isEnabled,
             onLongPress: onLongPress,
             action: action
         )
+    }
+
+    private var dockButtonWidth: CGFloat {
+        isCompact
+            ? GhosttyKeyboardChromeSizing.compactDockButtonWidth
+            : GhosttyKeyboardChromeSizing.dockButtonWidth
     }
 
     private var windowDetail: String? {
@@ -339,6 +365,7 @@ private struct GhosttyKeyboardChromeDockButton: View {
     let systemName: String
     let badge: String?
     let chromeStyle: GhosttyTerminalChromeStyle
+    let width: CGFloat
     let accessibilityLabel: String
     let accessibilityHint: String?
     let accessibilityIdentifier: String
@@ -362,7 +389,7 @@ private struct GhosttyKeyboardChromeDockButton: View {
             isActive: isActive,
             isEnabled: isEnabled,
             chromeStyle: chromeStyle,
-            width: GhosttyKeyboardChromeSizing.dockButtonWidth,
+            width: width,
             height: GhosttyKeyboardChromeSizing.dockButtonHeight
         ))
         .disabled(!isEnabled)

@@ -86,7 +86,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var attachmentNotice: GhosttyAttachmentNotice?
 
     private let onReconnect: () -> Void
-    private let onEditConnection: () -> Void
+    private let onShowSessions: () -> Void
+    private let onShowLibrary: () -> Void
     private let onUpdateCredentials: () -> Void
     private let onEditServer: () -> Void
     private let onTrustHostKey: () -> Void
@@ -104,7 +105,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         attachmentTransferServiceFactory: @escaping @Sendable () -> any GhosttyAttachmentTransferService,
         onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)? = nil,
         onReconnect: @escaping () -> Void,
-        onEditConnection: @escaping () -> Void,
+        onShowSessions: @escaping () -> Void,
+        onShowLibrary: @escaping () -> Void,
         onUpdateCredentials: @escaping () -> Void,
         onEditServer: @escaping () -> Void,
         onTrustHostKey: @escaping () -> Void
@@ -117,7 +119,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         self.attachmentTransferServiceFactory = attachmentTransferServiceFactory
         self.onPreviewSelection = onPreviewSelection
         self.onReconnect = onReconnect
-        self.onEditConnection = onEditConnection
+        self.onShowSessions = onShowSessions
+        self.onShowLibrary = onShowLibrary
         self.onUpdateCredentials = onUpdateCredentials
         self.onEditServer = onEditServer
         self.onTrustHostKey = onTrustHostKey
@@ -250,7 +253,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             onReconnect: onReconnect,
                             onUpdateCredentials: onUpdateCredentials,
                             onEditServer: onEditServer,
-                            onCancel: onEditConnection,
+                            onCancel: onShowLibrary,
                             onTrustHostKey: onTrustHostKey
                         )
                     }
@@ -348,7 +351,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     isAttachmentControlActive: isAttachmentTrayPresented,
                     isAttachmentControlEnabled: !hasPendingAttachments,
                     pendingAttachmentCount: pendingAttachments.count,
-                    onShowHome: onEditConnection,
+                    onShowSessions: onShowSessions,
+                    onShowLibrary: onShowLibrary,
                     onShowWindows: showWindows,
                     onShowPanes: showPanes,
                     onShowAttachments: toggleAttachmentTray,
@@ -2243,7 +2247,7 @@ struct GhosttyPhoneChromeLayout: Equatable {
     }
 
     var isCompact: Bool {
-        isLandscape
+        isLandscape || screenSize.width < 420
     }
 
     var surfaceHorizontalPadding: CGFloat {

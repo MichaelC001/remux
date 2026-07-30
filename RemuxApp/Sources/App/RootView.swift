@@ -59,6 +59,7 @@ private struct RemuxWorkspaceShell: View {
     @ObservedObject var model: RemuxRootModel
     let shortcutStore: ShortcutStore
     @State private var retainedTerminalID: SavedWorkspace.ID?
+    @State private var isSessionSwitcherPresented = false
 
     var body: some View {
         ZStack {
@@ -91,6 +92,29 @@ private struct RemuxWorkspaceShell: View {
 
             retainedTerminalID = ids[0]
         }
+        .onChange(of: model.state) { _, state in
+            guard case .terminal = state else {
+                isSessionSwitcherPresented = false
+                return
+            }
+        }
+        .sheet(isPresented: $isSessionSwitcherPresented) {
+            ActiveSessionSwitcherView(
+                sessions: ActiveSessionSwitcherProjection.items(
+                    sessions: model.activeSessions,
+                    selectedSessionID: selectedTerminalID
+                ),
+                servers: model.library.servers,
+                currentServerID: selectedActiveSession?.target.server.id,
+                onSelectSession: model.showActiveSession,
+                onDisconnectSession: model.disconnectActiveSession,
+                onCreateSession: beginNewWorkspaceFromTerminal
+            )
+            .terminalSelectionSheetPresentation(
+                colorScheme: model.terminalSettings.theme.terminalChromeColorScheme,
+                chromeStyle: model.terminalSettings.theme.terminalChromeStyle
+            )
+        }
     }
 
     private var selectedTerminalID: SavedWorkspace.ID? {
@@ -105,6 +129,11 @@ private struct RemuxWorkspaceShell: View {
         selectedTerminalID ?? retainedTerminalID ?? model.activeTerminalScreenEntries.first?.id
     }
 
+    private var selectedActiveSession: ActiveTerminalSession? {
+        guard let selectedTerminalID else { return nil }
+        return model.activeSessions.first { $0.id == selectedTerminalID }
+    }
+
     private var activeTerminalLayer: some View {
         ZStack {
             ForEach(model.activeTerminalScreenEntries) { entry in
@@ -113,6 +142,7 @@ private struct RemuxWorkspaceShell: View {
                 ActiveTerminalSessionView(
                     entry: entry,
                     isSelected: isSelected,
+                    isAppSheetPresented: isSessionSwitcherPresented && isSelected,
                     shortcutStore: shortcutStore,
                     onReconnect: {
                         model.reconnectActiveSession(entry.id, source: .manualButton)
@@ -129,6 +159,9 @@ private struct RemuxWorkspaceShell: View {
                     },
                     onTrustHostKey: {
                         model.trustHostKeyAndReconnect(entry.id)
+                    },
+                    onShowSessions: {
+                        isSessionSwitcherPresented = true
                     },
                     onShowLibrary: {
                         dismissKeyboard()
@@ -285,11 +318,13 @@ struct RemuxAppLifecycleProjection: Equatable {
 private struct ActiveTerminalSessionView: View {
     let entry: ActiveTerminalScreenEntry
     let isSelected: Bool
+    let isAppSheetPresented: Bool
     let shortcutStore: ShortcutStore
     let onReconnect: () -> Void
     let onUpdateCredentials: () -> Void
     let onEditServer: () -> Void
     let onTrustHostKey: () -> Void
+    let onShowSessions: () -> Void
     let onShowLibrary: () -> Void
 
     @StateObject private var previewSession: TerminalPreviewSession
@@ -297,20 +332,24 @@ private struct ActiveTerminalSessionView: View {
     init(
         entry: ActiveTerminalScreenEntry,
         isSelected: Bool,
+        isAppSheetPresented: Bool,
         shortcutStore: ShortcutStore,
         onReconnect: @escaping () -> Void,
         onUpdateCredentials: @escaping () -> Void,
         onEditServer: @escaping () -> Void,
         onTrustHostKey: @escaping () -> Void,
+        onShowSessions: @escaping () -> Void,
         onShowLibrary: @escaping () -> Void
     ) {
         self.entry = entry
         self.isSelected = isSelected
+        self.isAppSheetPresented = isAppSheetPresented
         self.shortcutStore = shortcutStore
         self.onReconnect = onReconnect
         self.onUpdateCredentials = onUpdateCredentials
         self.onEditServer = onEditServer
         self.onTrustHostKey = onTrustHostKey
+        self.onShowSessions = onShowSessions
         self.onShowLibrary = onShowLibrary
         _previewSession = StateObject(
             wrappedValue: TerminalPreviewSession(
@@ -326,12 +365,13 @@ private struct ActiveTerminalSessionView: View {
                 model: entry.model.terminalScreenAdapter,
                 presentation: entry.presentation,
                 isSelected: isSelected,
-                isTerminalCovered: previewSession.isPresented,
+                isTerminalCovered: isAppSheetPresented || previewSession.isPresented,
                 shortcutStore: shortcutStore,
                 attachmentTransferServiceFactory: entry.attachmentTransferServiceFactory,
                 onPreviewSelection: previewSelectionHandler,
                 onReconnect: onReconnect,
-                onEditConnection: onShowLibrary,
+                onShowSessions: onShowSessions,
+                onShowLibrary: onShowLibrary,
                 onUpdateCredentials: onUpdateCredentials,
                 onEditServer: onEditServer,
                 onTrustHostKey: onTrustHostKey

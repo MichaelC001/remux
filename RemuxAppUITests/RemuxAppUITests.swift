@@ -3256,6 +3256,18 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func dismissTopSheetIfPresent() {
+        for identifier in [
+            "terminal.panes.close",
+            "terminal.windows.close",
+            "terminal.sessions.close",
+        ] {
+            let closeButton = app.buttons[identifier]
+            if closeButton.exists, closeButton.isHittable {
+                closeButton.tap()
+                return
+            }
+        }
+
         let sheet = app.otherElements.matching(identifier: "PopoverDismissRegion").firstMatch
         if sheet.exists, sheet.isHittable {
             sheet.tap()
