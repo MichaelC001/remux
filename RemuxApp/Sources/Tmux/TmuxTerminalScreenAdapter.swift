@@ -492,6 +492,13 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         return managed.sendPaste(text)
     }
 
+    func sendPasteAwaitingCommandCompletion(_ text: String, to surfaceID: UUID) async -> Bool {
+        guard isTransportWritable,
+              let managed = managedSurface(for: surfaceID)
+        else { return false }
+        return await managed.sendPasteAwaitingCommandCompletion(text)
+    }
+
     func sendKeyEvent(
         _ event: GhosttySurfaceKeyEvent,
         to surfaceID: UUID
@@ -499,6 +506,16 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         guard isTransportWritable else { return .transportUnavailable }
         guard let managed = managedSurface(for: surfaceID) else { return .noFocusedSurface }
         return managed.sendKeyEvent(event)
+    }
+
+    func sendKeyEventAwaitingCommandCompletion(
+        _ event: GhosttySurfaceKeyEvent,
+        to surfaceID: UUID
+    ) async -> Bool {
+        guard isTransportWritable,
+              let managed = managedSurface(for: surfaceID)
+        else { return false }
+        return await managed.sendKeyEventAwaitingCommandCompletion(event)
     }
 
     func sendKeyEventToFocusedSurface(_ event: GhosttySurfaceKeyEvent) -> FocusedTerminalInputSubmissionResult {
