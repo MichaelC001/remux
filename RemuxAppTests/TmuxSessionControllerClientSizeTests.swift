@@ -850,7 +850,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertEqual(
             harness.recorder.takeStrings(),
             [
-                "send-keys -l -t %0 \"\\033[200\\176paste \\042\\044HOME"
+                "send-keys -l -t %0 -- \"\\033[200\\176paste \\042\\044HOME"
                     + "\\042\\012🙂\\033[201\\176\"\n"
             ]
         )
