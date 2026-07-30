@@ -124,6 +124,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private let onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)?
     private static var maxAttachmentPhotoSelectionCount: Int { 10 }
     private static var tmuxPrefixFlushDelay: Duration { .milliseconds(750) }
+    // tmux completion confirms delivery; TUIs still need a short boundary to consume the paste before Enter.
+    private static var composerPasteSettlementDelay: Duration { .milliseconds(150) }
 
     init(
         model: Model,
@@ -1965,53 +1967,47 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         composerSubmissionController = controller
 
         Task { @MainActor in
-            let didPaste = sendTerminalPaste(message, to: surfaceID)
+            let didPaste = await sendTerminalPaste(message, to: surfaceID)
             guard didPaste else {
                 finishComposerSubmission(.pasteRejected, session: session)
                 return
             }
 
-            // TUIs consume a bracketed paste as one input event. Give that
-            // event one short processing boundary before delivering a real,
-            // terminal-mode-aware Enter key event. Remux uses the same
-            // boundary for auto-submitting text shortcuts.
             do {
-                try await Task.sleep(for: .milliseconds(75))
+                try await Task.sleep(for: Self.composerPasteSettlementDelay)
             } catch {
                 finishComposerSubmission(.pastedAwaitingSubmit, session: session)
                 return
             }
-
             let result: GhosttyComposerSubmissionController.DraftResult =
-                sendComposerEnter(to: surfaceID)
+                await sendComposerEnter(to: surfaceID)
                 ? .submitted
                 : .pastedAwaitingSubmit
             finishComposerSubmission(result, session: session)
         }
     }
 
-    private func sendTerminalPaste(_ text: String, to surfaceID: UUID) -> Bool {
-        terminalInputController.performPaste(
-            text,
-            submitPendingPrefix: submitTerminalText(_:),
-            sendPaste: { model.sendPaste($0, to: surfaceID).isAccepted }
+    private func sendTerminalPaste(_ text: String, to surfaceID: UUID) async -> Bool {
+        let action = terminalInputController.receivePaste(text)
+        if let pendingPrefixInput = action.pendingPrefixInput {
+            _ = submitTerminalText(pendingPrefixInput)
+        }
+        return await model.sendPasteAwaitingCommandCompletion(
+            action.text,
+            to: surfaceID
         )
     }
 
-    private func sendComposerEnter(to surfaceID: UUID) -> Bool {
-        guard model.terminalInteractionProjection.selectedActiveLeafID == surfaceID else {
-            return false
-        }
-
+    private func sendComposerEnter(to surfaceID: UUID) async -> Bool {
         let keyCode = GhosttySurfaceKeyEvent.KeyCode.enter
         let start = GhosttyRuntimeTrace.nowNanos()
-        let press = model.sendKeyEvent(
+        let pressDelivered = await model.sendKeyEventAwaitingCommandCompletion(
             GhosttySurfaceKeyEvent(action: .press, keyCode: keyCode),
             to: surfaceID
         )
-        guard press.isAccepted else {
+        guard pressDelivered else {
             GhosttyRuntimeTrace.perf(
-                "composer.sendEnter result=\(press) accepted=false elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
+                "composer.sendEnter delivered=false elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
             )
             return false
         }
@@ -2021,7 +2017,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             to: surfaceID
         )
         GhosttyRuntimeTrace.perf(
-            "composer.sendEnter result=\(press) accepted=true elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
+            "composer.sendEnter delivered=true elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
         )
         return true
     }

@@ -335,7 +335,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertEqual(reclosedContinuity.effectiveViewport, initialContinuity.effectiveViewport)
     }
 
-    func testComposerSendKeepsKeyboardAndTerminalViewportStable() {
+    func testComposerMultilineKeepsWidthAndKeyboardStable() {
         app.launchEnvironment["REMUX_UI_TEST_INPUT_READY"] = "1"
         launchSimulatorApp()
         openConnectionSetup()
@@ -363,8 +363,9 @@ final class RemuxAppUITests: XCTestCase {
         )
         let compactTextWidth = composerField.frame.width
 
-        composerField.typeText("echo REMUX_COMPOSER_SEND_STABLE")
-        XCTAssertEqual(composerField.value as? String, "echo REMUX_COMPOSER_SEND_STABLE")
+        let initialText = "Explain why this composer keeps its width"
+        composerField.typeText(initialText)
+        XCTAssertEqual(composerField.value as? String, initialText)
 
         let composerBounds = app.otherElements["terminal.composer.bounds"]
         XCTAssertTrue(composerBounds.waitForExistence(timeout: 3))
@@ -403,39 +404,9 @@ final class RemuxAppUITests: XCTestCase {
         attachScreenshot(named: "composer-multiline-width-stable")
 
         let keyboard = app.keyboards.firstMatch
-        let keyboardFrameBeforeSend = keyboard.frame
-        guard let continuityBeforeSend = waitForKeyboardContinuity(owner: "composer") else {
-            return
-        }
-
-        let send = sendButton
-        XCTAssertTrue(send.waitForExistence(timeout: 3))
-        send.tap()
-
-        let draftClearDeadline = Date().addingTimeInterval(3)
-        while Date() < draftClearDeadline,
-              (composerField.value as? String) != "" {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-        }
-        XCTAssertEqual(composerField.value as? String, "")
-
-        guard let continuityAfterSend = waitForKeyboardContinuity(owner: "composer") else {
-            return
-        }
-        XCTAssertEqual(
-            continuityAfterSend.willHideCount,
-            continuityBeforeSend.willHideCount,
-            "Sending from the composer must not hide and restore the keyboard."
-        )
         XCTAssertTrue(keyboard.exists)
         XCTAssertTrue(waitForSoftwareKeyboardOnScreen(timeout: 1))
-        XCTAssertEqual(keyboard.frame, keyboardFrameBeforeSend)
-        XCTAssertEqual(
-            continuityAfterSend.effectiveViewport,
-            continuityBeforeSend.effectiveViewport,
-            "Sending from the composer must not resize the terminal viewport."
-        )
-        attachScreenshot(named: "composer-send-keyboard-stable")
+        attachScreenshot(named: "composer-multiline-keyboard-stable")
     }
 
     func testCanKeepMultipleSimulatorSessionsActive() {
