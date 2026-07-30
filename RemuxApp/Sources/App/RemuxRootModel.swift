@@ -120,10 +120,34 @@ final class RemuxRootModel: ObservableObject {
         }
     }
 
+    enum SetupCancelDestination: Equatable {
+        case library
+        case terminal(SavedWorkspace.ID)
+    }
+
+    struct ConnectionSetupState: Equatable {
+        var draft: TmuxConnectionDraft
+        var validation: TmuxConnectionDraftValidation
+        let mode: SetupMode
+        let cancelDestination: SetupCancelDestination
+
+        init(
+            draft: TmuxConnectionDraft,
+            validation: TmuxConnectionDraftValidation = .empty,
+            mode: SetupMode,
+            cancelDestination: SetupCancelDestination = .library
+        ) {
+            self.draft = draft
+            self.validation = validation
+            self.mode = mode
+            self.cancelDestination = cancelDestination
+        }
+    }
+
     enum State: Equatable {
         case loading
         case library
-        case setup(TmuxConnectionDraft, TmuxConnectionDraftValidation, SetupMode)
+        case setup(ConnectionSetupState)
         case terminal(SavedWorkspace.ID)
         case failed(String)
     }
@@ -211,10 +235,18 @@ final class RemuxRootModel: ObservableObject {
     }
 
     func beginNewServer() {
-        state = .setup(TmuxConnectionDraft(), .empty, .newServer)
+        state = .setup(
+            ConnectionSetupState(
+                draft: TmuxConnectionDraft(),
+                mode: .newServer
+            )
+        )
     }
 
-    func beginNewWorkspace(for serverID: SavedServer.ID) async {
+    func beginNewWorkspace(
+        for serverID: SavedServer.ID,
+        cancelDestination: SetupCancelDestination = .library
+    ) async {
         guard let server = library.server(id: serverID) else { return }
 
         let workspace = SavedWorkspace(
@@ -222,10 +254,24 @@ final class RemuxRootModel: ObservableObject {
             sessionName: ""
         )
         state = .setup(
-            TmuxConnectionDraft(server: server, workspace: workspace),
-            .empty,
-            .newWorkspace(serverID)
+            ConnectionSetupState(
+                draft: TmuxConnectionDraft(server: server, workspace: workspace),
+                mode: .newWorkspace(serverID),
+                cancelDestination: cancelDestination
+            )
         )
+    }
+
+    func cancelSetup() async {
+        guard case .setup(let setup) = state else { return }
+
+        switch setup.cancelDestination {
+        case .library:
+            await showLibrary()
+
+        case .terminal(let workspaceID):
+            showActiveSession(workspaceID)
+        }
     }
 
     func beginEditServer(serverID: SavedServer.ID) async {
@@ -266,14 +312,15 @@ final class RemuxRootModel: ObservableObject {
             ?? library.workspaces(for: serverID).first
             ?? SavedWorkspace(serverID: serverID, sessionName: "")
         state = .setup(
-            TmuxConnectionDraft(
-                server: server,
-                workspace: workspace,
-                identity: identity,
-                credential: credential
-            ),
-            .empty,
-            .editServer(serverID, reconnectWorkspaceID: reconnectWorkspaceID)
+            ConnectionSetupState(
+                draft: TmuxConnectionDraft(
+                    server: server,
+                    workspace: workspace,
+                    identity: identity,
+                    credential: credential
+                ),
+                mode: .editServer(serverID, reconnectWorkspaceID: reconnectWorkspaceID)
+            )
         )
     }
 
@@ -286,47 +333,49 @@ final class RemuxRootModel: ObservableObject {
         }
 
         state = .setup(
-            TmuxConnectionDraft(server: server, workspace: workspace),
-            .empty,
-            .editWorkspace(serverID, workspaceID)
+            ConnectionSetupState(
+                draft: TmuxConnectionDraft(server: server, workspace: workspace),
+                mode: .editWorkspace(serverID, workspaceID)
+            )
         )
     }
 
     func updateDraft(_ mutation: (inout TmuxConnectionDraft) -> Void) {
-        guard case .setup(var draft, let validation, let mode) = state else { return }
-        mutation(&draft)
-        state = .setup(draft, validation, mode)
+        guard case .setup(var setup) = state else { return }
+        mutation(&setup.draft)
+        state = .setup(setup)
     }
 
     func saveAndConnect() async {
-        guard case .setup(let draft, _, let mode) = state else { return }
+        guard case .setup(let setup) = state else { return }
 
-        switch mode {
+        switch setup.mode {
         case .editServer(let serverID, let reconnectWorkspaceID):
-            await saveServer(draft, serverID: serverID, reconnectWorkspaceID: reconnectWorkspaceID, mode: mode)
+            await saveServer(
+                setup,
+                serverID: serverID,
+                reconnectWorkspaceID: reconnectWorkspaceID
+            )
 
         case .editWorkspace(let serverID, let workspaceID):
-            await saveWorkspace(draft, serverID: serverID, workspaceID: workspaceID, mode: mode)
+            await saveWorkspace(setup, serverID: serverID, workspaceID: workspaceID)
 
         case .newServer:
-            await saveProfileAndConnect(draft, mode: mode)
+            await saveProfileAndConnect(setup)
 
         case .newWorkspace(let serverID):
-            await saveNewWorkspaceAndConnect(draft, serverID: serverID, mode: mode)
+            await saveNewWorkspaceAndConnect(setup, serverID: serverID)
         }
     }
 
-    private func saveProfileAndConnect(
-        _ draft: TmuxConnectionDraft,
-        mode: SetupMode
-    ) async {
+    private func saveProfileAndConnect(_ setup: ConnectionSetupState) async {
         switch TmuxConnectionDraftValidator.validate(
-            draft,
-            existingServerID: mode.existingServerID,
-            existingWorkspaceID: mode.existingWorkspaceID
+            setup.draft,
+            existingServerID: setup.mode.existingServerID,
+            existingWorkspaceID: setup.mode.existingWorkspaceID
         ) {
         case .invalid(let validation):
-            state = .setup(draft, validation, mode)
+            state = .setup(setupWithValidation(validation, from: setup))
 
         case .valid(let submission):
             let identityCredential: SSHIdentityCredentialPair
@@ -334,9 +383,10 @@ final class RemuxRootModel: ObservableObject {
                 identityCredential = try makeIdentityCredentialPair(from: submission.server)
             } catch {
                 state = .setup(
-                    draft,
-                    privateKeyValidation(from: error),
-                    mode
+                    setupWithValidation(
+                        privateKeyValidation(from: error),
+                        from: setup
+                    )
                 )
                 return
             }
@@ -369,14 +419,16 @@ final class RemuxRootModel: ObservableObject {
     }
 
     private func saveServer(
-        _ draft: TmuxConnectionDraft,
+        _ setup: ConnectionSetupState,
         serverID: SavedServer.ID,
-        reconnectWorkspaceID: SavedWorkspace.ID?,
-        mode: SetupMode
+        reconnectWorkspaceID: SavedWorkspace.ID?
     ) async {
-        switch TmuxConnectionDraftValidator.validateServer(draft, existingServerID: serverID) {
+        switch TmuxConnectionDraftValidator.validateServer(
+            setup.draft,
+            existingServerID: serverID
+        ) {
         case .invalid(let validation):
-            state = .setup(draft, validation, mode)
+            state = .setup(setupWithValidation(validation, from: setup))
 
         case .valid(let submission):
             let updatedIdentityCredential: SSHIdentityCredentialPair
@@ -394,7 +446,12 @@ final class RemuxRootModel: ObservableObject {
                     existingIdentity: identity
                 )
             } catch let error as SSHPrivateKeyInspectionError {
-                state = .setup(draft, privateKeyValidation(from: error), mode)
+                state = .setup(
+                    setupWithValidation(
+                        privateKeyValidation(from: error),
+                        from: setup
+                    )
+                )
                 return
             } catch {
                 transitionToFailed(error)
@@ -464,17 +521,16 @@ final class RemuxRootModel: ObservableObject {
     }
 
     private func saveNewWorkspaceAndConnect(
-        _ draft: TmuxConnectionDraft,
-        serverID: SavedServer.ID,
-        mode: SetupMode
+        _ setup: ConnectionSetupState,
+        serverID: SavedServer.ID
     ) async {
         switch TmuxConnectionDraftValidator.validateWorkspace(
-            draft,
+            setup.draft,
             serverID: serverID,
             existingWorkspaceID: nil
         ) {
         case .invalid(let validation):
-            state = .setup(draft, validation, mode)
+            state = .setup(setupWithValidation(validation, from: setup))
 
         case .valid(let submission):
             do {
@@ -501,18 +557,17 @@ final class RemuxRootModel: ObservableObject {
     }
 
     private func saveWorkspace(
-        _ draft: TmuxConnectionDraft,
+        _ setup: ConnectionSetupState,
         serverID: SavedServer.ID,
-        workspaceID: SavedWorkspace.ID,
-        mode: SetupMode
+        workspaceID: SavedWorkspace.ID
     ) async {
         switch TmuxConnectionDraftValidator.validateWorkspace(
-            draft,
+            setup.draft,
             serverID: serverID,
             existingWorkspaceID: workspaceID
         ) {
         case .invalid(let validation):
-            state = .setup(draft, validation, mode)
+            state = .setup(setupWithValidation(validation, from: setup))
 
         case .valid(let submission):
             do {
@@ -535,6 +590,15 @@ final class RemuxRootModel: ObservableObject {
                 transitionToFailed(error)
             }
         }
+    }
+
+    private func setupWithValidation(
+        _ validation: TmuxConnectionDraftValidation,
+        from setup: ConnectionSetupState
+    ) -> ConnectionSetupState {
+        var updated = setup
+        updated.validation = validation
+        return updated
     }
 
     func connect(to workspaceID: SavedWorkspace.ID) async {

@@ -151,19 +151,19 @@ private struct RemuxWorkspaceShell: View {
         case .library:
             libraryStack
 
-        case .setup(let draft, let validation, let mode):
+        case .setup(let setup):
             NavigationStack {
                 ConnectionSetupView(
-                    draft: draft,
-                    validation: validation,
-                    mode: mode,
+                    draft: setup.draft,
+                    validation: setup.validation,
+                    mode: setup.mode,
                     terminalTheme: model.terminalSettings.theme,
                     onChange: model.updateDraft,
                     onConnect: {
                         Task { await model.saveAndConnect() }
                     },
                     onCancel: {
-                        Task { await model.showLibrary() }
+                        Task { await model.cancelSetup() }
                     }
                 )
             }
@@ -249,6 +249,16 @@ private struct RemuxWorkspaceShell: View {
 
     private func sessionShowFlowID(_ workspaceID: SavedWorkspace.ID) -> String {
         "session.show.\(workspaceID.uuidString)"
+    }
+
+    private func beginNewWorkspaceFromTerminal(on serverID: SavedServer.ID) {
+        guard let selectedTerminalID else { return }
+        Task {
+            await model.beginNewWorkspace(
+                for: serverID,
+                cancelDestination: .terminal(selectedTerminalID)
+            )
+        }
     }
 
 }
