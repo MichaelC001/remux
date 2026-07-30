@@ -665,7 +665,6 @@ private enum LibraryHomePalette {
     static let controlAccent = Color(uiColor: .libraryHomeControlAccent)
     static let rowIconForeground = Color(uiColor: .libraryHomeRowIconForeground)
     static let rowIconSurface = Color(uiColor: .libraryHomeRowIconSurface)
-    static let connectedStatus = Color(uiColor: .libraryHomeConnectedStatus)
 }
 
 private extension TerminalTheme {
@@ -786,14 +785,6 @@ private extension UIColor {
         }
     }
 
-    static let libraryHomeConnectedStatus = UIColor { traits in
-        switch traits.userInterfaceStyle {
-        case .dark:
-            UIColor(red: 0.43, green: 0.89, blue: 0.66, alpha: 1.0)
-        default:
-            .systemGreen
-        }
-    }
 }
 
 private struct ServerDetailView: View {
@@ -813,7 +804,7 @@ private struct ServerDetailView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Address")
 
-                    Text(serverAddress(server))
+                    Text(server.displayAddress)
                         .font(.footnote.monospaced())
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -1002,7 +993,7 @@ private struct ActiveSessionLibraryRow: View {
 
             Spacer()
 
-            RuntimeStateIndicator(state: session.runtimeState)
+            TerminalRuntimeStateIndicator(state: session.runtimeState)
 
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.semibold))
@@ -1047,7 +1038,7 @@ private struct SessionLibraryRow: View {
             Spacer()
 
             if let runtimeState {
-                RuntimeStateIndicator(state: runtimeState)
+                TerminalRuntimeStateIndicator(state: runtimeState)
             }
 
             Image(systemName: "chevron.right")
@@ -1100,7 +1091,7 @@ private struct ServerLibraryRow: View {
                     .font(.headline)
                     .lineLimit(1)
 
-                Text(serverAddress(server))
+                Text(server.displayAddress)
                     .font(.footnote.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -1123,43 +1114,6 @@ private struct ServerLibraryRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
     }
-}
-
-private struct RuntimeStateIndicator: View {
-    let state: TerminalRuntimeState
-
-    private var presentation: TerminalRuntimeStatusPresentation {
-        TerminalRuntimeStatusPresentation.projection(for: state)
-    }
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Circle()
-                .fill(color)
-                .frame(width: 6, height: 6)
-            Text(presentation.label)
-                .font(.caption.weight(.medium))
-        }
-        .foregroundStyle(color)
-        .accessibilityElement(children: .combine)
-    }
-
-    private var color: Color {
-        switch presentation.tone {
-        case .connecting:
-            .blue
-        case .reconnecting:
-            .orange
-        case .connected:
-            LibraryHomePalette.connectedStatus
-        case .disconnected:
-            .red
-        }
-    }
-}
-
-private func serverAddress(_ server: SavedServer) -> String {
-    "\(server.username)@\(server.host)\(server.port == 22 ? "" : ":\(server.port)")"
 }
 
 private func serverSummary(
