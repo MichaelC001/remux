@@ -1108,25 +1108,6 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         }
     }
 
-    func testChannelRequestReplyTrackerMatchesFailuresToOldestPendingReply() {
-        var tracker = SSHTmuxControlChannelRequestReplyTracker()
-
-        tracker.expectReply(for: .exec)
-        tracker.expectReply(for: .exec)
-
-        XCTAssertEqual(tracker.pendingCount, 2)
-        XCTAssertEqual(tracker.acknowledgeSuccess(), .exec)
-        XCTAssertEqual(tracker.acknowledgeFailure(), .exec)
-        XCTAssertEqual(tracker.pendingCount, 0)
-    }
-
-    func testChannelRequestReplyTrackerReportsUnknownFailureWithoutPendingReply() {
-        var tracker = SSHTmuxControlChannelRequestReplyTracker()
-
-        XCTAssertEqual(tracker.acknowledgeFailure(), .unknown)
-        XCTAssertEqual(tracker.pendingCount, 0)
-    }
-
     func testChannelRequestFailureDescriptionNamesRejectedRequest() {
         XCTAssertEqual(
             String(describing: SSHTmuxControlTransportError.channelRequestFailed(.exec)),
@@ -1135,7 +1116,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
     }
 
     func testChannelDataRouterForwardsOnlyStdoutAsControlOutput() {
-        var router = SSHTmuxControlChannelDataRouter()
+        let router = SSHTmuxControlChannelDataRouter()
         let first = Data("%begin 1 0\\n".utf8)
         let second = Data("%end 1 0\\n".utf8)
 
@@ -1155,7 +1136,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
     }
 
     func testChannelDataRouterCapturesStderrWithoutControlOutput() {
-        var router = SSHTmuxControlChannelDataRouter()
+        let router = SSHTmuxControlChannelDataRouter()
         let stderr = Data("tmux: no server running\\n".utf8)
 
         XCTAssertEqual(router.route(type: .stdErr, data: stderr), .stderr)
@@ -1168,12 +1149,12 @@ final class SSHTmuxControlTransportTests: XCTestCase {
     }
 
     func testChannelDataRouterCapturesUnknownExtendedDataWithoutControlOutput() {
-        var router = SSHTmuxControlChannelDataRouter()
+        let router = SSHTmuxControlChannelDataRouter()
         let extended = Data("extended diagnostic\\n".utf8)
 
         XCTAssertEqual(
             router.route(type: SSHChannelData.DataType(extended: 2), data: extended),
-            .extendedData(typeDescription: "SSHChannelData(extended: 2)")
+            .extendedData
         )
 
         let diagnostics = router.diagnostics
@@ -1184,7 +1165,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
     }
 
     func testStartupDiagnosticsBoundsStderrPreview() {
-        var router = SSHTmuxControlChannelDataRouter()
+        let router = SSHTmuxControlChannelDataRouter()
         let stderr = Data(String(repeating: "x", count: 500).utf8)
 
         XCTAssertEqual(router.route(type: .stdErr, data: stderr), .stderr)
@@ -1233,7 +1214,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             stderrPreview: "tmux failed",
             extendedDataPreview: nil
         )
-        var completionState = SSHTmuxControlChannelCompletionState()
+        let completionState = SSHTmuxControlChannelCompletionState()
 
         completionState.recordExitStatus(1)
 
@@ -1258,19 +1239,24 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             stderrPreview: "tmux failed",
             extendedDataPreview: nil
         )
-        var completionState = SSHTmuxControlChannelCompletionState()
-        let requestFailure = SSHTmuxControlTransportError.channelRequestFailed(
-            .exec,
+        let completionState = SSHTmuxControlChannelCompletionState()
+
+        let completion = completionState.finish(
+            RemuxSSHExecSessionError.requestFailed,
             diagnostics: diagnostics
         )
-
-        let completion = completionState.finish(requestFailure, diagnostics: diagnostics)
         guard case .failure(let error as SSHTmuxControlTransportError) = completion else {
             XCTFail("expected transport request failure")
             return
         }
 
-        XCTAssertEqual(error, requestFailure)
+        XCTAssertEqual(
+            error,
+            SSHTmuxControlTransportError.channelRequestFailed(
+                .exec,
+                diagnostics: diagnostics
+            )
+        )
         XCTAssertNil(completionState.finish(nil, diagnostics: diagnostics))
     }
 

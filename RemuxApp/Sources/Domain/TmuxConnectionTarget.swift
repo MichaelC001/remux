@@ -174,6 +174,18 @@ struct SSHHostKeyTrustChallenge: Equatable, Sendable {
     let receivedOpenSSHPublicKey: String
 }
 
+extension SSHHostKeyTrustChallenge {
+    var receivedKeyFingerprint: String? {
+        let parts = receivedOpenSSHPublicKey.split(separator: " ", maxSplits: 2)
+        guard parts.count >= 2, let blob = Data(base64Encoded: String(parts[1])) else {
+            return nil
+        }
+
+        let digest = Data(SHA256.hash(data: blob))
+        return "SHA256:\(digest.base64EncodedString().trimmingCharacters(in: CharacterSet(charactersIn: "=")))"
+    }
+}
+
 struct TerminalDisconnectReason: Equatable, Sendable {
     enum Kind: Equatable, Sendable {
         case transportIO
@@ -362,6 +374,7 @@ struct TerminalRuntimeStateReportTracker: Equatable, Sendable {
 }
 
 struct TmuxConnectionDraft: Equatable, Sendable {
+    let serverID: SavedServer.ID
     var displayName: String = ""
     var host: String = ""
     var port: String = "22"
@@ -374,9 +387,12 @@ struct TmuxConnectionDraft: Equatable, Sendable {
     var privateKeyPassphrase: String = ""
     var sessionName: String = ""
 
-    init() {}
+    init(serverID: SavedServer.ID = UUID()) {
+        self.serverID = serverID
+    }
 
     init(server: SavedServer, workspace: SavedWorkspace) {
+        self.init(serverID: server.id)
         self.displayName = server.displayName
         self.host = server.host
         self.port = String(server.port)
@@ -560,7 +576,7 @@ enum TmuxConnectionDraftValidator {
             return .invalid(validation)
         }
 
-        let serverID = existingServerID ?? UUID()
+        let serverID = existingServerID ?? draft.serverID
         if username.isEmpty {
             validation.username = "Username is required."
         }

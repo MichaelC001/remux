@@ -32,6 +32,867 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(RemuxAppLifecycleProjection(scenePhase: .background).appLifecyclePhase, .background)
     }
 
+    func testConnectionSetupFormDisablesTextInputDuringAction() async {
+        let view = NavigationStack {
+            ConnectionSetupView(
+                draft: TmuxConnectionDraft(),
+                validation: .empty,
+                mode: .newServer,
+                setupSessionID: UUID(),
+                terminalTheme: .remuxDark,
+                isActionInProgress: true,
+                onChange: { _ in },
+                onConnect: {},
+                publicKeyInstallTarget: { _ in throw CancellationError() },
+                preflightPublicKeyInstallation: { _ in .passwordRequired },
+                appendPublicKey: { _, _ in },
+                verifyPublicKeyInstallation: { _ in },
+                trustSetupHostKey: { _ in },
+                onCancel: {}
+            )
+        }
+        let hostingController = UIHostingController(rootView: view)
+        let window = UIWindow(frame: UIScreen.main.bounds)
+        window.rootViewController = hostingController
+        window.makeKeyAndVisible()
+        hostingController.view.frame = window.bounds
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        hostingController.view.setNeedsLayout()
+        hostingController.view.layoutIfNeeded()
+
+        let didLoadTextFields = await waitUntil {
+            !descendants(
+                of: hostingController.view,
+                matching: UITextField.self
+            ).isEmpty
+        }
+        XCTAssertTrue(didLoadTextFields)
+        let textFields = descendants(
+            of: hostingController.view,
+            matching: UITextField.self
+        )
+        XCTAssertTrue(textFields.allSatisfy { !$0.isEnabled })
+    }
+
+    func testInstallTargetUsesDraftStableIDAndNormalizedEndpoint() throws {
+        let harness = makeHarness()
+        var draft = makePublicKeyInstallDraft()
+        draft.host = " \nserver.example.test\t "
+        draft.port = "2222"
+        draft.username = "\t remux \n"
+        draft.privateKeyPassphrase = "key passphrase"
+        let inspection = try SSHPrivateKeyInspector.inspect(draft.privateKeyPEM)
+
+        let target = try harness.model.publicKeyInstallTarget(for: draft)
+
+        XCTAssertEqual(
+            target,
+            SSHPublicKeyInstallTarget(
+                serverID: draft.serverID,
+                host: "server.example.test",
+                port: 2222,
+                username: "remux",
+                privateKey: SSHPrivateKeyCredential(
+                    privateKeyPEM: inspection.normalizedPEM,
+                    passphrase: "key passphrase"
+                ),
+                publicKeyLine: inspection.publicKeyLine
+            )
+        )
+    }
+
+    func testInstallTargetIgnoresDisplayNameSessionAndTmuxValidation() throws {
+        let harness = makeHarness()
+        var draft = makePublicKeyInstallDraft()
+        draft.displayName = ""
+        draft.tmuxExecutablePath = "relative/tmux"
+        draft.authenticationKind = .password
+        draft.password = ""
+        draft.sessionName = ""
+
+        let target = try harness.model.publicKeyInstallTarget(for: draft)
+
+        XCTAssertEqual(target.serverID, draft.serverID)
+        XCTAssertEqual(target.host, draft.host)
+        XCTAssertEqual(target.port, 22)
+        XCTAssertEqual(target.username, draft.username)
+    }
+
+    func testInstallTargetRejectsMissingEndpointOrInvalidKey() {
+        let harness = makeHarness()
+
+        assertPublicKeyInstallTargetError(.invalidHost, model: harness.model) {
+            $0.host = " \n "
+        }
+        assertPublicKeyInstallTargetError(.invalidPort, model: harness.model) {
+            $0.port = "0"
+        }
+        assertPublicKeyInstallTargetError(.invalidPort, model: harness.model) {
+            $0.port = "65536"
+        }
+        assertPublicKeyInstallTargetError(.invalidPort, model: harness.model) {
+            $0.port = "ssh"
+        }
+        assertPublicKeyInstallTargetError(.invalidUsername, model: harness.model) {
+            $0.username = "\t"
+        }
+        assertPublicKeyInstallTargetError(.invalidPrivateKey, model: harness.model) {
+            $0.privateKeyPEM = "not an OpenSSH private key"
+        }
+    }
+
+    func testPreflightPassesTargetToInstaller() async throws {
+        let recorder = RootModelPublicKeyInstallerRecorder(
+            results: [.success(RemuxSSHExecResult(exitStatus: 0, stdout: Data(), stderr: Data()))]
+        )
+        let harness = makeHarness(publicKeyInstaller: makePublicKeyInstaller(recorder: recorder))
+        let draft = makePublicKeyInstallDraft()
+        let expectedTarget = try harness.model.publicKeyInstallTarget(for: draft)
+        harness.model.beginNewServer()
+        let stateBefore = harness.model.state
+
+        let outcome = try await harness.model.preflightPublicKeyInstallation(
+            draft,
+            setupSessionID: harness.model.setupSessionID
+        )
+
+        let recordedTargets = await recorder.recordedTargets()
+        XCTAssertEqual(outcome, .alreadyInstalled)
+        XCTAssertEqual(recordedTargets, [expectedTarget])
+        XCTAssertEqual(harness.model.state, stateBefore)
+    }
+
+    func testAppendDoesNotWritePasswordToDraftOrCredentialStore() async throws {
+        let recorder = RootModelPublicKeyInstallerRecorder(
+            results: [.success(RemuxSSHExecResult(exitStatus: 0, stdout: Data(), stderr: Data()))]
+        )
+        let harness = makeHarness(publicKeyInstaller: makePublicKeyInstaller(recorder: recorder))
+        var draft = makePublicKeyInstallDraft()
+        draft.password = "normal connection password"
+        harness.model.beginNewServer()
+        harness.model.updateDraft { setupDraft in
+            setupDraft = draft
+        }
+        let stateBefore = harness.model.state
+
+        try await harness.model.appendPublicKey(
+            draft,
+            password: "one-use setup password",
+            setupSessionID: harness.model.setupSessionID
+        )
+
+        let storedCredentials = await harness.credentialStore.credentialsSnapshot()
+        let installerCredentials = await recorder.recordedCredentials()
+        XCTAssertEqual(harness.model.state, stateBefore)
+        XCTAssertTrue(storedCredentials.isEmpty)
+        XCTAssertEqual(installerCredentials, [.password("one-use setup password")])
+    }
+
+    func testVerifyPassesExactTargetToInstaller() async throws {
+        let recorder = RootModelPublicKeyInstallerRecorder(
+            results: [.success(RemuxSSHExecResult(exitStatus: 0, stdout: Data(), stderr: Data()))]
+        )
+        let harness = makeHarness(publicKeyInstaller: makePublicKeyInstaller(recorder: recorder))
+        let draft = makePublicKeyInstallDraft()
+        let expectedTarget = try harness.model.publicKeyInstallTarget(for: draft)
+        harness.model.beginNewServer()
+        let stateBefore = harness.model.state
+
+        try await harness.model.verifyPublicKeyInstallation(
+            draft,
+            setupSessionID: harness.model.setupSessionID
+        )
+
+        let recordedTargets = await recorder.recordedTargets()
+        let recordedCredentials = await recorder.recordedCredentials()
+        XCTAssertEqual(recordedTargets, [expectedTarget])
+        XCTAssertEqual(recordedCredentials, [.privateKey(expectedTarget.privateKey)])
+        XCTAssertEqual(harness.model.state, stateBefore)
+    }
+
+    func testTrustSetupHostKeyStoresChallengeForDraftServerID() throws {
+        let harness = makeHarness()
+        harness.model.beginNewServer()
+        let draft = try setupDraft(from: harness.model.state)
+        let challenge = makeHostKeyChallenge(serverID: draft.serverID, host: "setup.example.test")
+
+        try harness.model.trustSetupHostKey(
+            challenge,
+            setupSessionID: harness.model.setupSessionID
+        )
+
+        let identities = try loadTrustedHostIdentities(root: harness.trustedHostRoot)
+        XCTAssertEqual(identities.count, 1)
+        XCTAssertEqual(identities[0].serverID, draft.serverID)
+        XCTAssertEqual(identities[0].host, challenge.host)
+        XCTAssertEqual(identities[0].keyType, challenge.receivedKeyType)
+        XCTAssertEqual(identities[0].openSSHPublicKey, challenge.receivedOpenSSHPublicKey)
+    }
+
+    func testCancelNewServerRemovesProvisionalTrust() async throws {
+        let harness = makeHarness()
+        await harness.model.load()
+        harness.model.beginNewServer()
+        let draft = try setupDraft(from: harness.model.state)
+        try harness.model.trustSetupHostKey(
+            makeHostKeyChallenge(serverID: draft.serverID, host: "setup.example.test"),
+            setupSessionID: harness.model.setupSessionID
+        )
+
+        await harness.model.cancelSetup()
+
+        XCTAssertEqual(harness.model.state, .library)
+        XCTAssertEqual(try loadTrustedHostIdentities(root: harness.trustedHostRoot), [])
+    }
+
+    func testNewServerRejectsCallbacksFromCancelledSetupSession() async throws {
+        let recorder = RootModelPublicKeyInstallerRecorder(
+            results: [.success(RemuxSSHExecResult(exitStatus: 0, stdout: Data(), stderr: Data()))]
+        )
+        let harness = makeHarness(
+            publicKeyInstaller: makePublicKeyInstaller(recorder: recorder)
+        )
+        await harness.model.load()
+        harness.model.beginNewServer()
+        let serverID = try setupDraft(from: harness.model.state).serverID
+        let generatedKey = SSHPrivateKeyInspector.generateEd25519()
+        var draft = TmuxConnectionDraft(serverID: serverID)
+        draft.host = "server.example.test"
+        draft.port = "22"
+        draft.username = "remux"
+        draft.privateKeyPEM = generatedKey.privateKeyPEM
+        harness.model.updateDraft { setupDraft in
+            setupDraft = draft
+        }
+        let cancelledSetupSessionID = harness.model.setupSessionID
+        try harness.model.trustSetupHostKey(
+            makeHostKeyChallenge(
+                serverID: draft.serverID,
+                host: draft.host
+            ),
+            setupSessionID: cancelledSetupSessionID
+        )
+
+        await harness.model.cancelSetup()
+        harness.model.beginNewServer()
+
+        do {
+            _ = try await harness.model.preflightPublicKeyInstallation(
+                draft,
+                setupSessionID: cancelledSetupSessionID
+            )
+            XCTFail("expected stale setup to reject install preflight")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+        do {
+            try harness.model.trustSetupHostKey(
+                makeHostKeyChallenge(
+                    serverID: draft.serverID,
+                    host: "stale.example.test"
+                ),
+                setupSessionID: cancelledSetupSessionID
+            )
+            XCTFail("expected stale setup to reject host trust")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+
+        let recordedTargets = await recorder.recordedTargets()
+        XCTAssertEqual(recordedTargets, [])
+        XCTAssertEqual(try loadTrustedHostIdentities(root: harness.trustedHostRoot), [])
+    }
+
+    func testCancelEditServerRestoresExactPriorTrustIdentity() async throws {
+        let pair = makePasswordBackedServer()
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity]
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("normal connection password"),
+            identityID: pair.identity.id
+        )
+        let originalIdentity = TrustedHostIdentity(
+            serverID: pair.server.id,
+            host: pair.server.host,
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 original-host-key",
+            trustedAt: Date(timeIntervalSince1970: 123)
+        )
+        try saveTrustedHostIdentity(originalIdentity, root: harness.trustedHostRoot)
+        await harness.model.load()
+        let updatedChallenge = makeChangedHostKeyChallenge(
+            serverID: pair.server.id,
+            host: "replacement.example.test",
+            trustedIdentity: originalIdentity,
+            receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+        )
+
+        await harness.model.beginEditServer(serverID: pair.server.id)
+        try harness.model.trustSetupHostKey(
+            updatedChallenge,
+            setupSessionID: harness.model.setupSessionID
+        )
+        await harness.model.cancelSetup()
+
+        XCTAssertEqual(harness.model.state, .library)
+        XCTAssertEqual(
+            try loadTrustedHostIdentities(root: harness.trustedHostRoot),
+            [originalIdentity]
+        )
+    }
+
+    func testCancelEditServerRestoresOriginalTrustAbsence() async throws {
+        let pair = makePasswordBackedServer()
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity]
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("normal connection password"),
+            identityID: pair.identity.id
+        )
+        await harness.model.load()
+
+        await harness.model.beginEditServer(serverID: pair.server.id)
+        try harness.model.trustSetupHostKey(
+            makeHostKeyChallenge(
+                serverID: pair.server.id,
+                host: "replacement.example.test"
+            ),
+            setupSessionID: harness.model.setupSessionID
+        )
+        await harness.model.cancelSetup()
+
+        XCTAssertEqual(harness.model.state, .library)
+        XCTAssertEqual(try loadTrustedHostIdentities(root: harness.trustedHostRoot), [])
+    }
+
+    func testCancelEditServerRejectsInstallAndTrustDuringLibraryReload() async throws {
+        let pair = makePasswordBackedServer()
+        let recorder = RootModelPublicKeyInstallerRecorder(
+            results: [.success(RemuxSSHExecResult(exitStatus: 0, stdout: Data(), stderr: Data()))]
+        )
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity],
+            publicKeyInstaller: makePublicKeyInstaller(recorder: recorder)
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("normal connection password"),
+            identityID: pair.identity.id
+        )
+        let originalIdentity = TrustedHostIdentity(
+            serverID: pair.server.id,
+            host: pair.server.host,
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 original-host-key",
+            trustedAt: Date(timeIntervalSince1970: 123)
+        )
+        try saveTrustedHostIdentity(originalIdentity, root: harness.trustedHostRoot)
+        await harness.model.load()
+        await harness.model.beginEditServer(serverID: pair.server.id)
+        let generatedKey = SSHPrivateKeyInspector.generateEd25519()
+        harness.model.updateDraft { draft in
+            draft.authenticationKind = .privateKey
+            draft.privateKeyPEM = generatedKey.privateKeyPEM
+        }
+        let draft = try setupDraft(from: harness.model.state)
+        let setupSessionID = harness.model.setupSessionID
+        try harness.model.trustSetupHostKey(
+            makeChangedHostKeyChallenge(
+                serverID: pair.server.id,
+                host: "replacement.example.test",
+                trustedIdentity: originalIdentity,
+                receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+            ),
+            setupSessionID: setupSessionID
+        )
+        await harness.profileRepository.suspendNextLoad(
+            thenThrow: ConnectionProfileRepositoryError.missingServer(pair.server.id)
+        )
+
+        let cancelTask = Task {
+            await harness.model.cancelSetup()
+        }
+        await harness.profileRepository.waitForSuspendedLoad()
+
+        do {
+            _ = try await harness.model.preflightPublicKeyInstallation(
+                draft,
+                setupSessionID: setupSessionID
+            )
+            XCTFail("expected cancellation to reject install preflight")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+        do {
+            try harness.model.trustSetupHostKey(
+                makeChangedHostKeyChallenge(
+                    serverID: pair.server.id,
+                    host: "stale.example.test",
+                    trustedIdentity: originalIdentity,
+                    receivedOpenSSHPublicKey: "ssh-ed25519 stale-host-key"
+                ),
+                setupSessionID: setupSessionID
+            )
+            XCTFail("expected cancellation to reject stale host trust")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+
+        let recordedTargets = await recorder.recordedTargets()
+        XCTAssertEqual(recordedTargets, [])
+        XCTAssertEqual(
+            try loadTrustedHostIdentities(root: harness.trustedHostRoot),
+            [originalIdentity]
+        )
+
+        await harness.profileRepository.resumeSuspendedLoad()
+        await cancelTask.value
+    }
+
+    func testEditServerSaveFailureRestoresExactPriorTrustAndPreservesUnrelatedTrust() async throws {
+        let pair = makePasswordBackedServer()
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity]
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("normal connection password"),
+            identityID: pair.identity.id
+        )
+        let originalIdentity = TrustedHostIdentity(
+            serverID: pair.server.id,
+            host: pair.server.host,
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 original-host-key",
+            trustedAt: Date(timeIntervalSince1970: 123)
+        )
+        let unrelatedIdentity = TrustedHostIdentity(
+            serverID: UUID(),
+            host: "unrelated.example.test",
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 unrelated-host-key",
+            trustedAt: Date(timeIntervalSince1970: 456)
+        )
+        try saveTrustedHostIdentities(
+            [originalIdentity, unrelatedIdentity],
+            root: harness.trustedHostRoot
+        )
+        await harness.model.load()
+
+        await harness.model.beginEditServer(serverID: pair.server.id)
+        try harness.model.trustSetupHostKey(
+            makeChangedHostKeyChallenge(
+                serverID: pair.server.id,
+                host: "replacement.example.test",
+                trustedIdentity: originalIdentity,
+                receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+            ),
+            setupSessionID: harness.model.setupSessionID
+        )
+        await harness.profileRepository.failNextSaveServer(
+            with: ConnectionProfileRepositoryError.missingServer(pair.server.id)
+        )
+
+        await harness.model.saveAndConnect()
+
+        guard case .failed = harness.model.state else {
+            return XCTFail("expected terminal save failure")
+        }
+        XCTAssertEqual(
+            try loadTrustedHostIdentities(root: harness.trustedHostRoot),
+            [originalIdentity, unrelatedIdentity]
+        )
+    }
+
+    func testEditServerSaveFailureRestoresTrustAbsenceAndPreservesUnrelatedTrust() async throws {
+        let pair = makePasswordBackedServer()
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity]
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("normal connection password"),
+            identityID: pair.identity.id
+        )
+        let unrelatedIdentity = TrustedHostIdentity(
+            serverID: UUID(),
+            host: "unrelated.example.test",
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 unrelated-host-key",
+            trustedAt: Date(timeIntervalSince1970: 456)
+        )
+        try saveTrustedHostIdentities([unrelatedIdentity], root: harness.trustedHostRoot)
+        await harness.model.load()
+
+        await harness.model.beginEditServer(serverID: pair.server.id)
+        try harness.model.trustSetupHostKey(
+            makeHostKeyChallenge(
+                serverID: pair.server.id,
+                host: "replacement.example.test"
+            ),
+            setupSessionID: harness.model.setupSessionID
+        )
+        await harness.profileRepository.failNextSaveServer(
+            with: ConnectionProfileRepositoryError.missingServer(pair.server.id)
+        )
+
+        await harness.model.saveAndConnect()
+
+        guard case .failed = harness.model.state else {
+            return XCTFail("expected terminal save failure")
+        }
+        XCTAssertEqual(
+            try loadTrustedHostIdentities(root: harness.trustedHostRoot),
+            [unrelatedIdentity]
+        )
+    }
+
+    func testEditServerTrustRollbackFailurePreservesPrimarySaveError() async throws {
+        let pair = makePasswordBackedServer()
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity]
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("normal connection password"),
+            identityID: pair.identity.id
+        )
+        let originalIdentity = TrustedHostIdentity(
+            serverID: pair.server.id,
+            host: pair.server.host,
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 original-host-key",
+            trustedAt: Date(timeIntervalSince1970: 123)
+        )
+        try saveTrustedHostIdentity(originalIdentity, root: harness.trustedHostRoot)
+        await harness.model.load()
+
+        await harness.model.beginEditServer(serverID: pair.server.id)
+        try harness.model.trustSetupHostKey(
+            makeChangedHostKeyChallenge(
+                serverID: pair.server.id,
+                host: "replacement.example.test",
+                trustedIdentity: originalIdentity,
+                receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+            ),
+            setupSessionID: harness.model.setupSessionID
+        )
+        let trustedHostsFile = harness.trustedHostRoot
+            .appendingPathComponent("trusted-hosts.json")
+        try FileManager.default.removeItem(at: trustedHostsFile)
+        try FileManager.default.createDirectory(
+            at: trustedHostsFile,
+            withIntermediateDirectories: false
+        )
+        let saveError = ConnectionProfileRepositoryError.missingServer(pair.server.id)
+        await harness.profileRepository.failNextSaveServer(with: saveError)
+
+        await harness.model.saveAndConnect()
+
+        XCTAssertEqual(
+            harness.model.state,
+            .failed(String(describing: saveError))
+        )
+    }
+
+    func testBeginEditServerSnapshotsTrustAfterCredentialLoad() async throws {
+        let pair = makePasswordBackedServer()
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity]
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("normal connection password"),
+            identityID: pair.identity.id
+        )
+        let originalIdentity = TrustedHostIdentity(
+            serverID: pair.server.id,
+            host: pair.server.host,
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 original-host-key",
+            trustedAt: Date(timeIntervalSince1970: 123)
+        )
+        try saveTrustedHostIdentity(originalIdentity, root: harness.trustedHostRoot)
+        await harness.model.load()
+        await harness.credentialStore.suspendNextLoad()
+
+        let beginEditTask = Task {
+            await harness.model.beginEditServer(serverID: pair.server.id)
+        }
+        await harness.credentialStore.waitForSuspendedLoad()
+        let replacementIdentity = TrustedHostIdentity(
+            serverID: pair.server.id,
+            host: "replacement.example.test",
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 replacement-host-key",
+            trustedAt: Date(timeIntervalSince1970: 456)
+        )
+        try saveTrustedHostIdentity(replacementIdentity, root: harness.trustedHostRoot)
+        await harness.credentialStore.resumeSuspendedLoad()
+        await beginEditTask.value
+
+        await harness.model.cancelSetup()
+
+        let retainedIdentity = try XCTUnwrap(
+            loadTrustedHostIdentities(root: harness.trustedHostRoot).first
+        )
+        XCTAssertEqual(retainedIdentity, replacementIdentity)
+    }
+
+    func testSuccessfulEditServerRetainsAcceptedUpdatedTrust() async throws {
+        let pair = makePasswordBackedServer()
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity]
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("normal connection password"),
+            identityID: pair.identity.id
+        )
+        let originalIdentity = TrustedHostIdentity(
+            serverID: pair.server.id,
+            host: pair.server.host,
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 original-host-key",
+            trustedAt: Date(timeIntervalSince1970: 123)
+        )
+        try saveTrustedHostIdentity(originalIdentity, root: harness.trustedHostRoot)
+        await harness.model.load()
+        let updatedChallenge = makeChangedHostKeyChallenge(
+            serverID: pair.server.id,
+            host: "replacement.example.test",
+            trustedIdentity: originalIdentity,
+            receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+        )
+
+        await harness.model.beginEditServer(serverID: pair.server.id)
+        try harness.model.trustSetupHostKey(
+            updatedChallenge,
+            setupSessionID: harness.model.setupSessionID
+        )
+        await harness.model.saveAndConnect()
+
+        XCTAssertEqual(harness.model.state, .library)
+        let retainedIdentity = try XCTUnwrap(
+            loadTrustedHostIdentities(root: harness.trustedHostRoot).first
+        )
+        XCTAssertEqual(retainedIdentity.serverID, pair.server.id)
+        XCTAssertEqual(retainedIdentity.host, updatedChallenge.host)
+        XCTAssertEqual(
+            retainedIdentity.openSSHPublicKey,
+            updatedChallenge.receivedOpenSSHPublicKey
+        )
+    }
+
+    func testEditServerSaveSerializesConcurrentCancellation() async throws {
+        let pair = makePasswordBackedServer()
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity]
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("normal connection password"),
+            identityID: pair.identity.id
+        )
+        let originalIdentity = TrustedHostIdentity(
+            serverID: pair.server.id,
+            host: pair.server.host,
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 original-host-key",
+            trustedAt: Date(timeIntervalSince1970: 123)
+        )
+        try saveTrustedHostIdentity(originalIdentity, root: harness.trustedHostRoot)
+        await harness.model.load()
+        await harness.model.beginEditServer(serverID: pair.server.id)
+        let replacementChallenge = makeChangedHostKeyChallenge(
+            serverID: pair.server.id,
+            host: "replacement.example.test",
+            trustedIdentity: originalIdentity,
+            receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+        )
+        try harness.model.trustSetupHostKey(
+            replacementChallenge,
+            setupSessionID: harness.model.setupSessionID
+        )
+        harness.model.updateDraft { draft in
+            draft.host = replacementChallenge.host
+        }
+        await harness.credentialStore.suspendNextLoad()
+
+        let saveTask = Task {
+            await harness.model.saveAndConnect()
+        }
+        await harness.credentialStore.waitForSuspendedLoad()
+        XCTAssertTrue(harness.model.isSetupActionInProgress)
+
+        await harness.model.cancelSetup()
+
+        guard case .setup = harness.model.state else {
+            await harness.credentialStore.resumeSuspendedLoad()
+            await saveTask.value
+            return XCTFail("expected save to retain ownership of setup")
+        }
+        XCTAssertEqual(
+            try loadTrustedHostIdentities(root: harness.trustedHostRoot)
+                .map(\.openSSHPublicKey),
+            [replacementChallenge.receivedOpenSSHPublicKey]
+        )
+
+        await harness.credentialStore.resumeSuspendedLoad()
+        await saveTask.value
+
+        XCTAssertFalse(harness.model.isSetupActionInProgress)
+        let snapshot = try await harness.profileRepository.loadSnapshot()
+        XCTAssertEqual(snapshot.server(id: pair.server.id)?.host, replacementChallenge.host)
+        XCTAssertEqual(
+            try loadTrustedHostIdentities(root: harness.trustedHostRoot)
+                .map(\.openSSHPublicKey),
+            [replacementChallenge.receivedOpenSSHPublicKey]
+        )
+    }
+
+    func testPostCommitEditServerFailureCannotResumeAcrossConcurrentCancellation() async throws {
+        let pair = makePasswordBackedServer()
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity]
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("normal connection password"),
+            identityID: pair.identity.id
+        )
+        let originalIdentity = TrustedHostIdentity(
+            serverID: pair.server.id,
+            host: pair.server.host,
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 original-host-key",
+            trustedAt: Date(timeIntervalSince1970: 123)
+        )
+        try saveTrustedHostIdentity(originalIdentity, root: harness.trustedHostRoot)
+        await harness.model.load()
+        await harness.model.beginEditServer(serverID: pair.server.id)
+        let replacementChallenge = makeChangedHostKeyChallenge(
+            serverID: pair.server.id,
+            host: "replacement.example.test",
+            trustedIdentity: originalIdentity,
+            receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+        )
+        try harness.model.trustSetupHostKey(
+            replacementChallenge,
+            setupSessionID: harness.model.setupSessionID
+        )
+        harness.model.updateDraft { draft in
+            draft.host = replacementChallenge.host
+        }
+        await harness.profileRepository.suspendNextLoad(
+            thenThrow: ConnectionProfileRepositoryError.missingServer(pair.server.id)
+        )
+
+        let saveTask = Task {
+            await harness.model.saveAndConnect()
+        }
+        await harness.profileRepository.waitForSuspendedLoad()
+        XCTAssertTrue(harness.model.isSetupActionInProgress)
+
+        await harness.model.cancelSetup()
+        guard case .setup = harness.model.state else {
+            await harness.profileRepository.resumeSuspendedLoad()
+            await saveTask.value
+            return XCTFail("expected save to retain ownership of setup")
+        }
+
+        await harness.profileRepository.resumeSuspendedLoad()
+        await saveTask.value
+
+        XCTAssertFalse(harness.model.isSetupActionInProgress)
+        guard case .failed = harness.model.state else {
+            return XCTFail("expected the post-commit refresh failure")
+        }
+        let snapshot = try await harness.profileRepository.loadSnapshot()
+        XCTAssertEqual(snapshot.server(id: pair.server.id)?.host, replacementChallenge.host)
+        XCTAssertEqual(
+            try loadTrustedHostIdentities(root: harness.trustedHostRoot)
+                .map(\.openSSHPublicKey),
+            [replacementChallenge.receivedOpenSSHPublicKey],
+            "an older save failure must not consume a newer same-server trust snapshot"
+        )
+    }
+
+    func testWorkspaceSetupCancellationPreservesAcceptedTrust() async throws {
+        let pair = makePasswordBackedServer()
+        let workspace = SavedWorkspace(serverID: pair.server.id, sessionName: "base")
+        let harness = makeHarness(
+            servers: [pair.server],
+            workspaces: [workspace],
+            identities: [pair.identity]
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("normal connection password"),
+            identityID: pair.identity.id
+        )
+        let originalIdentity = TrustedHostIdentity(
+            serverID: pair.server.id,
+            host: pair.server.host,
+            keyType: "ssh-ed25519",
+            openSSHPublicKey: "ssh-ed25519 original-host-key",
+            trustedAt: Date(timeIntervalSince1970: 123)
+        )
+        try saveTrustedHostIdentity(originalIdentity, root: harness.trustedHostRoot)
+        await harness.model.load()
+
+        await harness.model.beginNewWorkspace(for: pair.server.id)
+        let newWorkspaceChallenge = makeChangedHostKeyChallenge(
+            serverID: pair.server.id,
+            host: "new-workspace.example.test",
+            trustedIdentity: originalIdentity,
+            receivedOpenSSHPublicKey: "ssh-ed25519 new-workspace-host-key"
+        )
+        try harness.model.trustSetupHostKey(
+            newWorkspaceChallenge,
+            setupSessionID: harness.model.setupSessionID
+        )
+        await harness.model.cancelSetup()
+
+        let newWorkspaceIdentity = try XCTUnwrap(
+            loadTrustedHostIdentities(root: harness.trustedHostRoot).first
+        )
+        await harness.model.beginEditWorkspace(
+            serverID: pair.server.id,
+            workspaceID: workspace.id
+        )
+        let editWorkspaceChallenge = makeChangedHostKeyChallenge(
+            serverID: pair.server.id,
+            host: "edit-workspace.example.test",
+            trustedIdentity: newWorkspaceIdentity,
+            receivedOpenSSHPublicKey: "ssh-ed25519 edit-workspace-host-key"
+        )
+        try harness.model.trustSetupHostKey(
+            editWorkspaceChallenge,
+            setupSessionID: harness.model.setupSessionID
+        )
+        await harness.model.cancelSetup()
+
+        XCTAssertEqual(harness.model.state, .library)
+        let identities = try loadTrustedHostIdentities(root: harness.trustedHostRoot)
+        XCTAssertEqual(identities.map(\.serverID), [pair.server.id])
+        XCTAssertEqual(
+            identities.map(\.openSSHPublicKey),
+            [editWorkspaceChallenge.receivedOpenSSHPublicKey]
+        )
+    }
+
     func testSaveAndConnectPersistsNewProfileAndUsesCurrentSettings() async throws {
         let settings = TerminalSettings(fontSize: 15, theme: .remuxDark)
         let harness = makeHarness(settings: settings)
@@ -2188,6 +3049,7 @@ final class RemuxRootModelTests: XCTestCase {
             TrustedHostStore,
             RemuxSSHRootService
         ) -> any GhosttyAttachmentTransferService)? = nil,
+        publicKeyInstaller: SSHPublicKeyInstaller? = nil,
         terminalScreenModelFactory: RemuxRootModel.TerminalScreenModelFactory? = nil
     ) -> RemuxRootModelHarness {
         let profileRepository = TestConnectionProfileRepository(
@@ -2211,6 +3073,9 @@ final class RemuxRootModelTests: XCTestCase {
         let resolvedAttachmentTransferServiceFactory = attachmentTransferServiceFactory ?? { _, _, _ in
             FailingGhosttyAttachmentTransferService()
         }
+        let resolvedPublicKeyInstaller = publicKeyInstaller ?? makePublicKeyInstaller(
+            recorder: RootModelPublicKeyInstallerRecorder(results: [])
+        )
         let resolvedTerminalScreenModelFactory = terminalScreenModelFactory ?? makeTestTerminalScreenModel
         let dependencies = RemuxAppDependencies(
             profileRepository: profileRepository,
@@ -2218,6 +3083,7 @@ final class RemuxRootModelTests: XCTestCase {
             shortcutRepository: shortcutRepository,
             credentialStore: credentialStore,
             trustedHostStore: trustedHostStore,
+            publicKeyInstaller: resolvedPublicKeyInstaller,
             transportFactory: resolvedTransportFactory,
             sshConnectionPrewarmer: resolvedSSHConnectionPrewarmer,
             attachmentTransferServiceFactory: resolvedAttachmentTransferServiceFactory,
@@ -2266,20 +3132,126 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertTrue(didStop, file: file, line: line)
     }
 
+    private func descendants<View: UIView>(
+        of view: UIView,
+        matching _: View.Type
+    ) -> [View] {
+        var matches: [View] = []
+        if let match = view as? View {
+            matches.append(match)
+        }
+        for subview in view.subviews {
+            matches.append(contentsOf: descendants(
+                of: subview,
+                matching: View.self
+            ))
+        }
+        return matches
+    }
+
     private func temporaryRoot() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
     }
 
     private func saveTrustedHostIdentity(_ identity: TrustedHostIdentity, root: URL) throws {
+        try saveTrustedHostIdentities([identity], root: root)
+    }
+
+    private func saveTrustedHostIdentities(
+        _ identities: [TrustedHostIdentity],
+        root: URL
+    ) throws {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let data = try JSONEncoder().encode([identity])
+        let data = try JSONEncoder().encode(identities)
         try data.write(to: root.appendingPathComponent("trusted-hosts.json"), options: .atomic)
     }
 
     private func loadTrustedHostIdentities(root: URL) throws -> [TrustedHostIdentity] {
         let data = try Data(contentsOf: root.appendingPathComponent("trusted-hosts.json"))
         return try JSONDecoder().decode([TrustedHostIdentity].self, from: data)
+    }
+
+    private func makePublicKeyInstallDraft() -> TmuxConnectionDraft {
+        let generatedKey = SSHPrivateKeyInspector.generateEd25519()
+        var draft = TmuxConnectionDraft(
+            serverID: UUID(uuidString: "1B42C2B6-BE4B-4FA6-A637-641071273214")!
+        )
+        draft.host = "server.example.test"
+        draft.port = "22"
+        draft.username = "remux"
+        draft.privateKeyPEM = generatedKey.privateKeyPEM
+        return draft
+    }
+
+    private func assertPublicKeyInstallTargetError(
+        _ expected: SSHPublicKeyInstallDraftError,
+        model: RemuxRootModel,
+        mutation: (inout TmuxConnectionDraft) -> Void,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        var draft = makePublicKeyInstallDraft()
+        mutation(&draft)
+
+        XCTAssertThrowsError(try model.publicKeyInstallTarget(for: draft), file: file, line: line) {
+            XCTAssertEqual($0 as? SSHPublicKeyInstallDraftError, expected, file: file, line: line)
+        }
+    }
+
+    private func setupDraft(from state: RemuxRootModel.State) throws -> TmuxConnectionDraft {
+        guard case .setup(let setup) = state else {
+            throw RootModelSetupTestError.expectedSetup
+        }
+        return setup.draft
+    }
+
+    private func makeHostKeyChallenge(
+        serverID: SavedServer.ID,
+        host: String
+    ) -> SSHHostKeyTrustChallenge {
+        SSHHostKeyTrustChallenge(
+            kind: .unknown,
+            serverID: serverID,
+            host: host,
+            trustedKeyType: nil,
+            trustedOpenSSHPublicKey: nil,
+            receivedKeyType: "ssh-ed25519",
+            receivedOpenSSHPublicKey: "ssh-ed25519 setup-host-key"
+        )
+    }
+
+    private func makeChangedHostKeyChallenge(
+        serverID: SavedServer.ID,
+        host: String,
+        trustedIdentity: TrustedHostIdentity,
+        receivedOpenSSHPublicKey: String
+    ) -> SSHHostKeyTrustChallenge {
+        SSHHostKeyTrustChallenge(
+            kind: .changed,
+            serverID: serverID,
+            host: host,
+            trustedKeyType: trustedIdentity.keyType,
+            trustedOpenSSHPublicKey: trustedIdentity.openSSHPublicKey,
+            receivedKeyType: "ssh-ed25519",
+            receivedOpenSSHPublicKey: receivedOpenSSHPublicKey
+        )
+    }
+
+    private func makePublicKeyInstaller(
+        recorder: RootModelPublicKeyInstallerRecorder
+    ) -> SSHPublicKeyInstaller {
+        SSHPublicKeyInstaller(
+            installationCommand: "fixture installation command",
+            commandRunner: { target, credential, command, stdin in
+                try await recorder.run(
+                    target: target,
+                    credential: credential,
+                    command: command,
+                    stdin: stdin
+                )
+            }
+        )
     }
 
     private func waitUntil(
@@ -2324,6 +3296,41 @@ private struct RemuxRootModelHarness {
     let credentialHelper: TestServerCredentialStore
     let credentialStore: TestSSHCredentialStore
     let trustedHostRoot: URL
+}
+
+private enum RootModelSetupTestError: Error {
+    case expectedSetup
+}
+
+private actor RootModelPublicKeyInstallerRecorder {
+    private var results: [Result<RemuxSSHExecResult, Error>]
+    private var targets: [SSHPublicKeyInstallTarget] = []
+    private var credentials: [SSHCredential] = []
+
+    init(results: [Result<RemuxSSHExecResult, Error>]) {
+        self.results = results
+    }
+
+    func run(
+        target: SSHPublicKeyInstallTarget,
+        credential: SSHCredential,
+        command: String,
+        stdin: Data?
+    ) throws -> RemuxSSHExecResult {
+        _ = command
+        _ = stdin
+        targets.append(target)
+        credentials.append(credential)
+        return try results.removeFirst().get()
+    }
+
+    func recordedTargets() -> [SSHPublicKeyInstallTarget] {
+        targets
+    }
+
+    func recordedCredentials() -> [SSHCredential] {
+        credentials
+    }
 }
 
 @MainActor
@@ -2585,6 +3592,9 @@ private actor TestConnectionProfileRepository: ConnectionProfileRepository {
     private var workspaces: [SavedWorkspace]
     private var identities: [SSHIdentity]
     private var saveServerError: Error?
+    private var suspendedLoadError: Error?
+    private var suspendedLoadContinuation: CheckedContinuation<Void, Never>?
+    private var suspendedLoadWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(
         servers: [SavedServer] = [],
@@ -2605,6 +3615,18 @@ private actor TestConnectionProfileRepository: ConnectionProfileRepository {
     }
 
     func loadSnapshot() async throws -> ConnectionLibrarySnapshot {
+        if let suspendedLoadError {
+            self.suspendedLoadError = nil
+            let waiters = suspendedLoadWaiters
+            suspendedLoadWaiters.removeAll()
+            await withCheckedContinuation { continuation in
+                suspendedLoadContinuation = continuation
+                for waiter in waiters {
+                    waiter.resume()
+                }
+            }
+            throw suspendedLoadError
+        }
         let serverIDs = Set(servers.map(\.id))
         return ConnectionLibrarySnapshot(
             servers: servers.sorted {
@@ -2631,6 +3653,22 @@ private actor TestConnectionProfileRepository: ConnectionProfileRepository {
 
     func failNextSaveServer(with error: Error) {
         saveServerError = error
+    }
+
+    func suspendNextLoad(thenThrow error: Error) {
+        suspendedLoadError = error
+    }
+
+    func waitForSuspendedLoad() async {
+        guard suspendedLoadContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            suspendedLoadWaiters.append(continuation)
+        }
+    }
+
+    func resumeSuspendedLoad() {
+        suspendedLoadContinuation?.resume()
+        suspendedLoadContinuation = nil
     }
 
     func saveWorkspace(_ workspace: SavedWorkspace) async throws {
@@ -2767,9 +3805,23 @@ private actor TestServerCredentialStore {
 
 private actor TestSSHCredentialStore: SSHCredentialStore {
     private var credentials: [UUID: SSHCredential] = [:]
+    private var shouldSuspendNextLoad = false
+    private var suspendedLoadContinuation: CheckedContinuation<Void, Never>?
+    private var suspendedLoadWaiters: [CheckedContinuation<Void, Never>] = []
 
     func loadCredential(identityID: UUID) async throws -> SSHCredential? {
-        credentials[identityID]
+        if shouldSuspendNextLoad {
+            shouldSuspendNextLoad = false
+            let waiters = suspendedLoadWaiters
+            suspendedLoadWaiters.removeAll()
+            await withCheckedContinuation { continuation in
+                suspendedLoadContinuation = continuation
+                for waiter in waiters {
+                    waiter.resume()
+                }
+            }
+        }
+        return credentials[identityID]
     }
 
     func saveCredential(_ credential: SSHCredential, identityID: UUID) async throws {
@@ -2778,5 +3830,25 @@ private actor TestSSHCredentialStore: SSHCredentialStore {
 
     func deleteCredential(identityID: UUID) async throws {
         credentials.removeValue(forKey: identityID)
+    }
+
+    func credentialsSnapshot() -> [UUID: SSHCredential] {
+        credentials
+    }
+
+    func suspendNextLoad() {
+        shouldSuspendNextLoad = true
+    }
+
+    func waitForSuspendedLoad() async {
+        guard suspendedLoadContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            suspendedLoadWaiters.append(continuation)
+        }
+    }
+
+    func resumeSuspendedLoad() {
+        suspendedLoadContinuation?.resume()
+        suspendedLoadContinuation = nil
     }
 }

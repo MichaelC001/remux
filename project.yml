@@ -33,6 +33,8 @@ targets:
       - path: RemuxApp/Remux.icon
       - path: RemuxApp/PrivacyInfo.xcprivacy
         buildPhase: resources
+      - path: RemuxApp/Resources/install_authorized_key.sh
+        buildPhase: resources
     settings:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: Remux

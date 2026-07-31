@@ -101,6 +101,10 @@ jobs:
           sudo xcode-select --switch "${XCODE_DEVELOPER_DIR}"
           xcodebuild -version
 
+      - name: Test authorized-key installer
+        shell: bash
+        run: scripts/test_install_authorized_key.sh
+
       - name: Create simulator
         id: simulator
         shell: bash

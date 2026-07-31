@@ -50,6 +50,35 @@ final class TrustedHostStore: @unchecked Sendable {
         )
     }
 
+    func identity(for serverID: SavedServer.ID) throws -> TrustedHostIdentity? {
+        try lock.withLock {
+            try loadLocked().first { $0.serverID == serverID }
+        }
+    }
+
+    /// Restores a previously captured identity during snapshot rollback.
+    ///
+    /// This intentionally bypasses host-key challenge and trust-transition
+    /// validation. Callers must not use it to establish new trust.
+    func restoreIdentity(
+        _ identity: TrustedHostIdentity?,
+        for serverID: SavedServer.ID
+    ) throws {
+        try lock.withLock {
+            var identities = try loadLocked()
+            if let index = identities.firstIndex(where: { $0.serverID == serverID }) {
+                if let identity {
+                    identities[index] = identity
+                } else {
+                    identities.remove(at: index)
+                }
+            } else if let identity {
+                identities.append(identity)
+            }
+            try saveLocked(identities)
+        }
+    }
+
     func deleteIdentity(for serverID: SavedServer.ID) throws {
         try lock.withLock {
             let identities = try loadLocked().filter { $0.serverID != serverID }

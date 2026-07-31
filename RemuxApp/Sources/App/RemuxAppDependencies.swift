@@ -1,13 +1,24 @@
 @preconcurrency import Citadel
-@preconcurrency import Crypto
 import Foundation
 import NIOCore
 
-private enum RemuxConnectionTimeouts {
+enum RemuxConnectionTimeouts {
     static let terminalSSHConnect: TimeAmount = .seconds(10)
+    static let publicKeyInstallSSHConnect: TimeAmount = .seconds(10)
     static let tmuxControlNoResponse: TimeAmount = .seconds(15)
     static let sftpSSHConnect: TimeAmount = .seconds(15)
     static let sftpOperation: TimeAmount = .seconds(15)
+}
+
+private extension ResolvedSSHAuth {
+    var sshCredential: SSHCredential {
+        switch credential {
+        case .password(let password):
+            .password(password)
+        case .privateKey(let privateKey):
+            .privateKey(privateKey)
+        }
+    }
 }
 
 struct RemuxAppDependencies: Sendable {
@@ -16,6 +27,7 @@ struct RemuxAppDependencies: Sendable {
     let shortcutRepository: any ShortcutRepository
     let credentialStore: any SSHCredentialStore
     let trustedHostStore: TrustedHostStore
+    let publicKeyInstaller: SSHPublicKeyInstaller
     private let sshRootService: RemuxSSHRootService
     private let transportFactory: @Sendable (
         _ target: TmuxConnectionTarget,
@@ -43,6 +55,7 @@ struct RemuxAppDependencies: Sendable {
         shortcutRepository: any ShortcutRepository,
         credentialStore: any SSHCredentialStore,
         trustedHostStore: TrustedHostStore,
+        publicKeyInstaller: SSHPublicKeyInstaller,
         sshRootService: RemuxSSHRootService = RemuxSSHRootService(),
         transportFactory: @escaping @Sendable (
             _ target: TmuxConnectionTarget,
@@ -69,6 +82,7 @@ struct RemuxAppDependencies: Sendable {
         self.shortcutRepository = shortcutRepository
         self.credentialStore = credentialStore
         self.trustedHostStore = trustedHostStore
+        self.publicKeyInstaller = publicKeyInstaller
         self.sshRootService = sshRootService
         self.transportFactory = transportFactory
         self.sshConnectionPrewarmer = sshConnectionPrewarmer
@@ -108,12 +122,16 @@ struct RemuxAppDependencies: Sendable {
         let root = try ApplicationStorage.remuxRoot()
         let credentialStore: any SSHCredentialStore = KeychainSSHCredentialStore()
 #endif
+        let trustedHostStore = TrustedHostStore(rootURL: root)
         return RemuxAppDependencies(
             profileRepository: FileBackedConnectionProfileRepository(rootURL: root),
             settingsRepository: FileBackedTerminalSettingsRepository(rootURL: root),
             shortcutRepository: FileBackedShortcutRepository(rootURL: root),
             credentialStore: credentialStore,
-            trustedHostStore: TrustedHostStore(rootURL: root)
+            trustedHostStore: trustedHostStore,
+            publicKeyInstaller: try SSHPublicKeyInstaller(
+                trustedHostStore: trustedHostStore
+            )
         )
     }
 
@@ -191,7 +209,10 @@ struct RemuxAppDependencies: Sendable {
             host: target.server.host,
             port: target.server.port,
             authenticationMethod: {
-                try authenticationMethod(for: target.sshAuth)
+                try SSHAuthenticationMethodFactory.make(
+                    username: target.sshAuth.username,
+                    credential: target.sshAuth.sshCredential
+                )
             },
             hostKeyValidator: trustedHostStore.validator(for: target.server),
             connectTimeout: RemuxConnectionTimeouts.terminalSSHConnect,
@@ -241,63 +262,14 @@ struct RemuxAppDependencies: Sendable {
             host: target.server.host,
             port: target.server.port,
             authenticationMethod: {
-                try authenticationMethod(for: target.sshAuth)
+                try SSHAuthenticationMethodFactory.make(
+                    username: target.sshAuth.username,
+                    credential: target.sshAuth.sshCredential
+                )
             },
             hostKeyValidator: trustedHostStore.validator(for: target.server),
             connectTimeout: connectTimeout
         )
-    }
-
-    private static func authenticationMethod(for auth: ResolvedSSHAuth) throws -> SSHAuthenticationMethod {
-        switch auth.credential {
-        case .password(let password):
-            return .passwordBased(username: auth.username, password: password)
-        case .privateKey(let credential):
-            let inspection = try SSHPrivateKeyInspector.inspect(credential.privateKeyPEM)
-            let decryptionKey = credential.passphrase.map { Data($0.utf8) }
-            switch inspection.keyType {
-            case .ed25519:
-                return try .ed25519(
-                    username: auth.username,
-                    privateKey: Curve25519.Signing.PrivateKey(
-                        sshEd25519: inspection.normalizedPEM,
-                        decryptionKey: decryptionKey
-                    )
-                )
-            case .rsa:
-                return try .rsa(
-                    username: auth.username,
-                    privateKey: Insecure.RSA.PrivateKey(
-                        sshRsa: inspection.normalizedPEM,
-                        decryptionKey: decryptionKey
-                    )
-                )
-            case .ecdsaP256:
-                return try .p256(
-                    username: auth.username,
-                    privateKey: P256.Signing.PrivateKey(
-                        sshEcdsaP256: inspection.normalizedPEM,
-                        decryptionKey: decryptionKey
-                    )
-                )
-            case .ecdsaP384:
-                return try .p384(
-                    username: auth.username,
-                    privateKey: P384.Signing.PrivateKey(
-                        sshEcdsaP384: inspection.normalizedPEM,
-                        decryptionKey: decryptionKey
-                    )
-                )
-            case .ecdsaP521:
-                return try .p521(
-                    username: auth.username,
-                    privateKey: P521.Signing.PrivateKey(
-                        sshEcdsaP521: inspection.normalizedPEM,
-                        decryptionKey: decryptionKey
-                    )
-                )
-            }
-        }
     }
 
 #if DEBUG || REMUX_LIVE_UI_TESTING
@@ -305,16 +277,62 @@ struct RemuxAppDependencies: Sendable {
         static let ephemeralStorage = "REMUX_DEBUG_EPHEMERAL_STORAGE"
     }
 
+    private enum DebugPublicKeyInstallOutcome: String {
+        case passwordRequired
+        case alreadyInstalled
+    }
+
+    private actor DebugPublicKeyInstallState {
+        let requiresPassword: Bool
+        var didAppend = false
+
+        init(requiresPassword: Bool) {
+            self.requiresPassword = requiresPassword
+        }
+
+        func run(
+            credential: SSHCredential
+        ) throws -> RemuxSSHExecResult {
+            switch credential {
+            case .password:
+                didAppend = true
+            case .privateKey:
+                if requiresPassword, !didAppend {
+                    throw SSHClientError.allAuthenticationOptionsFailed
+                }
+            }
+
+            return RemuxSSHExecResult(
+                exitStatus: 0,
+                stdout: Data(),
+                stderr: Data()
+            )
+        }
+    }
+
     static func uiTesting() throws -> RemuxAppDependencies {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("RemuxUITesting", isDirectory: true)
+        let trustedHostStore = TrustedHostStore(rootURL: root)
+        let publicKeyInstallOutcome = ProcessInfo.processInfo.environment[
+            "REMUX_UI_TEST_PUBLIC_KEY_INSTALL_OUTCOME"
+        ].flatMap(DebugPublicKeyInstallOutcome.init(rawValue:)) ?? .alreadyInstalled
+        let publicKeyInstallState = DebugPublicKeyInstallState(
+            requiresPassword: publicKeyInstallOutcome == .passwordRequired
+        )
 
         return RemuxAppDependencies(
             profileRepository: InMemoryConnectionProfileRepository(),
             settingsRepository: InMemoryTerminalSettingsRepository(),
             shortcutRepository: InMemoryShortcutRepository(),
             credentialStore: InMemorySSHCredentialStore(),
-            trustedHostStore: TrustedHostStore(rootURL: root),
+            trustedHostStore: trustedHostStore,
+            publicKeyInstaller: SSHPublicKeyInstaller(
+                installationCommand: "exit 0",
+                commandRunner: { _, credential, _, _ in
+                    try await publicKeyInstallState.run(credential: credential)
+                }
+            ),
             transportFactory: { _, _, _ in
                 DeterministicTmuxControlTransport(
                     chunks: uiTestingTransportChunks()

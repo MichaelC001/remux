@@ -1,4 +1,5 @@
 import Foundation
+import NIOConcurrencyHelpers
 @preconcurrency import NIOSSH
 
 private struct SSHTmuxBoundedStreamPreview: Equatable, Sendable {
@@ -91,35 +92,40 @@ private struct SSHTmuxStartupDiagnosticsAccumulator: Equatable, Sendable {
 enum SSHTmuxControlChannelDataRoute: Equatable, Sendable {
     case stdout(reportFirstOutput: Bool)
     case stderr
-    case extendedData(typeDescription: String)
+    case extendedData
 }
 
-struct SSHTmuxControlChannelDataRouter: Equatable, Sendable {
+final class SSHTmuxControlChannelDataRouter: @unchecked Sendable {
+    private let lock = NIOLock()
     private var didReportFirstOutput = false
     private var startupDiagnostics = SSHTmuxStartupDiagnosticsAccumulator()
 
     var diagnostics: SSHTmuxStartupDiagnostics? {
-        startupDiagnostics.snapshot()
+        lock.withLock {
+            startupDiagnostics.snapshot()
+        }
     }
 
-    mutating func route(
+    func route(
         type: SSHChannelData.DataType,
         data: Data
     ) -> SSHTmuxControlChannelDataRoute {
-        switch type {
-        case .channel:
-            startupDiagnostics.recordStdout(data)
-            let reportFirstOutput = !didReportFirstOutput
-            didReportFirstOutput = true
-            return .stdout(reportFirstOutput: reportFirstOutput)
+        lock.withLock {
+            switch type {
+            case .channel:
+                startupDiagnostics.recordStdout(data)
+                let reportFirstOutput = !didReportFirstOutput
+                didReportFirstOutput = true
+                return .stdout(reportFirstOutput: reportFirstOutput)
 
-        case .stdErr:
-            startupDiagnostics.recordStderr(data)
-            return .stderr
+            case .stdErr:
+                startupDiagnostics.recordStderr(data)
+                return .stderr
 
-        default:
-            startupDiagnostics.recordExtendedData(data)
-            return .extendedData(typeDescription: type.description)
+            default:
+                startupDiagnostics.recordExtendedData(data)
+                return .extendedData
+            }
         }
     }
 }

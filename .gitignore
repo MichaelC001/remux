@@ -2,6 +2,7 @@
 .local/
 .claude/
 .playwright-mcp/
+.worktrees/
 /AGENTS.md
 DerivedData/
 build/
