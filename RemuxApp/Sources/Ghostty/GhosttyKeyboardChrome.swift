@@ -295,7 +295,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
                 ? "Hide the compose field while preserving its draft."
                 : "Prepare an editable message before sending it to the terminal.",
             accessibilityIdentifier: "terminal.composer.toggle",
-            isActive: isComposerPresented,
+            isActive: false,
             isEnabled: !isInteractionLocked,
             action: onToggleComposer
         )
