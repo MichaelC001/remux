@@ -333,7 +333,7 @@ final class GhosttyComposerDictationControllerTests: XCTestCase {
         controller.finish()
         await waitUntil { controller.phase == .idle }
 
-        XCTAssertEqual(failures, ["No speech detected — try again"])
+        XCTAssertEqual(failures, ["No speech detected. Try again."])
     }
 
     func testDebugBackendCancelSuppressesDelayedTranscriptAndCanRestart() async {
@@ -406,7 +406,7 @@ final class GhosttyComposerDictationControllerTests: XCTestCase {
         backend.emit(.starting, for: 1)
 
         await waitUntil { controller.phase == .idle }
-        XCTAssertEqual(failures, ["Dictation couldn’t start — try again"])
+        XCTAssertEqual(failures, ["Couldn’t start dictation. Try again."])
         XCTAssertEqual(backend.actions, [.start(1), .cancel(1)])
     }
 
@@ -524,7 +524,7 @@ final class GhosttyComposerDictationControllerTests: XCTestCase {
         await waitUntil { controller.phase == .idle }
 
         XCTAssertEqual(completionCount, 0)
-        XCTAssertEqual(failures, ["Dictation stopped — try again"])
+        XCTAssertEqual(failures, ["Dictation stopped unexpectedly. Try again."])
         XCTAssertEqual(backend.actions, [.start(1), .finish(1), .cancel(1)])
     }
 

@@ -299,7 +299,7 @@ final class GhosttyComposerModel: ObservableObject {
             attachmentText: attachmentText
         )
         guard !message.isEmpty else {
-            finishBeforeDelivery(status: "Attachment upload produced no message")
+            finishBeforeDelivery(status: "Couldn’t send. Message kept.")
             return
         }
 
@@ -357,11 +357,11 @@ final class GhosttyComposerModel: ObservableObject {
         case .notStarted:
             break
         case .pasteRejected:
-            statusMessage = "Send failed — message kept"
+            statusMessage = "Couldn’t send. Message kept."
         case .submitted:
             statusMessage = nil
         case .pastedAwaitingSubmit:
-            statusMessage = "Message pasted — press Enter in the terminal"
+            statusMessage = "Couldn’t finish sending. Check the terminal."
         }
     }
 
@@ -566,37 +566,35 @@ final class GhosttyComposerModel: ObservableObject {
     private func attachmentPreparationMessage(
         for attachments: [GhosttyPendingAttachment]
     ) -> String {
-        if let failed = attachments.first(where: \.didFailPreparingTransferSource) {
-            return "\(failed.title) couldn’t load — retry or remove"
+        if attachments.contains(where: \.didFailPreparingTransferSource) {
+            return "An attachment couldn’t load. Retry or remove it."
         }
-        if let preparing = attachments.first(where: \.isPreparingTransferSource) {
-            return "\(preparing.title) is still preparing"
+        if attachments.contains(where: \.isPreparingTransferSource) {
+            return "An attachment is still preparing."
         }
-        return "Attachment is not ready"
+        return "An attachment isn’t ready yet."
     }
 
     private func attachmentSendFailureMessage(for error: Error) -> String {
         guard let transferError = error as? GhosttyAttachmentTransferError else {
-            return "Attachment send failed."
+            return "Couldn’t send the attachment."
         }
 
         switch transferError {
         case .noSources, .localSourceUnavailable:
-            return "Attachment is not ready."
+            return "An attachment isn’t ready yet."
         case .securityScopedSourceUnavailable:
-            return "File needs to be selected again."
-        case .remoteDirectoryCreationFailed:
-            return "Server could not create the upload folder."
-        case .uploadFailed, .remoteRenameFailed:
-            return "Server could not save the attachment."
+            return "Choose the file again to send it."
+        case .remoteDirectoryCreationFailed, .uploadFailed, .remoteRenameFailed:
+            return "Server couldn’t save the attachment."
         case .remoteOperationTimedOut:
-            return "Connection stalled while uploading. Check network or VPN."
+            return "Upload stalled. Check network or VPN."
         case .remotePathResolutionFailed:
-            return "Remux could not start the upload. Try again."
+            return "Couldn’t start the upload. Try again."
         case .cancelled:
-            return "Attachment send cancelled."
+            return "Upload canceled."
         case .terminalInsertionFailed:
-            return "Could not insert attachment."
+            return "Couldn’t send the attachment."
         }
     }
 }

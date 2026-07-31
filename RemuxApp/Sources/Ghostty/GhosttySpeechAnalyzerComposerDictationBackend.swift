@@ -184,7 +184,6 @@ private extension GhosttySpeechAnalyzerComposerDictationBackend {
             await cancelActiveRun()
             guard isDesired() else { return }
 
-            var didFinishPreparation = false
             do {
                 handler(.preparing)
                 let prepared = try await takePreparedSession(for: locale)
@@ -193,7 +192,6 @@ private extension GhosttySpeechAnalyzerComposerDictationBackend {
                     returnPreparedSession(prepared)
                     return
                 }
-                didFinishPreparation = true
 
                 handler(.starting)
                 let (inputSequence, inputContinuation) = AsyncStream.makeStream(
@@ -257,14 +255,7 @@ private extension GhosttySpeechAnalyzerComposerDictationBackend {
                 }
             } catch {
                 await cancelActiveRun()
-                handler(
-                    .failed(
-                        userMessage(
-                            for: error,
-                            didFinishPreparation: didFinishPreparation
-                        )
-                    )
-                )
+                handler(.failed(userMessage(for: error)))
             }
         }
 
@@ -512,19 +503,14 @@ private extension GhosttySpeechAnalyzerComposerDictationBackend {
             }
         }
 
-        private func userMessage(
-            for error: Error,
-            didFinishPreparation: Bool
-        ) -> String {
+        private func userMessage(for error: Error) -> String {
             switch error {
             case GhosttySpeechAnalyzerError.unsupportedLocale:
-                "Dictation isn’t available for this language"
+                "Dictation isn’t available for this language."
             case GhosttySpeechAnalyzerError.unavailable:
-                "Dictation is temporarily unavailable"
+                "Dictation isn’t available right now."
             default:
-                didFinishPreparation
-                    ? "Microphone couldn’t start — try again"
-                    : "Dictation couldn’t prepare — try again"
+                "Couldn’t start dictation. Try again."
             }
         }
 

@@ -371,7 +371,7 @@ struct GhosttyComposeBar: View {
         case .recording:
             GhosttyComposerDictationMeter(model: dictationAudioLevelModel)
         case .transcribing:
-            dictationStatus("Transcribing")
+            dictationStatus("Transcribing…")
         }
     }
 

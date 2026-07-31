@@ -80,7 +80,7 @@ final class GhosttyComposerSubmissionControllerTests: XCTestCase {
 
         composer.open()
         composer.close()
-        composer.statusMessage = "Message pasted — press Enter in the terminal"
+        composer.statusMessage = "Couldn’t finish sending. Check the terminal."
         composer.open()
 
         XCTAssertTrue(composer.isPresented)
@@ -151,7 +151,7 @@ final class GhosttyComposerSubmissionControllerTests: XCTestCase {
 
         XCTAssertEqual(enterCount, 0)
         XCTAssertEqual(composer.draft, "Keep this")
-        XCTAssertEqual(composer.statusMessage, "Send failed — message kept")
+        XCTAssertEqual(composer.statusMessage, "Couldn’t send. Message kept.")
     }
 
     func testUploadedAttachmentAndDraftCanBeginSubmission() {

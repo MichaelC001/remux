@@ -558,13 +558,13 @@ final class GhosttyLegacyComposerDictationBackend: GhosttyComposerDictationBacke
     private func userMessage(for error: Error) -> String {
         switch error {
         case GhosttyComposerDictationError.unsupportedLocale:
-            "Dictation isn’t available for this language"
+            "Dictation isn’t available for this language."
         case GhosttyComposerDictationError.unsupportedOnDeviceLocale:
-            "On-device dictation isn’t available for this language"
+            "On-device dictation isn’t available for this language."
         case GhosttyComposerDictationError.recognizerUnavailable:
-            "Dictation is temporarily unavailable"
+            "Dictation isn’t available right now."
         default:
-            "Microphone couldn’t start — try again"
+            "Couldn’t start dictation. Try again."
         }
     }
 }
@@ -763,13 +763,13 @@ final class GhosttyComposerDictationController: ObservableObject {
         case .speechRecognitionDenied:
             fail(
                 sessionID: requestedSessionID,
-                message: "Enable Speech Recognition in Settings to use dictation"
+                message: "Allow speech recognition in Settings to use dictation."
             )
 
         case .microphoneDenied:
             fail(
                 sessionID: requestedSessionID,
-                message: "Enable Microphone access in Settings to use dictation"
+                message: "Allow microphone access in Settings to use dictation."
             )
 
         case .cancelled:
@@ -847,7 +847,7 @@ final class GhosttyComposerDictationController: ObservableObject {
             if latestHypothesis.isEmpty {
                 fail(
                     sessionID: requestedSessionID,
-                    message: "No speech detected — try again"
+                    message: "No speech detected. Try again."
                 )
             } else {
                 complete(sessionID: requestedSessionID)
@@ -856,7 +856,7 @@ final class GhosttyComposerDictationController: ObservableObject {
         case .recognitionFailed:
             fail(
                 sessionID: requestedSessionID,
-                message: "Dictation stopped — try again"
+                message: "Dictation stopped unexpectedly. Try again."
             )
 
         case .failed(let message):
@@ -884,7 +884,7 @@ final class GhosttyComposerDictationController: ObservableObject {
             )
             fail(
                 sessionID: requestedSessionID,
-                message: "Dictation couldn’t start — try again"
+                message: "Couldn’t start dictation. Try again."
             )
         }
     }

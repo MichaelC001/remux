@@ -110,7 +110,7 @@ final class RemuxAppUITests: XCTestCase {
 
         let status = app.staticTexts["terminal.composer.dictation.status"]
         XCTAssertTrue(status.waitForExistence(timeout: 1))
-        XCTAssertEqual(status.label, "Transcribing")
+        XCTAssertEqual(status.label, "Transcribing…")
         attachScreenshot(named: "composer-dictation-transcribing")
 
         let field = app.textViews["terminal.composer.field"]
@@ -224,11 +224,11 @@ final class RemuxAppUITests: XCTestCase {
         stop.tap()
 
         XCTAssertTrue(mic.waitForExistence(timeout: 3))
-        XCTAssertTrue(app.staticTexts["No speech detected — try again"].exists)
+        XCTAssertTrue(app.staticTexts["No speech detected. Try again."].exists)
 
         mic.tap()
         XCTAssertTrue(stop.waitForExistence(timeout: 3))
-        XCTAssertFalse(app.staticTexts["No speech detected — try again"].exists)
+        XCTAssertFalse(app.staticTexts["No speech detected. Try again."].exists)
     }
 
     func testComposerToggleKeepsOpenKeyboardAndTerminalViewportStable() {

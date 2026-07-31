@@ -1209,13 +1209,13 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func handleAttachmentPhotoSelection(_ items: [PhotosPickerItem]) {
         guard !items.isEmpty else {
-            presentAttachmentNotice("No media selected.")
+            presentAttachmentNotice("Couldn’t add the photos.")
             return
         }
 
         withAnimation(.easeOut(duration: 0.16)) {
             guard composer.addPhotoSelections(items) else {
-                presentAttachmentNotice("No media selected.")
+                presentAttachmentNotice("Couldn’t add the photos.")
                 return
             }
             attachmentNotice = nil
@@ -1226,7 +1226,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         switch result {
         case .success(let urls):
             guard !urls.isEmpty else {
-                presentAttachmentNotice("No file selected.")
+                presentAttachmentNotice("Couldn’t add the file.")
                 return
             }
 
@@ -1235,7 +1235,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     let didAdd = try await composer.addSecurityScopedFiles(urls)
                     await MainActor.run {
                         guard didAdd else {
-                            presentAttachmentNotice("No file selected.")
+                            presentAttachmentNotice("Couldn’t add the file.")
                             return
                         }
 
@@ -1245,7 +1245,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     }
                 } catch {
                     await MainActor.run {
-                        presentAttachmentNotice("File selection failed.")
+                        presentAttachmentNotice("Couldn’t add the file.")
                     }
                 }
             }
@@ -1254,7 +1254,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             guard !(nsError.domain == NSCocoaErrorDomain && nsError.code == NSUserCancelledError) else {
                 return
             }
-            presentAttachmentNotice("File selection failed.")
+            presentAttachmentNotice("Couldn’t add the file.")
         }
     }
 
@@ -1264,7 +1264,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         if pasteboard.hasImages {
             guard let request = GhosttyAttachmentPasteboardSnapshot.currentImageProviderRequest()
             else {
-                presentAttachmentNotice("Clipboard image could not be read.")
+                presentAttachmentNotice("Couldn’t paste the image.")
                 return false
             }
             withAnimation(.easeOut(duration: 0.16)) {
@@ -1543,7 +1543,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         let interaction = model.terminalInteractionProjection
         guard interaction.isInputAvailable,
               let surfaceID = interaction.selectedActiveLeafID else {
-            composer.statusMessage = "Destination unavailable — draft kept"
+            composer.statusMessage = "Couldn’t send. Message kept."
             return
         }
 
