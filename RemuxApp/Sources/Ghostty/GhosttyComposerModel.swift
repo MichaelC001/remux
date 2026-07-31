@@ -50,7 +50,15 @@ final class GhosttyComposerModel: ObservableObject {
     private static var pasteSettlementDelay: Duration { .milliseconds(150) }
 
     @Published var isPresented = false
-    @Published var draft = ""
+    @Published var draft = "" {
+        didSet {
+            // Editing dismisses stale status. Lives on the model because the
+            // screen no longer re-evaluates on draft changes, so a screen
+            // onChange would never fire while typing.
+            guard oldValue != draft else { return }
+            clearStatusMessage()
+        }
+    }
     @Published var attachments: [GhosttyPendingAttachment] = []
     @Published var statusMessage: String?
     @Published private(set) var isSubmitting = false
@@ -101,6 +109,14 @@ final class GhosttyComposerModel: ObservableObject {
 
     var attachmentTransferProgress: GhosttyAttachmentTransferProgress? {
         attachmentTransferState?.progress
+    }
+
+    /// Clears the status message without firing `objectWillChange` when it
+    /// is already nil. Draft edits clear status on every keystroke, so an
+    /// unconditional write would invalidate every subscriber twice per key.
+    func clearStatusMessage() {
+        guard statusMessage != nil else { return }
+        statusMessage = nil
     }
 
     func open() {

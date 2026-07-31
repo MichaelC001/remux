@@ -535,17 +535,13 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             }
             .onChange(of: composer.attachments) { _, attachments in
                 guard isSelected else { return }
-                composer.statusMessage = nil
+                composer.clearStatusMessage()
                 if attachments.isEmpty {
                     attachmentPreviewRequest = nil
                 }
             }
             .onChange(of: interactionProjection.selectedActiveLeafID) { _, activeLeafID in
                 handleActiveLeafChange(activeLeafID)
-            }
-            .onChange(of: composer.draft) { _, _ in
-                guard isSelected else { return }
-                composer.statusMessage = nil
             }
             .onReceive(composerUpdates) { _ in
                 composerRevision &+= 1
@@ -1008,7 +1004,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func handleTerminalCoverInputAvailabilityChange(_ isInputAvailable: Bool) {
         if !isInputAvailable {
-            composer.statusMessage = nil
+            composer.clearStatusMessage()
         }
         guard terminalCoverPhase.isRestoringKeyboard else { return }
         guard isInputAvailable else {

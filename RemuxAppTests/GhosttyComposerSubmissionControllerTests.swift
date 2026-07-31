@@ -246,3 +246,25 @@ private struct FailingComposerAttachmentTransferService: GhosttyAttachmentTransf
         throw GhosttyAttachmentTransferError.cancelled
     }
 }
+
+@MainActor
+final class GhosttyComposerModelStatusMessageTests: XCTestCase {
+    func testEditingDraftClearsStatusMessage() {
+        let composer = GhosttyComposerModel()
+        composer.statusMessage = "Couldn’t send. Message kept."
+
+        composer.draft = "retrying with an edit"
+
+        XCTAssertNil(composer.statusMessage)
+    }
+
+    func testRewritingIdenticalDraftKeepsStatusMessage() {
+        let composer = GhosttyComposerModel()
+        composer.draft = "unchanged"
+        composer.statusMessage = "Couldn’t send. Message kept."
+
+        composer.draft = "unchanged"
+
+        XCTAssertEqual(composer.statusMessage, "Couldn’t send. Message kept.")
+    }
+}
