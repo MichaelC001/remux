@@ -41,7 +41,7 @@ final class GhosttyComposerSubmissionControllerTests: XCTestCase {
     }
 
     @MainActor
-    func testComposerSessionCleansUnsentStagedFilesWhenTerminalIsReleased() async throws {
+    func testComposerCleansUnsentStagedFilesWhenReleased() async throws {
         let stagedURL = try GhosttyAttachmentStagingStore.stageDataSynchronously(
             Data("unsent".utf8),
             filename: "unsent.txt"
@@ -50,7 +50,7 @@ final class GhosttyComposerSubmissionControllerTests: XCTestCase {
             GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
         }
 
-        var session: GhosttyComposerSessionModel? = GhosttyComposerSessionModel()
+        var session: GhosttyComposerModel? = GhosttyComposerModel()
         session?.draft = "Review this"
         let attachment = GhosttyPendingAttachment.file(url: stagedURL)
         session?.attachments = [attachment]
@@ -69,6 +69,89 @@ final class GhosttyComposerSubmissionControllerTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(5))
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: stagedURL.path))
+    }
+
+    @MainActor
+    func testClosingAndReopeningPreservesContentAndClearsTransientStatus() {
+        let composer = GhosttyComposerModel()
+        composer.draft = "Keep this draft"
+        composer.attachments = [.file(url: URL(fileURLWithPath: "/tmp/report.txt"))]
+        composer.statusMessage = "Couldn’t start dictation"
+
+        composer.open()
+        composer.close()
+        composer.statusMessage = "Message pasted — press Enter in the terminal"
+        composer.open()
+
+        XCTAssertTrue(composer.isPresented)
+        XCTAssertEqual(composer.draft, "Keep this draft")
+        XCTAssertEqual(composer.attachments.count, 1)
+        XCTAssertNil(composer.statusMessage)
+    }
+
+    @MainActor
+    func testSuccessfulSubmissionUsesOneDestinationAndClearsDeliveredContent() async {
+        let composer = GhosttyComposerModel()
+        composer.draft = "Explain this"
+        var prepareCount = 0
+        var pastedMessages: [String] = []
+        var enterCount = 0
+        let destination = GhosttyComposerSubmissionDestination(
+            workspaceID: UUID(),
+            surfaceID: UUID(),
+            makeAttachmentTransferService: {
+                XCTFail("Text-only submission must not create an attachment service")
+                return FailingComposerAttachmentTransferService()
+            },
+            prepareTerminalInput: {
+                prepareCount += 1
+            },
+            sendPaste: { message in
+                pastedMessages.append(message)
+                return true
+            },
+            sendEnter: {
+                enterCount += 1
+                return true
+            }
+        )
+
+        composer.submit(to: destination)
+        await waitUntil { !composer.isSubmitting }
+
+        XCTAssertEqual(prepareCount, 1)
+        XCTAssertEqual(pastedMessages, ["Explain this"])
+        XCTAssertEqual(enterCount, 1)
+        XCTAssertEqual(composer.draft, "")
+        XCTAssertTrue(composer.attachments.isEmpty)
+        XCTAssertNil(composer.statusMessage)
+    }
+
+    @MainActor
+    func testRejectedPastePreservesComposerContentAndNeverSendsEnter() async {
+        let composer = GhosttyComposerModel()
+        composer.draft = "Keep this"
+        var enterCount = 0
+        let destination = GhosttyComposerSubmissionDestination(
+            workspaceID: UUID(),
+            surfaceID: UUID(),
+            makeAttachmentTransferService: {
+                FailingComposerAttachmentTransferService()
+            },
+            prepareTerminalInput: {},
+            sendPaste: { _ in false },
+            sendEnter: {
+                enterCount += 1
+                return true
+            }
+        )
+
+        composer.submit(to: destination)
+        await waitUntil { !composer.isSubmitting }
+
+        XCTAssertEqual(enterCount, 0)
+        XCTAssertEqual(composer.draft, "Keep this")
+        XCTAssertEqual(composer.statusMessage, "Send failed — message kept")
     }
 
     func testUploadedAttachmentAndDraftCanBeginSubmission() {
@@ -138,5 +221,28 @@ final class GhosttyComposerSubmissionControllerTests: XCTestCase {
         XCTAssertTrue(controller.beginSubmission("first"))
         XCTAssertFalse(controller.beginSubmission("second"))
         XCTAssertEqual(controller.phase, .sending)
+    }
+
+    @MainActor
+    private func waitUntil(
+        timeout: Duration = .seconds(1),
+        condition: @escaping @MainActor () -> Bool
+    ) async {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while !condition(), clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+}
+
+private struct FailingComposerAttachmentTransferService: GhosttyAttachmentTransferService {
+    func transfer(
+        _ job: GhosttyAttachmentTransferJob,
+        progress: @escaping GhosttyAttachmentTransferProgressHandler
+    ) async throws -> GhosttyAttachmentTransferResult {
+        _ = job
+        _ = progress
+        throw GhosttyAttachmentTransferError.cancelled
     }
 }

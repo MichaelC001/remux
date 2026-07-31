@@ -14,31 +14,6 @@ struct GhosttyComposerSessionState: Equatable {
     }
 }
 
-@MainActor
-final class GhosttyComposerSessionModel: ObservableObject {
-    @Published var draft = ""
-    @Published var attachments: [GhosttyPendingAttachment] = []
-
-    var hasContent: Bool {
-        snapshot.hasContent
-    }
-
-    var areAttachmentsReady: Bool {
-        snapshot.areAttachmentsReady
-    }
-
-    var snapshot: GhosttyComposerSessionState {
-        GhosttyComposerSessionState(draft: draft, attachments: attachments)
-    }
-
-    /// The retained terminal entry owns this model. Removing or replacing that
-    /// entry releases the last unsent draft resources without treating ordinary
-    /// pane switches or library navigation as destructive.
-    isolated deinit {
-        GhosttyAttachmentStagingStore.cleanup(attachments)
-    }
-}
-
 enum GhosttyComposerMessageFormatter {
     static func message(draft: String, attachmentText: String) -> String {
         guard !draft.isEmpty else { return attachmentText }

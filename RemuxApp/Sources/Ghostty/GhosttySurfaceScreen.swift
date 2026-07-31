@@ -57,28 +57,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
     }
 
-    private struct AttachmentTransferState {
-        let uploadCount: Int
-        var progress: GhosttyAttachmentTransferProgress?
-    }
-
-    private enum AttachmentPreparationSource {
-        case photo(PhotosPickerItem)
-        case pastedFile(URL)
-        case pastedImage(GhosttyAttachmentPasteboardSnapshot.ImageProviderRequest)
-    }
-
-    private struct AttachmentPreparationJob {
-        let source: AttachmentPreparationSource
-        let attemptID: UUID
-        var task: Task<Void, Never>?
-    }
-
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
     @ObservedObject private var model: Model
-    @ObservedObject private var composerDictationController: GhosttyComposerDictationController
-    @ObservedObject private var composerSession: GhosttyComposerSessionModel
+    @ObservedObject private var composer: GhosttyComposerModel
     private let presentation: GhosttySurfaceScreenPresentation
     private let isSelected: Bool
     private let isTerminalCovered: Bool
@@ -98,9 +80,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var topologyActionInputRefocusCoordinator = GhosttyTopologyActionInputRefocusCoordinator()
     @State private var trackpadDriver = GhosttyKeyboardCursorTrackpadDriver()
     @State private var trackpadFeedback = GhosttyKeyboardCursorTrackpad.FeedbackState.hidden
-    @State private var isComposerPresented = false
-    @State private var composerSubmissionController = GhosttyComposerSubmissionController()
-    @State private var composerStatusMessage: String?
     @State private var isShortcutPalettePresented = false
     @State private var isShortcutsSettingsPresented = false
     @State private var shortcutEditorRequest: ShortcutEditorRequest?
@@ -108,8 +87,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var isAttachmentFileImporterPresented = false
     @State private var attachmentPhotoSelections: [PhotosPickerItem] = []
     @State private var attachmentPreviewRequest: AttachmentPreviewRequest?
-    @State private var attachmentPreparationJobs: [GhosttyPendingAttachment.ID: AttachmentPreparationJob] = [:]
-    @State private var attachmentTransferState: AttachmentTransferState?
     @State private var attachmentNotice: GhosttyAttachmentNotice?
 #if DEBUG
     @State private var uiTestKeyboardWillHideCount = 0
@@ -124,15 +101,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private let onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)?
     private static var maxAttachmentPhotoSelectionCount: Int { 10 }
     private static var tmuxPrefixFlushDelay: Duration { .milliseconds(750) }
-    // tmux completion confirms delivery; TUIs still need a short boundary to consume the paste before Enter.
-    private static var composerPasteSettlementDelay: Duration { .milliseconds(150) }
 
     init(
         model: Model,
         presentation: GhosttySurfaceScreenPresentation,
         isSelected: Bool,
-        composerDictationController: GhosttyComposerDictationController,
-        composerSession: GhosttyComposerSessionModel,
+        composer: GhosttyComposerModel,
         isTerminalCovered: Bool = false,
         shortcutStore: ShortcutStore,
         attachmentTransferServiceFactory: @escaping @Sendable () -> any GhosttyAttachmentTransferService,
@@ -144,8 +118,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         onTrustHostKey: @escaping () -> Void
     ) {
         self.model = model
-        self.composerDictationController = composerDictationController
-        self.composerSession = composerSession
+        _composer = ObservedObject(wrappedValue: composer)
         self.presentation = presentation
         self.isSelected = isSelected
         self.isTerminalCovered = isTerminalCovered
@@ -168,6 +141,24 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private var isAwaitingSystemKeyboardPresentation: Bool {
         keyboardViewportTransitionCoordinator.isAwaitingSystemKeyboardPresentation
+    }
+
+    private var isActiveComposerPresented: Bool {
+        isSelected && composer.isPresented
+    }
+
+    private var composerDraftBinding: Binding<String> {
+        Binding(
+            get: { composer.draft },
+            set: { composer.draft = $0 }
+        )
+    }
+
+    private var composerAttachmentsBinding: Binding<[GhosttyPendingAttachment]> {
+        Binding(
+            get: { composer.attachments },
+            set: { composer.attachments = $0 }
+        )
     }
 
     var body: some View {
@@ -398,7 +389,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             windowCount: interactionProjection.windowCount,
                             selectedPaneIndex: interactionProjection.selectedPaneIndex,
                             paneCount: interactionProjection.paneCount,
-                            isComposerPresented: isComposerPresented,
+                            isComposerPresented: isActiveComposerPresented,
                             onShowHome: onEditConnection,
                             onShowWindows: showWindows,
                             onShowPanes: showPanes,
@@ -408,32 +399,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             onShowShortcuts: showShortcutPalette,
                             sendKey: sendTerminalKeyEvent
                         ) {
-                            GhosttyComposeBar(
-                                text: $composerSession.draft,
-                                attachments: $composerSession.attachments,
-                                wantsKeyboardFocus: inputCoordinator.keyboardMode == .system
-                                    && inputCoordinator.keyboardOwner == .composer,
-                                keyboardActivationToken: inputCoordinator.composerActivationToken,
-                                keyboardResponderHandoff: keyboardResponderHandoff,
-                                submissionState: composerSubmissionState,
-                                dictationPhase: composerDictationController.phase,
-                                dictationAudioLevelModel: composerDictationController.audioLevelModel,
-                                statusMessage: composerStatusMessage,
-                                attachmentUploadCount: attachmentTransferUploadCount,
-                                attachmentTransferProgress: attachmentTransferProgress,
-                                onKeyboardFocusRequest: handleComposerKeyboardFocusRequest,
-                                onKeyboardResponderAttached: handleComposerKeyboardResponderAttached,
-                                onChoosePhotos: openAttachmentPhotosPicker,
-                                onChooseFiles: openAttachmentFilePicker,
-                                onOpenAttachment: showPendingAttachmentPreview,
-                                onRetryAttachment: retryPendingAttachment,
-                                onRemoveAttachment: removePendingAttachment,
-                                onPasteAttachment: handleComposerAttachmentPaste,
-                                onStartDictation: startComposerDictation,
-                                onCancelDictation: cancelComposerDictation,
-                                onFinishDictation: finishComposerDictation,
-                                onSend: submitComposer
-                            )
+                            selectedComposerBar()
                         }
                     }
                     .padding(.horizontal, chrome.surfaceHorizontalPadding)
@@ -524,7 +490,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             }
             .sheet(item: $attachmentPreviewRequest) { request in
                 GhosttyAttachmentPreviewSheet(
-                    attachments: $composerSession.attachments,
+                    attachments: composerAttachmentsBinding,
                     initiallySelectedAttachmentID: request.attachmentID
                 )
                 .presentationDetents([.large])
@@ -557,8 +523,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 attachmentPhotoSelections = []
                 handleAttachmentPhotoSelection(items)
             }
-            .onChange(of: composerSession.attachments) { _, attachments in
-                composerStatusMessage = nil
+            .onChange(of: composer.attachments) { _, attachments in
+                guard isSelected else { return }
+                composer.statusMessage = nil
                 if attachments.isEmpty {
                     attachmentPreviewRequest = nil
                 }
@@ -566,8 +533,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             .onChange(of: interactionProjection.selectedActiveLeafID) { _, activeLeafID in
                 handleActiveLeafChange(activeLeafID)
             }
-            .onChange(of: composerSession.draft) { _, _ in
-                composerStatusMessage = nil
+            .onChange(of: composer.draft) { _, _ in
+                guard isSelected else { return }
+                composer.statusMessage = nil
             }
             .onChange(of: interactionProjection.isInputAvailable) { _, isInputAvailable in
                 handleTerminalCoverInputAvailabilityChange(isInputAvailable)
@@ -647,38 +615,63 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         )
     }
 
+    @ViewBuilder
+    private func selectedComposerBar() -> some View {
+        if isSelected {
+            GhosttyComposeBar(
+                text: composerDraftBinding,
+                attachments: composerAttachmentsBinding,
+                wantsKeyboardFocus: inputCoordinator.keyboardMode == .system
+                    && inputCoordinator.keyboardOwner == .composer,
+                keyboardActivationToken: inputCoordinator.composerActivationToken,
+                keyboardResponderHandoff: keyboardResponderHandoff,
+                submissionState: composerSubmissionState,
+                dictationPhase: composer.dictationController.phase,
+                dictationAudioLevelModel: composer.dictationController.audioLevelModel,
+                statusMessage: composer.statusMessage,
+                attachmentUploadCount: attachmentTransferUploadCount,
+                attachmentTransferProgress: attachmentTransferProgress,
+                onKeyboardFocusRequest: handleComposerKeyboardFocusRequest,
+                onKeyboardResponderAttached: handleComposerKeyboardResponderAttached,
+                onChoosePhotos: openAttachmentPhotosPicker,
+                onChooseFiles: openAttachmentFilePicker,
+                onOpenAttachment: showPendingAttachmentPreview,
+                onRetryAttachment: retryPendingAttachment,
+                onRemoveAttachment: removePendingAttachment,
+                onPasteAttachment: handleComposerAttachmentPaste,
+                onStartDictation: startComposerDictation,
+                onCancelDictation: cancelComposerDictation,
+                onFinishDictation: finishComposerDictation,
+                onSend: submitComposer
+            )
+        }
+    }
+
     private var isTerminalInputAvailable: Bool {
         model.terminalInteractionProjection.isInputAvailable
     }
 
     private var composerSubmissionState: GhosttyComposeBarSubmissionState {
-        if isAttachmentTransferInProgress {
+        if composer.isSubmitting {
             return .sending
         }
-
-        switch composerSubmissionController.phase {
-        case .idle:
-            return .composing(
-                canSend: isTerminalInputAvailable
-                    && composerSession.hasContent
-                    && composerSession.areAttachmentsReady
-                    && !isAttachmentTransferInProgress
-            )
-        case .sending:
-            return .sending
-        }
+        return .composing(
+            canSend: isTerminalInputAvailable
+                && composer.hasContent
+                && composer.areAttachmentsReady
+        )
     }
 
     private var isAttachmentTransferInProgress: Bool {
-        attachmentTransferState != nil
+        composer.isSubmitting
     }
 
     private var attachmentTransferUploadCount: Int {
-        attachmentTransferState?.uploadCount ?? 0
+        composer.attachmentTransferUploadCount
     }
 
     private var attachmentTransferProgress: GhosttyAttachmentTransferProgress? {
-        attachmentTransferState?.progress
+        composer.attachmentTransferProgress
     }
 
     private var isTerminalViewportFrozen: Bool {
@@ -687,7 +680,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private var pendingAttachmentInteractionProjection: GhosttyPendingAttachmentInteractionProjection {
         GhosttyPendingAttachmentInteractionProjection(
-            hasPreviewableAttachments: composerSession.attachments.contains(where: \.isPreviewable),
+            hasPreviewableAttachments: composer.attachments.contains(where: \.isPreviewable),
             isTransferInProgress: isAttachmentTransferInProgress
         )
     }
@@ -723,7 +716,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             ]
         )
         let isInputAvailable = isTerminalInputAvailable
-        if !isComposerPresented {
+        if !isActiveComposerPresented {
             showSystemKeyboard()
         }
         GhosttyRuntimeTrace.flowEvent(
@@ -758,8 +751,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func toggleKeyboardChrome() {
-        let keyboardOwner: GhosttyKeyboardOwner = isComposerPresented ? .composer : .terminal
-        let isInputAvailable = isComposerPresented || isTerminalInputAvailable
+        let keyboardOwner: GhosttyKeyboardOwner =
+            isActiveComposerPresented ? .composer : .terminal
+        let isInputAvailable = isActiveComposerPresented || isTerminalInputAvailable
         GhosttyRuntimeTrace.flowBegin(
             "terminal.input",
             event: "ui.tap.keyboardToggle",
@@ -798,7 +792,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private func toggleComposer() {
         guard !composerSubmissionState.isSending else { return }
 
-        if isComposerPresented {
+        if isActiveComposerPresented {
             closeComposer()
         } else {
             openComposer()
@@ -806,9 +800,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func openComposer() {
-        composerDictationController.prepare()
         withAnimation(GhosttyKeyboardChromeAnimation.composerTransition) {
-            isComposerPresented = true
+            composer.open()
         }
     }
 
@@ -829,12 +822,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
 
         withAnimation(GhosttyKeyboardChromeAnimation.composerTransition) {
-            isComposerPresented = false
+            composer.close()
         }
     }
 
     private func handleComposerKeyboardResponderAttached() {
-        guard isComposerPresented,
+        guard isActiveComposerPresented,
               inputCoordinator.keyboardMode == .system,
               inputCoordinator.keyboardOwner == .terminal else { return }
         guard keyboardResponderHandoff.transfer(to: .composer) else {
@@ -852,30 +845,19 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func startComposerDictation() {
-        guard composerDictationController.phase == .idle else { return }
-        composerStatusMessage = nil
-        composerDictationController.start(
-            draft: composerSession.draft,
-            onTranscript: { transcript in
-                composerSession.draft = transcript
-            },
-            onFailure: { message in
-                composerStatusMessage = message
-            }
-        )
+        composer.startDictation()
     }
 
     private func cancelComposerDictation() {
-        composerDictationController.cancel()
+        composer.cancelDictation()
     }
 
     private func finishComposerDictation() {
-        GhosttyRuntimeTrace.perf("composer.dictation.stopTapped")
-        composerDictationController.finish()
+        composer.finishDictation()
     }
 
     private func handleComposerKeyboardFocusRequest() {
-        guard isComposerPresented else { return }
+        guard isActiveComposerPresented else { return }
         guard inputCoordinator.keyboardMode != .system
                 || inputCoordinator.keyboardOwner != .composer else { return }
         showComposerKeyboard()
@@ -906,10 +888,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func handleScenePhaseChange(_ phase: ScenePhase) {
-        if phase == .background {
-            composerDictationController.stopImmediately()
-        }
-
         if terminalCoverPhase.isRestoringKeyboard {
             guard phase == .active else { return }
             resumeTerminalCoverKeyboardRestorationIfPossible()
@@ -1017,7 +995,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func handleTerminalCoverInputAvailabilityChange(_ isInputAvailable: Bool) {
         if !isInputAvailable {
-            composerStatusMessage = nil
+            composer.statusMessage = nil
         }
         guard terminalCoverPhase.isRestoringKeyboard else { return }
         guard isInputAvailable else {
@@ -1186,22 +1164,14 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func removePendingAttachment(_ id: GhosttyPendingAttachment.ID) {
-        guard !isAttachmentTransferInProgress,
-              let index = composerSession.attachments.firstIndex(where: { $0.id == id }) else {
-            return
-        }
-
-        attachmentPreparationJobs.removeValue(forKey: id)?.task?.cancel()
-        let attachment = composerSession.attachments[index]
         _ = withAnimation(.easeOut(duration: 0.14)) {
-            composerSession.attachments.remove(at: index)
+            composer.removeAttachment(id)
         }
-        GhosttyAttachmentStagingStore.cleanup([attachment])
     }
 
     private func showPendingAttachmentPreview(_ attachmentID: GhosttyPendingAttachment.ID) {
         guard pendingAttachmentInteractionProjection.canOpenPreview,
-              composerSession.attachments.contains(where: {
+              composer.attachments.contains(where: {
                   $0.id == attachmentID && $0.isPreviewable
               }) else {
             return
@@ -1211,237 +1181,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func retryPendingAttachment(_ attachmentID: GhosttyPendingAttachment.ID) {
-        guard let attachment = composerSession.attachments.first(where: { $0.id == attachmentID }),
-              attachment.didFailPreparingTransferSource,
-              let source = attachmentPreparationJobs[attachmentID]?.source else {
-            return
-        }
-
-        beginAttachmentPreparation(attachmentID, from: source)
-    }
-
-    private func beginAttachmentPreparation(
-        _ attachmentID: GhosttyPendingAttachment.ID,
-        from source: AttachmentPreparationSource
-    ) {
-        guard composerSession.attachments.contains(where: { $0.id == attachmentID }) else {
-            return
-        }
-
-        attachmentPreparationJobs[attachmentID]?.task?.cancel()
-        updatePendingAttachment(
-            id: attachmentID,
-            detail: "Preparing…",
-            preparationState: .preparing
-        )
-
-        let attemptID = UUID()
-        attachmentPreparationJobs[attachmentID] = AttachmentPreparationJob(
-            source: source,
-            attemptID: attemptID,
-            task: nil
-        )
-
-        let task = Task { @MainActor in
-            switch source {
-            case .photo(let item):
-                await preparePhotoAttachment(
-                    item,
-                    attachmentID: attachmentID,
-                    attemptID: attemptID
-                )
-            case .pastedFile(let url):
-                await preparePastedFileAttachment(
-                    url,
-                    attachmentID: attachmentID,
-                    attemptID: attemptID
-                )
-            case .pastedImage(let request):
-                await preparePastedImageAttachment(
-                    request,
-                    attachmentID: attachmentID,
-                    attemptID: attemptID
-                )
-            }
-        }
-
-        guard attachmentPreparationJobs[attachmentID]?.attemptID == attemptID else {
-            task.cancel()
-            return
-        }
-        attachmentPreparationJobs[attachmentID]?.task = task
-    }
-
-    private func preparePhotoAttachment(
-        _ item: PhotosPickerItem,
-        attachmentID: GhosttyPendingAttachment.ID,
-        attemptID: UUID
-    ) async {
-        guard item.supportedContentTypes.contains(where: { $0.conforms(to: .image) }),
-              let title = composerSession.attachments.first(where: { $0.id == attachmentID })?.title else {
-            failAttachmentPreparation(attachmentID, attemptID: attemptID)
-            return
-        }
-
-        var stagedURL: URL?
-        do {
-            guard let transfer = try await item.loadTransferable(
-                type: GhosttyPhotoPickerTransfer.self
-            ) else {
-                failAttachmentPreparation(attachmentID, attemptID: attemptID)
-                return
-            }
-            stagedURL = transfer.stagedURL
-            try Task.checkCancellation()
-
-            let renamedURL = try await GhosttyAttachmentStagingStore.renameStagedFile(
-                transfer.stagedURL,
-                filename: GhosttyAttachmentStagingStore.imageFilename(
-                    title: title,
-                    contentTypes: item.supportedContentTypes,
-                    uniqueID: attachmentID
-                )
-            )
-            stagedURL = renamedURL
-            guard let photo = await GhosttyPendingAttachment.photo(
-                title: title,
-                stagedFileURL: renamedURL
-            ) else {
-                failAttachmentPreparation(attachmentID, attemptID: attemptID)
-                return
-            }
-
-            applyPreparedAttachment(
-                photo,
-                to: attachmentID,
-                attemptID: attemptID
-            )
-        } catch is CancellationError {
-            if let stagedURL {
-                GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
-            }
-            return
-        } catch {
-            if let stagedURL {
-                GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
-            }
-            failAttachmentPreparation(attachmentID, attemptID: attemptID)
-        }
-    }
-
-    private func preparePastedFileAttachment(
-        _ url: URL,
-        attachmentID: GhosttyPendingAttachment.ID,
-        attemptID: UUID
-    ) async {
-        var stagedURL: URL?
-        do {
-            let preparedURL = try await GhosttyAttachmentStagingStore.stageFileURL(url)
-            stagedURL = preparedURL
-            try Task.checkCancellation()
-            applyPreparedAttachment(
-                .file(url: preparedURL),
-                to: attachmentID,
-                attemptID: attemptID
-            )
-        } catch is CancellationError {
-            if let stagedURL {
-                GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
-            }
-            return
-        } catch {
-            if let stagedURL {
-                GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
-            }
-            failAttachmentPreparation(attachmentID, attemptID: attemptID)
-        }
-    }
-
-    private func preparePastedImageAttachment(
-        _ request: GhosttyAttachmentPasteboardSnapshot.ImageProviderRequest,
-        attachmentID: GhosttyPendingAttachment.ID,
-        attemptID: UUID
-    ) async {
-        guard let attachment = await GhosttyAttachmentPasteboardSnapshot.imageAttachment(
-            from: request
-        )
-        else {
-            failAttachmentPreparation(attachmentID, attemptID: attemptID)
-            return
-        }
-
-        applyPreparedAttachment(
-            attachment,
-            to: attachmentID,
-            attemptID: attemptID
-        )
-    }
-
-    private func applyPreparedAttachment(
-        _ preparedAttachment: GhosttyPendingAttachment,
-        to attachmentID: GhosttyPendingAttachment.ID,
-        attemptID: UUID
-    ) {
-        guard attachmentPreparationJobs[attachmentID]?.attemptID == attemptID,
-              composerSession.attachments.contains(where: { $0.id == attachmentID }) else {
-            GhosttyAttachmentStagingStore.cleanup([preparedAttachment])
-            return
-        }
-
-        updatePendingAttachment(
-            id: attachmentID,
-            payload: preparedAttachment.payload,
-            previewPayload: preparedAttachment.previewPayload,
-            detail: preparedAttachment.detail,
-            preparationState: .ready
-        )
-        attachmentPreparationJobs.removeValue(forKey: attachmentID)
-    }
-
-    private func failAttachmentPreparation(
-        _ attachmentID: GhosttyPendingAttachment.ID,
-        attemptID: UUID,
-        detail: String = "Couldn’t load"
-    ) {
-        guard attachmentPreparationJobs[attachmentID]?.attemptID == attemptID else {
-            return
-        }
-        guard composerSession.attachments.contains(where: { $0.id == attachmentID }) else {
-            attachmentPreparationJobs.removeValue(forKey: attachmentID)
-            return
-        }
-
-        updatePendingAttachment(
-            id: attachmentID,
-            detail: detail,
-            preparationState: .failed
-        )
-        attachmentPreparationJobs[attachmentID]?.task = nil
-    }
-
-    private func pendingAttachmentSendFailureMessage(for error: Error) -> String {
-        guard let transferError = error as? GhosttyAttachmentTransferError else {
-            return "Attachment send failed."
-        }
-
-        switch transferError {
-        case .noSources, .localSourceUnavailable:
-            return "Attachment is not ready."
-        case .securityScopedSourceUnavailable:
-            return "File needs to be selected again."
-        case .remoteDirectoryCreationFailed:
-            return "Server could not create the upload folder."
-        case .uploadFailed, .remoteRenameFailed:
-            return "Server could not save the attachment."
-        case .remoteOperationTimedOut:
-            return "Connection stalled while uploading. Check network or VPN."
-        case .remotePathResolutionFailed:
-            return "Remux could not start the upload. Try again."
-        case .cancelled:
-            return "Attachment send cancelled."
-        case .terminalInsertionFailed:
-            return "Could not insert attachment."
-        }
+        composer.retryAttachment(attachmentID)
     }
 
     private func openAttachmentPhotosPicker() {
@@ -1453,39 +1193,18 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func handleAttachmentPhotoSelection(_ items: [PhotosPickerItem]) {
-        let attachments = GhosttyPendingAttachment.mediaSelections(
-            contentTypes: items.map(\.supportedContentTypes)
-        )
-
-        guard !attachments.isEmpty else {
+        guard !items.isEmpty else {
             presentAttachmentNotice("No media selected.")
             return
         }
 
         withAnimation(.easeOut(duration: 0.16)) {
-            composerSession.attachments.append(contentsOf: attachments)
+            guard composer.addPhotoSelections(items) else {
+                presentAttachmentNotice("No media selected.")
+                return
+            }
             attachmentNotice = nil
         }
-
-        for (item, attachment) in zip(items, attachments) {
-            beginAttachmentPreparation(attachment.id, from: .photo(item))
-        }
-    }
-
-    private func updatePendingAttachment(
-        id: UUID,
-        payload: GhosttyAttachmentPayload? = nil,
-        previewPayload: GhosttyAttachmentPreviewPayload? = nil,
-        detail: String,
-        preparationState: GhosttyPendingAttachment.PreparationState? = nil
-    ) {
-        guard let index = composerSession.attachments.firstIndex(where: { $0.id == id }) else { return }
-        composerSession.attachments[index] = composerSession.attachments[index].updating(
-            payload: payload,
-            previewPayload: previewPayload,
-            detail: detail,
-            preparationState: preparationState
-        )
     }
 
     private func handleAttachmentFileSelection(_ result: Result<[URL], Error>) {
@@ -1498,17 +1217,14 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
             Task {
                 do {
-                    let attachments = try await Task.detached(priority: .utility) {
-                        try GhosttyPendingAttachment.securityScopedFiles(urls: urls)
-                    }.value
+                    let didAdd = try await composer.addSecurityScopedFiles(urls)
                     await MainActor.run {
-                        guard !attachments.isEmpty else {
+                        guard didAdd else {
                             presentAttachmentNotice("No file selected.")
                             return
                         }
 
                         withAnimation(.easeOut(duration: 0.16)) {
-                            composerSession.attachments.append(contentsOf: attachments)
                             attachmentNotice = nil
                         }
                     }
@@ -1536,15 +1252,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 presentAttachmentNotice("Clipboard image could not be read.")
                 return false
             }
-            let attachment = GhosttyPendingAttachment.pasteboardImagePlaceholder()
             withAnimation(.easeOut(duration: 0.16)) {
-                composerSession.attachments.append(attachment)
+                composer.addPastedImage(request)
                 attachmentNotice = nil
             }
-            beginAttachmentPreparation(
-                attachment.id,
-                from: .pastedImage(request)
-            )
             return true
         }
 
@@ -1557,20 +1268,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func stagePastedFile(_ url: URL) {
-        let filename = url.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
-        let placeholder = GhosttyPendingAttachment(
-            kind: .file,
-            title: filename.isEmpty ? "File" : filename,
-            detail: "Preparing…",
-            preparationState: .preparing
-        )
-
         withAnimation(.easeOut(duration: 0.16)) {
-            composerSession.attachments.append(placeholder)
+            composer.addPastedFile(url)
             attachmentNotice = nil
         }
-
-        beginAttachmentPreparation(placeholder.id, from: .pastedFile(url))
     }
 
     private func presentAttachmentNotice(_ message: String) {
@@ -1824,167 +1525,32 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func submitComposer() {
-        guard !isAttachmentTransferInProgress else { return }
-
-        if composerDictationController.phase == .recording {
-            composerDictationController.finish(afterTranscription: submitComposer)
-            return
-        }
-        guard !composerDictationController.phase.isActive else { return }
-
-        switch composerSubmissionController.phase {
-        case .idle:
-            submitComposerContent()
-        case .sending:
-            break
-        }
-    }
-
-    private func submitComposerContent() {
         let interaction = model.terminalInteractionProjection
         guard interaction.isInputAvailable,
               let surfaceID = interaction.selectedActiveLeafID else {
-            composerStatusMessage = "Destination unavailable — draft kept"
+            composer.statusMessage = "Destination unavailable — draft kept"
             return
         }
 
-        let session = composerSession.snapshot
-        guard session.hasContent else { return }
-
-        guard !session.attachments.isEmpty else {
-            submitComposerMessage(
-                session.draft,
-                session: session,
-                to: surfaceID
-            )
-            return
-        }
-
-        guard session.areAttachmentsReady else {
-            composerStatusMessage = composerAttachmentPreparationMessage(for: session.attachments)
-            return
-        }
-
-        let job: GhosttyAttachmentTransferJob
-        do {
-            job = try GhosttyAttachmentTransferJobBuilder.job(
-                workspaceID: presentation.workspaceID,
-                attachments: session.attachments
-            )
-        } catch {
-            composerStatusMessage = composerAttachmentPreparationMessage(for: session.attachments)
-            return
-        }
-
-        guard !isAttachmentTransferInProgress else { return }
-        attachmentTransferState = AttachmentTransferState(
-            uploadCount: job.uploadSourceCount,
-            progress: nil
-        )
         attachmentPreviewRequest = nil
         attachmentNotice = nil
-        composerStatusMessage = nil
-
-        Task {
-            let service = attachmentTransferServiceFactory()
-            do {
-                let result = try await service.transfer(job) { progress in
-                    await MainActor.run {
-                        attachmentTransferState?.progress = progress
-                    }
+        composer.submit(
+            to: GhosttyComposerSubmissionDestination(
+                workspaceID: presentation.workspaceID,
+                surfaceID: surfaceID,
+                makeAttachmentTransferService: attachmentTransferServiceFactory,
+                prepareTerminalInput: {
+                    terminalInputController.clearControl()
+                    scrollComposerDestinationToBottom(surfaceID)
+                },
+                sendPaste: { text in
+                    await sendTerminalPaste(text, to: surfaceID)
+                },
+                sendEnter: {
+                    await sendComposerEnter(to: surfaceID)
                 }
-                let attachmentText = GhosttyAttachmentTerminalInsertionFormatter.insertionText(
-                    for: result
-                )
-                await MainActor.run {
-                    completeComposerAttachmentTransfer(
-                        attachmentText: attachmentText,
-                        session: session,
-                        targetSurfaceID: surfaceID
-                    )
-                }
-            } catch {
-                await MainActor.run {
-                    resetComposerAttachmentTransfer()
-                    composerStatusMessage = pendingAttachmentSendFailureMessage(for: error)
-                }
-            }
-        }
-    }
-
-    private func composerAttachmentPreparationMessage(
-        for attachments: [GhosttyPendingAttachment]
-    ) -> String {
-        if let failed = attachments.first(where: \.didFailPreparingTransferSource) {
-            return "\(failed.title) couldn’t load — retry or remove"
-        }
-        if let preparing = attachments.first(where: \.isPreparingTransferSource) {
-            return "\(preparing.title) is still preparing"
-        }
-        return "Attachment is not ready"
-    }
-
-    private func completeComposerAttachmentTransfer(
-        attachmentText: String,
-        session: GhosttyComposerSessionState,
-        targetSurfaceID: UUID
-    ) {
-        resetComposerAttachmentTransfer()
-
-        guard model.terminalInteractionProjection.selectedActiveLeafID == targetSurfaceID else {
-            composerStatusMessage = "Destination changed — message kept"
-            return
-        }
-
-        let message = GhosttyComposerMessageFormatter.message(
-            draft: session.draft,
-            attachmentText: attachmentText
+            )
         )
-        guard !message.isEmpty else {
-            composerStatusMessage = "Attachment upload produced no message"
-            return
-        }
-
-        submitComposerMessage(message, session: session, to: targetSurfaceID)
-    }
-
-    private func resetComposerAttachmentTransfer() {
-        attachmentTransferState = nil
-    }
-
-    private func submitComposerMessage(
-        _ message: String,
-        session: GhosttyComposerSessionState,
-        to surfaceID: UUID
-    ) {
-        guard !message.isEmpty else { return }
-
-        terminalInputController.clearControl()
-        scrollComposerDestinationToBottom(surfaceID)
-
-        var controller = composerSubmissionController
-        guard controller.beginSubmission(message) else { return }
-        composerSubmissionController = controller
-
-        Task { @MainActor in
-            let didPaste = await sendTerminalPaste(message, to: surfaceID)
-            guard didPaste else {
-                finishComposerSubmission(.pasteRejected, session: session)
-                return
-            }
-
-            do {
-                try await Task.sleep(for: Self.composerPasteSettlementDelay)
-            } catch {
-                finishComposerSubmission(.pastedAwaitingSubmit, session: session)
-                return
-            }
-            let result: GhosttyComposerSubmissionController.DraftResult =
-                await sendComposerEnter(to: surfaceID)
-                ? .submitted
-                : .pastedAwaitingSubmit
-            finishComposerSubmission(result, session: session)
-        }
     }
 
     private func sendTerminalPaste(_ text: String, to surfaceID: UUID) async -> Bool {
@@ -2020,33 +1586,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             "composer.sendEnter delivered=true elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
         )
         return true
-    }
-
-    private func finishComposerSubmission(
-        _ proposedResult: GhosttyComposerSubmissionController.DraftResult,
-        session: GhosttyComposerSessionState
-    ) {
-        var controller = composerSubmissionController
-        let result = controller.finishSubmission(proposedResult)
-        composerSubmissionController = controller
-
-        if result.didDeliverDraft {
-            composerSession.draft = ""
-            composerSession.attachments.removeAll()
-            attachmentPreviewRequest = nil
-            GhosttyAttachmentStagingStore.cleanup(session.attachments)
-        }
-
-        switch result {
-        case .notStarted:
-            break
-        case .pasteRejected:
-            composerStatusMessage = "Send failed — message kept"
-        case .submitted:
-            composerStatusMessage = nil
-        case .pastedAwaitingSubmit:
-            composerStatusMessage = "Message pasted — press Enter in the terminal"
-        }
     }
 
     private func scrollComposerDestinationToBottom(_ surfaceID: UUID) {
@@ -2540,19 +2079,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     closeTmuxPaneFromSelectionSheet(id, topLevelID: topLevelID)
                 }
             )
-        }
-    }
-}
-
-private struct GhosttyPhotoPickerTransfer: Transferable, Sendable {
-    let stagedURL: URL
-
-    static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(importedContentType: .image) { receivedFile in
-            let stagedURL = try await GhosttyAttachmentStagingStore.stageFileURL(
-                receivedFile.file
-            )
-            return GhosttyPhotoPickerTransfer(stagedURL: stagedURL)
         }
     }
 }
