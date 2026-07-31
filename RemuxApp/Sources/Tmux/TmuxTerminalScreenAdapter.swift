@@ -696,15 +696,9 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         )
     }
 
-    func paneSheetDetentPaneCount(topLevelID: UUID) -> Int {
-        GhosttyTerminalPresentationProjector.paneSheetDetentPaneCount(
+    func paneCount(topLevelID: UUID) -> Int {
+        GhosttyTerminalPresentationProjector.paneCount(
             topLevelID: topLevelID,
-            snapshot: topologySnapshot
-        )
-    }
-
-    func windowSheetDetentCellCount() -> Int {
-        GhosttyTerminalPresentationProjector.windowSheetDetentCellCount(
             snapshot: topologySnapshot
         )
     }

@@ -235,13 +235,11 @@ enum GhosttyTmuxTopologyActionInteractionEffect: Equatable, Sendable {
 
 struct GhosttyWindowSheetPresentationProjection: Equatable, Sendable {
     let previewLeafIDs: [UUID]
-    let cellCount: Int
 }
 
 struct GhosttyPaneSheetPresentationProjection: Equatable, Sendable {
     let topLevelID: UUID
     let previewLeafIDs: [UUID]
-    let paneCount: Int
 }
 
 struct GhosttyPaneSelectionSheetTopologyProjection: Equatable, Sendable {
@@ -263,7 +261,6 @@ struct GhosttyWindowSelectionSheetRenderProjection: Equatable, Sendable {
     let windows: [Window]
     let selectedWindowID: UUID?
     let previewLeafIDs: [UUID]
-    let cellCount: Int
 }
 
 struct GhosttyPaneSelectionSheetRenderProjection: Equatable, Sendable {
@@ -421,8 +418,7 @@ enum GhosttyTerminalPresentationProjector {
         guard !snapshot.topLevels.isEmpty else { return nil }
 
         return GhosttyWindowSheetPresentationProjection(
-            previewLeafIDs: snapshot.topLevels.compactMap(\.resolvedFocusedLeafID),
-            cellCount: windowSheetDetentCellCount(snapshot: snapshot)
+            previewLeafIDs: snapshot.topLevels.compactMap(\.resolvedFocusedLeafID)
         )
     }
 
@@ -433,20 +429,15 @@ enum GhosttyTerminalPresentationProjector {
 
         return GhosttyPaneSheetPresentationProjection(
             topLevelID: topLevel.id,
-            previewLeafIDs: topLevel.leafIDs,
-            paneCount: topLevel.leafIDs.count
+            previewLeafIDs: topLevel.leafIDs
         )
     }
 
-    static func paneSheetDetentPaneCount(
+    static func paneCount(
         topLevelID: UUID,
         snapshot: GhosttyRuntimeSurfaceTopologySnapshot
     ) -> Int {
         snapshot.topLevels.first(where: { $0.id == topLevelID })?.leafIDs.count ?? 0
-    }
-
-    static func windowSheetDetentCellCount(snapshot: GhosttyRuntimeSurfaceTopologySnapshot) -> Int {
-        snapshot.topLevels.count
     }
 
     static func paneSelectionSheetTopologyProjection(
@@ -488,8 +479,7 @@ enum GhosttyTerminalPresentationProjector {
         return GhosttyWindowSelectionSheetRenderProjection(
             windows: windows,
             selectedWindowID: selectedWindowID,
-            previewLeafIDs: windows.compactMap(\.focusedPreviewPaneID),
-            cellCount: totalCount
+            previewLeafIDs: windows.compactMap(\.focusedPreviewPaneID)
         )
     }
 

@@ -1713,10 +1713,10 @@ final class RemuxAppUITests: XCTestCase {
         guard activeSession.waitForExistence(timeout: 5) else { return }
 
         activeSession.swipeLeft()
-        let close = app.buttons["Close"].firstMatch
-        guard close.waitForExistence(timeout: 3) else { return }
+        let disconnect = app.buttons["Disconnect"].firstMatch
+        guard disconnect.waitForExistence(timeout: 3) else { return }
 
-        close.tap()
+        disconnect.tap()
         RunLoop.current.run(until: Date().addingTimeInterval(2))
     }
 
@@ -3256,6 +3256,18 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func dismissTopSheetIfPresent() {
+        for identifier in [
+            "terminal.panes.close",
+            "terminal.windows.close",
+            "terminal.sessions.close",
+        ] {
+            let closeButton = app.buttons[identifier]
+            if closeButton.exists, closeButton.isHittable {
+                closeButton.tap()
+                return
+            }
+        }
+
         let sheet = app.otherElements.matching(identifier: "PopoverDismissRegion").firstMatch
         if sheet.exists, sheet.isHittable {
             sheet.tap()
