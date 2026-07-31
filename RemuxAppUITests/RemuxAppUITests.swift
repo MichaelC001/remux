@@ -1161,13 +1161,13 @@ final class RemuxAppUITests: XCTestCase {
         )
 
         let typedCount = typed.count
-        let dictationEvals = afterDictation.evals - beforeDictation.evals
-        let dictationBarEvals = afterDictation.barEvals - beforeDictation.barEvals
-        let dictationPasses = afterDictation.passes - beforeDictation.passes
+        let dictationEvals = probeDelta(afterDictation.evals, beforeDictation.evals, "dictation evals")
+        let dictationBarEvals = probeDelta(afterDictation.barEvals, beforeDictation.barEvals, "dictation bar evals")
+        let dictationPasses = probeDelta(afterDictation.passes, beforeDictation.passes, "dictation passes")
         let dictationPassMs = afterDictation.passMs - beforeDictation.passMs
-        let typingEvals = afterTyping.evals - beforeTyping.evals
-        let typingBarEvals = afterTyping.barEvals - beforeTyping.barEvals
-        let typingPasses = afterTyping.passes - beforeTyping.passes
+        let typingEvals = probeDelta(afterTyping.evals, beforeTyping.evals, "typing evals")
+        let typingBarEvals = probeDelta(afterTyping.barEvals, beforeTyping.barEvals, "typing bar evals")
+        let typingPasses = probeDelta(afterTyping.passes, beforeTyping.passes, "typing passes")
         let typingPassMs = afterTyping.passMs - beforeTyping.passMs
         let summary = """
         REMUX_COMPOSER_PERF typing chars=\(typedCount) screenEvals=\(typingEvals) \
@@ -1186,12 +1186,14 @@ final class RemuxAppUITests: XCTestCase {
         attachment.name = "composer-perf-metrics"
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
 
-        XCTAssertGreaterThanOrEqual(
-            typingEvals,
-            0,
-            "Probe deltas must be monotonic."
-        )
+    private func probeDelta(_ after: UInt64, _ before: UInt64, _ label: String) -> UInt64 {
+        guard after >= before else {
+            XCTFail("Probe counter \(label) went backwards (\(before) → \(after))")
+            return 0
+        }
+        return after - before
     }
 
     private struct ComposerBodyEvalProbeMetrics {
