@@ -2,21 +2,9 @@ import XCTest
 @testable import Remux
 
 final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
-    func testAttachmentTrayDoesNotBecomeTransientInputOwner() {
-        let projection = GhosttyAttachmentInputOwnerProjection(
-            isTrayPresented: true,
-            isPhotosPickerPresented: false,
-            isFileImporterPresented: false,
-            isPreviewPresented: false
-        )
-
-        XCTAssertFalse(projection.isTransientInputOwnerPresented)
-    }
-
     func testAttachmentModalPresentationsBecomeTransientInputOwners() {
         XCTAssertTrue(
             GhosttyAttachmentInputOwnerProjection(
-                isTrayPresented: false,
                 isPhotosPickerPresented: true,
                 isFileImporterPresented: false,
                 isPreviewPresented: false
@@ -24,7 +12,6 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
         )
         XCTAssertTrue(
             GhosttyAttachmentInputOwnerProjection(
-                isTrayPresented: false,
                 isPhotosPickerPresented: false,
                 isFileImporterPresented: true,
                 isPreviewPresented: false
@@ -32,7 +19,6 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
         )
         XCTAssertTrue(
             GhosttyAttachmentInputOwnerProjection(
-                isTrayPresented: false,
                 isPhotosPickerPresented: false,
                 isFileImporterPresented: false,
                 isPreviewPresented: true
@@ -65,6 +51,7 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
         let policy = GhosttyTerminalResponderFocusPolicy(
             isSelected: true,
             keyboardMode: .system,
+            keyboardOwner: .terminal,
             isInputAvailable: true,
             isTransientInputOwnerPresented: false
         )
@@ -77,6 +64,7 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
         let policy = GhosttyTerminalResponderFocusPolicy(
             isSelected: true,
             keyboardMode: .system,
+            keyboardOwner: .terminal,
             isInputAvailable: true,
             isTransientInputOwnerPresented: true
         )
@@ -89,6 +77,20 @@ final class GhosttyTerminalResponderFocusPolicyTests: XCTestCase {
         let policy = GhosttyTerminalResponderFocusPolicy(
             isSelected: true,
             keyboardMode: .hidden,
+            keyboardOwner: .none,
+            isInputAvailable: true,
+            isTransientInputOwnerPresented: false
+        )
+
+        XCTAssertTrue(policy.isResponderEnabled)
+        XCTAssertFalse(policy.wantsFirstResponder)
+    }
+
+    func testComposerKeyboardOwnerKeepsTerminalEligibleForResponderHandoff() {
+        let policy = GhosttyTerminalResponderFocusPolicy(
+            isSelected: true,
+            keyboardMode: .system,
+            keyboardOwner: .composer,
             isInputAvailable: true,
             isTransientInputOwnerPresented: false
         )

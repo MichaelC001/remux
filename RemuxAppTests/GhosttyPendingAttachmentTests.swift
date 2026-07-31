@@ -10,7 +10,8 @@ final class GhosttyPendingAttachmentTests: XCTestCase {
         XCTAssertEqual(attachments.count, 1)
         XCTAssertEqual(attachments[0].kind, .photo)
         XCTAssertEqual(attachments[0].title, "Photo")
-        XCTAssertEqual(attachments[0].detail, "Loading preview")
+        XCTAssertEqual(attachments[0].detail, "Preparing…")
+        XCTAssertEqual(attachments[0].preparationState, .preparing)
         XCTAssertEqual(attachments[0].systemName, "photo")
         XCTAssertNil(attachments[0].payload)
     }
@@ -213,9 +214,29 @@ final class GhosttyPendingAttachmentTests: XCTestCase {
 
         XCTAssertEqual(attachment.kind, .pasteboardImage)
         XCTAssertEqual(attachment.title, "Pasted image")
-        XCTAssertEqual(attachment.detail, "Loading preview")
+        XCTAssertEqual(attachment.detail, "Preparing…")
+        XCTAssertEqual(attachment.preparationState, .preparing)
         XCTAssertEqual(attachment.systemName, "photo")
         XCTAssertNil(attachment.payload)
+    }
+
+    func testFailedPreparationCannotProduceTransferSource() {
+        let attachment = GhosttyPendingAttachment
+            .pasteboardImagePlaceholder()
+            .updating(detail: "Couldn’t load", preparationState: .failed)
+
+        XCTAssertTrue(attachment.didFailPreparingTransferSource)
+        XCTAssertFalse(attachment.isPreparingTransferSource)
+        XCTAssertNil(attachment.transferSource)
+    }
+
+    func testReadyFileProducesTransferSource() {
+        let attachment = GhosttyPendingAttachment.file(
+            url: URL(fileURLWithPath: "/tmp/report.txt")
+        )
+
+        XCTAssertEqual(attachment.preparationState, .ready)
+        XCTAssertNotNil(attachment.transferSource)
     }
 
     func testPasteboardLinkAttachmentUsesReadableURLDetail() {

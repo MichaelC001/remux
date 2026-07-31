@@ -152,10 +152,34 @@ final class RemuxRootModel: ObservableObject {
         }
     }
 
+    enum SetupCancelDestination: Equatable {
+        case library
+        case terminal(SavedWorkspace.ID)
+    }
+
+    struct ConnectionSetupState: Equatable {
+        var draft: TmuxConnectionDraft
+        var validation: TmuxConnectionDraftValidation
+        let mode: SetupMode
+        let cancelDestination: SetupCancelDestination
+
+        init(
+            draft: TmuxConnectionDraft,
+            validation: TmuxConnectionDraftValidation = .empty,
+            mode: SetupMode,
+            cancelDestination: SetupCancelDestination = .library
+        ) {
+            self.draft = draft
+            self.validation = validation
+            self.mode = mode
+            self.cancelDestination = cancelDestination
+        }
+    }
+
     enum State: Equatable {
         case loading
         case library
-        case setup(TmuxConnectionDraft, TmuxConnectionDraftValidation, SetupMode)
+        case setup(ConnectionSetupState)
         case terminal(SavedWorkspace.ID)
         case failed(String)
     }
@@ -231,6 +255,7 @@ final class RemuxRootModel: ObservableObject {
 #endif
 
             let terminalSettings = try await dependencies.settingsRepository.loadSettings()
+            dependencies.applyHostKeyPolicy(allowInsecureRSA: terminalSettings.allowInsecureRSAHostKeys)
             let library = try await dependencies.profileRepository.loadSnapshot()
             guard activeSetupAction == nil, currentSetupID == expectedSetupID else { return }
             self.terminalSettings = terminalSettings
@@ -250,6 +275,7 @@ final class RemuxRootModel: ObservableObject {
         let expectedSetupID = currentSetupID
         do {
             let terminalSettings = try await dependencies.settingsRepository.loadSettings()
+            dependencies.applyHostKeyPolicy(allowInsecureRSA: terminalSettings.allowInsecureRSAHostKeys)
             let library = try await dependencies.profileRepository.loadSnapshot()
             guard activeSetupAction == nil, currentSetupID == expectedSetupID else { return }
             self.terminalSettings = terminalSettings
@@ -268,10 +294,18 @@ final class RemuxRootModel: ObservableObject {
         guard activeSetupAction == nil else { return }
         currentSetupID = UUID()
         editServerTrustSnapshot = nil
-        state = .setup(TmuxConnectionDraft(), .empty, .newServer)
+        state = .setup(
+            ConnectionSetupState(
+                draft: TmuxConnectionDraft(),
+                mode: .newServer
+            )
+        )
     }
 
-    func beginNewWorkspace(for serverID: SavedServer.ID) async {
+    func beginNewWorkspace(
+        for serverID: SavedServer.ID,
+        cancelDestination: SetupCancelDestination = .library
+    ) async {
         guard activeSetupAction == nil else { return }
         guard let server = library.server(id: serverID) else { return }
 
@@ -282,9 +316,11 @@ final class RemuxRootModel: ObservableObject {
             sessionName: ""
         )
         state = .setup(
-            TmuxConnectionDraft(server: server, workspace: workspace),
-            .empty,
-            .newWorkspace(serverID)
+            ConnectionSetupState(
+                draft: TmuxConnectionDraft(server: server, workspace: workspace),
+                mode: .newWorkspace(serverID),
+                cancelDestination: cancelDestination
+            )
         )
     }
 
@@ -344,14 +380,15 @@ final class RemuxRootModel: ObservableObject {
             return
         }
         state = .setup(
-            TmuxConnectionDraft(
-                server: server,
-                workspace: workspace,
-                identity: identity,
-                credential: credential
-            ),
-            .empty,
-            .editServer(serverID, reconnectWorkspaceID: reconnectWorkspaceID)
+            ConnectionSetupState(
+                draft: TmuxConnectionDraft(
+                    server: server,
+                    workspace: workspace,
+                    identity: identity,
+                    credential: credential
+                ),
+                mode: .editServer(serverID, reconnectWorkspaceID: reconnectWorkspaceID)
+            )
         )
     }
 
@@ -367,17 +404,18 @@ final class RemuxRootModel: ObservableObject {
         currentSetupID = UUID()
         editServerTrustSnapshot = nil
         state = .setup(
-            TmuxConnectionDraft(server: server, workspace: workspace),
-            .empty,
-            .editWorkspace(serverID, workspaceID)
+            ConnectionSetupState(
+                draft: TmuxConnectionDraft(server: server, workspace: workspace),
+                mode: .editWorkspace(serverID, workspaceID)
+            )
         )
     }
 
     func updateDraft(_ mutation: (inout TmuxConnectionDraft) -> Void) {
         guard activeSetupAction == nil else { return }
-        guard case .setup(var draft, let validation, let mode) = state else { return }
-        mutation(&draft)
-        state = .setup(draft, validation, mode)
+        guard case .setup(var setup) = state else { return }
+        mutation(&setup.draft)
+        state = .setup(setup)
     }
 
     func publicKeyInstallTarget(
@@ -464,22 +502,22 @@ final class RemuxRootModel: ObservableObject {
     }
 
     func cancelSetup() async {
-        guard case .setup = state else { return }
+        guard case .setup(let setup) = state else { return }
         guard let action = beginSetupAction() else { return }
         defer { finishSetupAction(action) }
 
-        switch state {
-        case .setup(let draft, _, .newServer):
+        switch setup.mode {
+        case .newServer:
             do {
-                try dependencies.trustedHostStore.deleteIdentity(for: draft.serverID)
+                try dependencies.trustedHostStore.deleteIdentity(for: setup.draft.serverID)
             } catch {
                 NSLog(
                     "Remux provisional trusted-host cleanup failed for server %@: %@",
-                    draft.serverID.uuidString,
+                    setup.draft.serverID.uuidString,
                     String(describing: error)
                 )
             }
-        case .setup(_, _, .editServer(let serverID, _)):
+        case .editServer(let serverID, _):
             do {
                 try restoreEditServerTrustSnapshot(
                     for: serverID,
@@ -494,46 +532,50 @@ final class RemuxRootModel: ObservableObject {
             break
         }
         discardEditServerTrustSnapshot(setupID: action.setupID)
-        await showLibrary(after: action)
+
+        switch setup.cancelDestination {
+        case .library:
+            await showLibrary(after: action)
+
+        case .terminal(let workspaceID):
+            finishSetupSession(action.setupID)
+            showActiveSession(workspaceID)
+        }
     }
 
     func saveAndConnect() async {
-        guard case .setup(let draft, _, let mode) = state else { return }
+        guard case .setup(let setup) = state else { return }
         guard let action = beginSetupAction() else { return }
         defer { finishSetupAction(action) }
 
-        switch mode {
+        switch setup.mode {
         case .editServer(let serverID, let reconnectWorkspaceID):
             await saveServer(
-                draft,
+                setup,
                 serverID: serverID,
                 reconnectWorkspaceID: reconnectWorkspaceID,
-                mode: mode,
                 action: action
             )
 
         case .editWorkspace(let serverID, let workspaceID):
-            await saveWorkspace(draft, serverID: serverID, workspaceID: workspaceID, mode: mode)
+            await saveWorkspace(setup, serverID: serverID, workspaceID: workspaceID)
 
         case .newServer:
-            await saveProfileAndConnect(draft, mode: mode)
+            await saveProfileAndConnect(setup)
 
         case .newWorkspace(let serverID):
-            await saveNewWorkspaceAndConnect(draft, serverID: serverID, mode: mode)
+            await saveNewWorkspaceAndConnect(setup, serverID: serverID)
         }
     }
 
-    private func saveProfileAndConnect(
-        _ draft: TmuxConnectionDraft,
-        mode: SetupMode
-    ) async {
+    private func saveProfileAndConnect(_ setup: ConnectionSetupState) async {
         switch TmuxConnectionDraftValidator.validate(
-            draft,
-            existingServerID: mode.existingServerID,
-            existingWorkspaceID: mode.existingWorkspaceID
+            setup.draft,
+            existingServerID: setup.mode.existingServerID,
+            existingWorkspaceID: setup.mode.existingWorkspaceID
         ) {
         case .invalid(let validation):
-            state = .setup(draft, validation, mode)
+            state = .setup(setupWithValidation(validation, from: setup))
 
         case .valid(let submission):
             let identityCredential: SSHIdentityCredentialPair
@@ -541,9 +583,10 @@ final class RemuxRootModel: ObservableObject {
                 identityCredential = try makeIdentityCredentialPair(from: submission.server)
             } catch {
                 state = .setup(
-                    draft,
-                    privateKeyValidation(from: error),
-                    mode
+                    setupWithValidation(
+                        privateKeyValidation(from: error),
+                        from: setup
+                    )
                 )
                 return
             }
@@ -576,16 +619,18 @@ final class RemuxRootModel: ObservableObject {
     }
 
     private func saveServer(
-        _ draft: TmuxConnectionDraft,
+        _ setup: ConnectionSetupState,
         serverID: SavedServer.ID,
         reconnectWorkspaceID: SavedWorkspace.ID?,
-        mode: SetupMode,
         action: SetupAction
     ) async {
         guard isCurrentSetupAction(action) else { return }
-        switch TmuxConnectionDraftValidator.validateServer(draft, existingServerID: serverID) {
+        switch TmuxConnectionDraftValidator.validateServer(
+            setup.draft,
+            existingServerID: serverID
+        ) {
         case .invalid(let validation):
-            state = .setup(draft, validation, mode)
+            state = .setup(setupWithValidation(validation, from: setup))
 
         case .valid(let submission):
             let updatedIdentityCredential: SSHIdentityCredentialPair
@@ -603,7 +648,12 @@ final class RemuxRootModel: ObservableObject {
                     existingIdentity: identity
                 )
             } catch let error as SSHPrivateKeyInspectionError {
-                state = .setup(draft, privateKeyValidation(from: error), mode)
+                state = .setup(
+                    setupWithValidation(
+                        privateKeyValidation(from: error),
+                        from: setup
+                    )
+                )
                 return
             } catch {
                 failEditServerSave(error, serverID: serverID, action: action)
@@ -791,17 +841,16 @@ final class RemuxRootModel: ObservableObject {
     }
 
     private func saveNewWorkspaceAndConnect(
-        _ draft: TmuxConnectionDraft,
-        serverID: SavedServer.ID,
-        mode: SetupMode
+        _ setup: ConnectionSetupState,
+        serverID: SavedServer.ID
     ) async {
         switch TmuxConnectionDraftValidator.validateWorkspace(
-            draft,
+            setup.draft,
             serverID: serverID,
             existingWorkspaceID: nil
         ) {
         case .invalid(let validation):
-            state = .setup(draft, validation, mode)
+            state = .setup(setupWithValidation(validation, from: setup))
 
         case .valid(let submission):
             do {
@@ -828,18 +877,17 @@ final class RemuxRootModel: ObservableObject {
     }
 
     private func saveWorkspace(
-        _ draft: TmuxConnectionDraft,
+        _ setup: ConnectionSetupState,
         serverID: SavedServer.ID,
-        workspaceID: SavedWorkspace.ID,
-        mode: SetupMode
+        workspaceID: SavedWorkspace.ID
     ) async {
         switch TmuxConnectionDraftValidator.validateWorkspace(
-            draft,
+            setup.draft,
             serverID: serverID,
             existingWorkspaceID: workspaceID
         ) {
         case .invalid(let validation):
-            state = .setup(draft, validation, mode)
+            state = .setup(setupWithValidation(validation, from: setup))
 
         case .valid(let submission):
             do {
@@ -862,6 +910,15 @@ final class RemuxRootModel: ObservableObject {
                 transitionToFailed(error)
             }
         }
+    }
+
+    private func setupWithValidation(
+        _ validation: TmuxConnectionDraftValidation,
+        from setup: ConnectionSetupState
+    ) -> ConnectionSetupState {
+        var updated = setup
+        updated.validation = validation
+        return updated
     }
 
     func connect(to workspaceID: SavedWorkspace.ID) async {
@@ -1053,12 +1110,22 @@ final class RemuxRootModel: ObservableObject {
         }
     }
 
-    func closeActiveSession(_ id: SavedWorkspace.ID) {
+    func disconnectActiveSession(_ id: SavedWorkspace.ID) {
+        // Fallback selection follows the order users see in the switcher
+        // and library, not internal activation order.
+        let displayedIndex = RemuxActiveSessionCollection.sortedForDisplay(activeSessions)
+            .firstIndex { $0.id == id }
         closePreparedTransport(for: id)
         stopTerminalScreenModels(workspaceID: id)
         RemuxActiveSessionCollection.removeWorkspace(id, from: &activeSessions)
 
         guard case .terminal(let selectedID) = state, selectedID == id else {
+            return
+        }
+
+        let remaining = RemuxActiveSessionCollection.sortedForDisplay(activeSessions)
+        if let displayedIndex, !remaining.isEmpty {
+            state = .terminal(remaining[min(displayedIndex, remaining.count - 1)].id)
             return
         }
 
@@ -1112,9 +1179,10 @@ final class RemuxRootModel: ObservableObject {
         do {
             var updated = terminalSettings
             mutation(&updated)
-            terminalSettings = updated
-            try applyTerminalSettingsToActiveSessions(updated)
             try await dependencies.settingsRepository.saveSettings(updated)
+            terminalSettings = updated
+            dependencies.applyHostKeyPolicy(allowInsecureRSA: updated.allowInsecureRSAHostKeys)
+            try applyTerminalSettingsToActiveSessions(updated)
         } catch {
             transitionToFailed(error)
         }

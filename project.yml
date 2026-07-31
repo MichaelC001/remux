@@ -56,6 +56,8 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
+        NSMicrophoneUsageDescription: Remux uses the microphone so you can dictate messages.
+        NSSpeechRecognitionUsageDescription: Remux uses on-device speech recognition to turn your dictation into text.
         UILaunchScreen: {}
         UIApplicationSupportsIndirectInputEvents: true
         UISupportedInterfaceOrientations:

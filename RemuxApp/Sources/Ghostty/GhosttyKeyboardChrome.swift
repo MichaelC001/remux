@@ -33,7 +33,13 @@ enum GhosttyKeyboardChromeMode: Equatable {
 enum GhosttyKeyboardChromeSizing {
     static let dockButtonHeight: CGFloat = 38
     static let dockButtonWidth: CGFloat = 38
+    static let compactDockButtonWidth: CGFloat = 35
     static let dockButtonCornerRadius: CGFloat = 17
+    static let controlGroupVerticalPadding: CGFloat = 4
+
+    /// The bottom chrome always reserves one dock row. Composer content may
+    /// grow above this baseline without changing the terminal viewport.
+    static let baselineHeight = dockButtonHeight + (controlGroupVerticalPadding * 2)
 
     static func keyboardReplacementHeight(
         keyboardOverlapHeight: CGFloat,
@@ -103,54 +109,67 @@ extension TerminalTheme {
     }
 }
 
-struct GhosttyKeyboardChrome: View {
+enum GhosttyKeyboardChromeAnimation {
+    static let composerTransition = Animation.spring(
+        response: 0.34,
+        dampingFraction: 0.88,
+        blendDuration: 0
+    )
+}
+
+struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
+    @Namespace private var inputControlTransition
 
     let keyboardMode: GhosttyKeyboardChromeMode
     let isEnabled: Bool
+    let isInteractionLocked: Bool
     let isCompact: Bool
     let isControlArmed: Bool
     let selectedWindowIndex: Int?
     let windowCount: Int
     let selectedPaneIndex: Int?
     let paneCount: Int
-    let isAttachmentControlActive: Bool
-    let isAttachmentControlEnabled: Bool
-    let pendingAttachmentCount: Int
-    let onShowHome: () -> Void
+    let isComposerPresented: Bool
+    let onShowSessions: () -> Void
+    let onShowLibrary: () -> Void
     let onShowWindows: () -> Void
     let onShowPanes: () -> Void
-    let onShowAttachments: () -> Void
+    let onToggleComposer: () -> Void
     let onToggleKeyboard: () -> Void
     let onToggleControl: () -> Void
     let onShowShortcuts: () -> Void
     let sendKey: (GhosttySurfaceKeyEvent) -> Bool
+    let composerContent: () -> ComposerContent
 
     var body: some View {
         selectorRow
+            .fixedSize(horizontal: false, vertical: true)
             .onAppear { Haptic.prewarmChromeFeedback() }
-            .transaction { transaction in
-                transaction.animation = nil
-            }
-            .transaction { transaction in
-                transaction.animation = nil
-                transaction.disablesAnimations = true
-            }
     }
 
     @ViewBuilder
     private var selectorRow: some View {
-        if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: isCompact ? 8 : 10) {
-                selectorRowContent
-            }
+        if isComposerPresented {
+            composerSelectorRow
         } else {
-            selectorRowContent
+            standardSelectorRowContainer
         }
     }
 
-    private var selectorRowContent: some View {
-        HStack(spacing: isCompact ? 8 : 10) {
+    @ViewBuilder
+    private var standardSelectorRowContainer: some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: isCompact ? 6 : 10) {
+                standardSelectorRow
+            }
+        } else {
+            standardSelectorRow
+        }
+    }
+
+    private var standardSelectorRow: some View {
+        HStack(spacing: isCompact ? 6 : 10) {
             terminalKeyControls
             navigationControls
             inputControls
@@ -158,30 +177,50 @@ struct GhosttyKeyboardChrome: View {
         .frame(maxWidth: .infinity, alignment: .center)
     }
 
+    private var composerSelectorRow: some View {
+        HStack(alignment: .bottom, spacing: isCompact ? 8 : 10) {
+            standaloneControlGroup {
+                composerToggleButton(systemName: "xmark")
+            }
+
+            composerContent()
+                .frame(maxWidth: .infinity)
+                .layoutPriority(1)
+                .transition(.opacity)
+
+            standaloneControlGroup {
+                keyboardToggleButton
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
     private var navigationControls: some View {
         controlGroup {
-            HStack(spacing: 2) {
+            HStack(spacing: isCompact ? 1 : 2) {
                 GhosttyKeyboardChromeDockButton(
-                    systemName: "house",
+                    systemName: "rectangle.stack",
                     badge: nil,
                     chromeStyle: chromeStyle,
-                    accessibilityLabel: "Home",
-                    accessibilityHint: "Return to the Remux session library.",
-                    accessibilityIdentifier: "terminal.home",
+                    width: dockButtonWidth,
+                    accessibilityLabel: "Sessions",
+                    accessibilityHint: "Switch active sessions or open the Remux library.",
+                    accessibilityIdentifier: "terminal.sessions",
                     isActive: false,
-                    isEnabled: true,
-                    action: onShowHome
+                    isEnabled: !isInteractionLocked,
+                    action: onShowSessions
                 )
 
                 GhosttyKeyboardChromeDockButton(
                     systemName: "rectangle.on.rectangle",
                     badge: windowBadge,
                     chromeStyle: chromeStyle,
+                    width: dockButtonWidth,
                     accessibilityLabel: windowAccessibilityLabel,
                     accessibilityHint: windowDetail,
                     accessibilityIdentifier: "terminal.windows",
                     isActive: false,
-                    isEnabled: isEnabled && windowCount > 0,
+                    isEnabled: isEnabled && !isInteractionLocked && windowCount > 0,
                     action: onShowWindows
                 )
 
@@ -189,11 +228,12 @@ struct GhosttyKeyboardChrome: View {
                     systemName: "square.split.2x1",
                     badge: paneBadge,
                     chromeStyle: chromeStyle,
+                    width: dockButtonWidth,
                     accessibilityLabel: paneAccessibilityLabel,
                     accessibilityHint: paneDetail,
                     accessibilityIdentifier: "terminal.panes",
                     isActive: false,
-                    isEnabled: isEnabled && paneCount > 0,
+                    isEnabled: isEnabled && !isInteractionLocked && paneCount > 0,
                     action: onShowPanes
                 )
             }
@@ -202,7 +242,7 @@ struct GhosttyKeyboardChrome: View {
 
     private var terminalKeyControls: some View {
         controlGroup {
-            HStack(spacing: 2) {
+            HStack(spacing: isCompact ? 1 : 2) {
                 accessoryKey(
                     title: "ctrl",
                     accessibilityIdentifier: "terminal.ctrl",
@@ -224,61 +264,78 @@ struct GhosttyKeyboardChrome: View {
 
     private var inputControls: some View {
         controlGroup {
-            HStack(spacing: 2) {
+            HStack(spacing: isCompact ? 1 : 2) {
                 GhosttyKeyboardChromeDockButton(
-                    systemName: "paperclip",
-                    badge: attachmentBadge,
-                    chromeStyle: chromeStyle,
-                    accessibilityLabel: attachmentAccessibilityLabel,
-                    accessibilityHint: attachmentAccessibilityHint,
-                    accessibilityIdentifier: "terminal.attachments",
-                    isActive: isAttachmentControlActive,
-                    isEnabled: isEnabled && isAttachmentControlEnabled,
-                    action: onShowAttachments
-                )
-
-                GhosttyKeyboardChromeDockButton(
-                    systemName: "keyboard",
+                    systemName: "house",
                     badge: nil,
                     chromeStyle: chromeStyle,
-                    accessibilityLabel: keyboardMode == .hidden ? "Show keyboard controls" : "Hide keyboard controls",
-                    accessibilityHint: nil,
-                    accessibilityIdentifier: "terminal.keyboard",
-                    isActive: keyboardMode != .hidden,
-                    isEnabled: isEnabled,
-                    action: onToggleKeyboard
+                    width: dockButtonWidth,
+                    accessibilityLabel: "Home",
+                    accessibilityHint: "Open the Remux library.",
+                    accessibilityIdentifier: "terminal.home",
+                    isActive: false,
+                    isEnabled: !isInteractionLocked,
+                    action: onShowLibrary
                 )
+
+                composerToggleButton(systemName: "square.and.pencil")
+                keyboardToggleButton
             }
         }
     }
 
-    private var attachmentBadge: String? {
-        guard pendingAttachmentCount > 0 else { return nil }
-        return "\(pendingAttachmentCount)"
+    private func composerToggleButton(systemName: String) -> some View {
+        GhosttyKeyboardChromeDockButton(
+            systemName: systemName,
+            badge: nil,
+            chromeStyle: chromeStyle,
+            width: dockButtonWidth,
+            accessibilityLabel: isComposerPresented ? "Close composer" : "Open composer",
+            accessibilityHint: isComposerPresented
+                ? "Hide the compose field while preserving its draft."
+                : "Prepare an editable message before sending it to the terminal.",
+            accessibilityIdentifier: "terminal.composer.toggle",
+            isActive: false,
+            isEnabled: !isInteractionLocked,
+            action: onToggleComposer
+        )
+        .matchedGeometryEffect(
+            id: "terminal.composer.toggle",
+            in: inputControlTransition
+        )
     }
 
-    private var attachmentAccessibilityLabel: String {
-        guard pendingAttachmentCount > 0 else { return "Attachments" }
-        return "Attachments, \(pendingAttachmentCount) pending"
-    }
-
-    private var attachmentAccessibilityHint: String {
-        if isAttachmentControlActive {
-            return "Close attachment options."
-        }
-
-        if pendingAttachmentCount > 0 {
-            return "Remove pending attachments before choosing another source."
-        }
-
-        return "Choose Photos, Files, or Paste."
+    private var keyboardToggleButton: some View {
+        GhosttyKeyboardChromeDockButton(
+            systemName: "keyboard",
+            badge: nil,
+            chromeStyle: chromeStyle,
+            width: dockButtonWidth,
+            accessibilityLabel: keyboardMode == .hidden ? "Show keyboard controls" : "Hide keyboard controls",
+            accessibilityHint: nil,
+            accessibilityIdentifier: "terminal.keyboard",
+            isActive: keyboardMode != .hidden,
+            isEnabled: isEnabled || isComposerPresented,
+            action: onToggleKeyboard
+        )
+        .matchedGeometryEffect(
+            id: "terminal.keyboard",
+            in: inputControlTransition
+        )
     }
 
     private func controlGroup<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         content()
-            .padding(.horizontal, 5)
-            .padding(.vertical, 4)
+            .padding(.horizontal, isCompact ? 3 : 5)
+            .padding(.vertical, GhosttyKeyboardChromeSizing.controlGroupVerticalPadding)
             .ghosttyToolbarGroupSurface()
+    }
+
+    private func standaloneControlGroup<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        controlGroup(content: content)
+            .fixedSize()
     }
 
     private func accessoryKey(
@@ -293,13 +350,19 @@ struct GhosttyKeyboardChrome: View {
             accessibilityIdentifier: accessibilityIdentifier,
             chromeStyle: chromeStyle,
             fontSize: 12,
-            width: GhosttyKeyboardChromeSizing.dockButtonWidth,
+            width: dockButtonWidth,
             height: GhosttyKeyboardChromeSizing.dockButtonHeight,
             isActive: isActive,
-            isEnabled: isEnabled,
+            isEnabled: isEnabled && !isInteractionLocked,
             onLongPress: onLongPress,
             action: action
         )
+    }
+
+    private var dockButtonWidth: CGFloat {
+        isCompact
+            ? GhosttyKeyboardChromeSizing.compactDockButtonWidth
+            : GhosttyKeyboardChromeSizing.dockButtonWidth
     }
 
     private var windowDetail: String? {
@@ -339,6 +402,7 @@ private struct GhosttyKeyboardChromeDockButton: View {
     let systemName: String
     let badge: String?
     let chromeStyle: GhosttyTerminalChromeStyle
+    let width: CGFloat
     let accessibilityLabel: String
     let accessibilityHint: String?
     let accessibilityIdentifier: String
@@ -352,6 +416,7 @@ private struct GhosttyKeyboardChromeDockButton: View {
                 Image(systemName: systemName)
                     .font(.system(size: 16.5, weight: .semibold))
                     .symbolRenderingMode(.monochrome)
+                    .contentTransition(.symbolEffect(.replace))
 
                 if let badge {
                     dockBadge(badge)
@@ -362,7 +427,7 @@ private struct GhosttyKeyboardChromeDockButton: View {
             isActive: isActive,
             isEnabled: isEnabled,
             chromeStyle: chromeStyle,
-            width: GhosttyKeyboardChromeSizing.dockButtonWidth,
+            width: width,
             height: GhosttyKeyboardChromeSizing.dockButtonHeight
         ))
         .disabled(!isEnabled)

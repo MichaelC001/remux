@@ -13,7 +13,11 @@ final class TerminalSettingsRepositoryTests: XCTestCase {
     func testFileBackedRepositoryPersistsSettings() async throws {
         let root = temporaryRoot()
         let repository = FileBackedTerminalSettingsRepository(rootURL: root)
-        let saved = TerminalSettings(fontSize: 16, theme: .remuxLight)
+        let saved = TerminalSettings(
+            fontSize: 16,
+            theme: .remuxLight,
+            allowInsecureRSAHostKeys: true
+        )
 
         try await repository.saveSettings(saved)
 

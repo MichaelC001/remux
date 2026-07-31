@@ -12,18 +12,45 @@ import UIKit
 /// sheet is open does not justify reissuing previews; we keep the originally
 /// requested image regardless.
 enum PanePreviewLayout {
-    enum SheetDetent: Equatable {
-        case fixed(CGFloat)
-        case large
-    }
-
     struct Metrics: Equatable {
         let columnCount: Int
         let tilePointSize: CGSize
         let previewPointSize: CGSize
-        let sheetDetent: SheetDetent
         let gridSpacing: CGFloat
         let tilePadding: CGFloat
+
+        func gridHeight(itemCount: Int) -> CGFloat {
+            guard itemCount > 0 else { return 0 }
+            let rows = (itemCount + columnCount - 1) / columnCount
+            return CGFloat(rows) * tilePointSize.height
+                + CGFloat(rows - 1) * gridSpacing
+        }
+    }
+
+    /// Height for a selector sheet's scrollable grid. The whole grid shows
+    /// exactly whenever it fits within the height budget — the sheet grows
+    /// rather than hiding part of the final row. Only grids larger than the
+    /// budget scroll, showing complete rows plus half of the next tile so
+    /// the cut is an unmistakable scroll affordance.
+    @MainActor
+    static func gridIdealHeight(itemCount: Int, metrics: Metrics) -> CGFloat {
+        let fullHeight = metrics.gridHeight(itemCount: itemCount)
+        let budget = UIScreen.main.bounds.height * 0.72
+        guard fullHeight > budget else { return fullHeight }
+
+        let tile = metrics.tilePointSize.height
+        let spacing = metrics.gridSpacing
+        let peek = tile * 0.5
+
+        func height(fullRows: Int) -> CGFloat {
+            CGFloat(fullRows) * tile + CGFloat(fullRows - 1) * spacing + spacing + peek
+        }
+
+        var rows = 1
+        while height(fullRows: rows + 1) <= budget {
+            rows += 1
+        }
+        return min(height(fullRows: rows), fullHeight)
     }
 
     private static let defaultSheetContentWidth: CGFloat = 361
@@ -33,7 +60,6 @@ enum PanePreviewLayout {
     private static let captionHeight: CGFloat = 14
     private static let windowCaptionHeight: CGFloat = 30
     private static let tileCaptionSpacing: CGFloat = 6
-    private static let sheetChromeHeight: CGFloat = 162
     private static let maxSingleTileWidth: CGFloat = 390
 
     /// Window grid uses a fixed two-column layout. The "New Window" affordance
@@ -41,7 +67,6 @@ enum PanePreviewLayout {
     /// scroll windows without hiding the create command.
     private static let windowGridColumnCount: Int = 2
     private static let windowGridSpacing: CGFloat = 10
-    private static let windowSheetChromeHeight: CGFloat = 162
 
     static func metrics(for paneCount: Int) -> Metrics {
         metrics(for: paneCount, availableWidth: defaultSheetContentWidth)
@@ -66,16 +91,10 @@ enum PanePreviewLayout {
         let previewWidth = max(1, tileWidth - tilePadding * 2)
         let previewHeight = ceil(previewWidth / defaultPreviewAspectRatio)
         let tileHeight = previewHeight + tileCaptionSpacing + captionHeight + tilePadding * 2
-        let rowCount = Int(ceil(Double(paneCount) / Double(columnCount)))
-        let gridHeight = CGFloat(rowCount) * tileHeight +
-            CGFloat(max(rowCount - 1, 0)) * gridSpacing
-        let fixedHeight = ceil(sheetChromeHeight + gridHeight)
-
         return .init(
             columnCount: columnCount,
             tilePointSize: CGSize(width: tileWidth, height: tileHeight),
             previewPointSize: CGSize(width: previewWidth, height: previewHeight),
-            sheetDetent: paneCount >= 5 ? .large : .fixed(fixedHeight),
             gridSpacing: gridSpacing,
             tilePadding: tilePadding
         )
@@ -101,15 +120,13 @@ enum PanePreviewLayout {
     }
 
     @MainActor
-    static func windowMetricsForCurrentScreen(cellCount: Int) -> Metrics {
-        windowMetrics(cellCount: cellCount, availableWidth: currentSheetContentWidth())
+    static func windowMetricsForCurrentScreen() -> Metrics {
+        windowMetrics(availableWidth: currentSheetContentWidth())
     }
 
     static func windowMetrics(
-        cellCount: Int,
         availableWidth: CGFloat
     ) -> Metrics {
-        let cellCount = max(cellCount, 1)
         let safeAvailableWidth = max(availableWidth, 1)
         let columnCount = windowGridColumnCount
         let totalGridSpacing = CGFloat(columnCount - 1) * windowGridSpacing
@@ -120,17 +137,10 @@ enum PanePreviewLayout {
         let previewWidth = max(1, tileWidth - tilePadding * 2)
         let previewHeight = ceil(previewWidth / defaultPreviewAspectRatio)
         let tileHeight = previewHeight + tileCaptionSpacing + windowCaptionHeight + tilePadding * 2
-        let rowCount = Int(ceil(Double(cellCount) / Double(columnCount)))
-        let gridHeight = CGFloat(rowCount) * tileHeight +
-            CGFloat(max(rowCount - 1, 0)) * windowGridSpacing
-        let fixedHeight = ceil(windowSheetChromeHeight + gridHeight)
-        let detent: SheetDetent = rowCount >= 4 ? .large : .fixed(fixedHeight)
-
         return .init(
             columnCount: columnCount,
             tilePointSize: CGSize(width: tileWidth, height: tileHeight),
             previewPointSize: CGSize(width: previewWidth, height: previewHeight),
-            sheetDetent: detent,
             gridSpacing: windowGridSpacing,
             tilePadding: tilePadding
         )
@@ -179,7 +189,7 @@ enum PanePreviewLayout {
         availableWidth: CGFloat,
         scale: CGFloat
     ) -> (width: UInt32, height: UInt32) {
-        let metrics = windowMetrics(cellCount: windowGridColumnCount, availableWidth: availableWidth)
+        let metrics = windowMetrics(availableWidth: availableWidth)
         let safeScale = max(scale, 1)
         let widthPx = (metrics.previewPointSize.width * safeScale).rounded(.up)
         let heightPx = (metrics.previewPointSize.height * safeScale).rounded(.up)

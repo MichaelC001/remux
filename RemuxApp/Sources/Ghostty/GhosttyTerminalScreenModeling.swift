@@ -69,6 +69,19 @@ protocol GhosttyTerminalInputModeling: ObservableObject {
     @discardableResult
     func sendPaste(_ text: String, to surfaceID: UUID) -> FocusedTerminalInputSubmissionResult
 
+    func sendPasteAwaitingCommandCompletion(_ text: String, to surfaceID: UUID) async -> Bool
+
+    @discardableResult
+    func sendKeyEvent(
+        _ event: GhosttySurfaceKeyEvent,
+        to surfaceID: UUID
+    ) -> FocusedTerminalInputSubmissionResult
+
+    func sendKeyEventAwaitingCommandCompletion(
+        _ event: GhosttySurfaceKeyEvent,
+        to surfaceID: UUID
+    ) async -> Bool
+
     @discardableResult
     func sendKeyEventToFocusedSurface(_ event: GhosttySurfaceKeyEvent) -> FocusedTerminalInputSubmissionResult
 
@@ -149,8 +162,7 @@ protocol GhosttyTmuxSelectionModeling: ObservableObject {
 
     func windowSheetPresentationProjection() -> GhosttyWindowSheetPresentationProjection?
     func selectedPaneSheetPresentationProjection() -> GhosttyPaneSheetPresentationProjection?
-    func paneSheetDetentPaneCount(topLevelID: UUID) -> Int
-    func windowSheetDetentCellCount() -> Int
+    func paneCount(topLevelID: UUID) -> Int
     func paneSelectionSheetTopologyProjection(
         topLevelID: UUID?
     ) -> GhosttyPaneSelectionSheetTopologyProjection

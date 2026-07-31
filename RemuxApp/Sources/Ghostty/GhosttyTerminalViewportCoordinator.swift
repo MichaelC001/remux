@@ -200,7 +200,8 @@ struct GhosttyTerminalViewportCoordinator: Equatable {
     private mutating func setGeometryHold(
         _ reason: GhosttyTerminalViewportHoldReason,
         isActive: Bool,
-        liveSize: CGSize
+        liveSize: CGSize,
+        releasePolicy: ReleasePolicy = .adoptLatestLive
     ) -> GhosttyTerminalViewportGeometryHoldEffect {
         let previousEffectiveSize = effectiveSize(liveSize: liveSize)
         if isActive {
@@ -208,7 +209,7 @@ struct GhosttyTerminalViewportCoordinator: Equatable {
             freeze(using: liveSize)
             return .hold(effectiveSize: effectiveSize(liveSize: liveSize))
         } else {
-            removeHold(reason, liveSize: liveSize, releasePolicy: .adoptLatestLive)
+            removeHold(reason, liveSize: liveSize, releasePolicy: releasePolicy)
             return .release(previousEffectiveSize: previousEffectiveSize)
         }
     }

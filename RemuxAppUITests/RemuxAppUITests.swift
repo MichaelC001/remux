@@ -30,6 +30,13 @@ final class RemuxAppUITests: XCTestCase {
         installSystemPromptMonitor()
     }
 
+    private func attachScreenshot(named name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testCreatesSSHServerAndOpensTerminalWithSimulatorTransport() {
         launchSimulatorApp()
         openConnectionSetup()
@@ -37,6 +44,369 @@ final class RemuxAppUITests: XCTestCase {
 
         saveConnectionAndWaitForTerminal()
         _ = waitForTerminalHomeButton()
+    }
+
+    func testComposerDictationStopAndCancelFlow() {
+        let transcript = "Review the current changes and run the focused tests"
+        app.launchEnvironment["REMUX_DEBUG_DICTATION_TRANSCRIPT"] = transcript
+        launchSimulatorApp()
+        openConnectionSetup()
+        fillConnectionForm()
+        saveConnectionAndWaitForTerminal()
+        _ = waitForTerminalHomeButton()
+
+        let composerToggle = app.buttons["terminal.composer.toggle"]
+        XCTAssertTrue(composerToggle.waitForExistence(timeout: 5))
+        composerToggle.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "composer opened without keyboard"))
+        let composer = app.otherElements["terminal.composer.bounds"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        let compactComposerFrame = composer.frame
+        XCTAssertLessThanOrEqual(compactComposerFrame.height, 60)
+        XCTAssertGreaterThan(
+            compactComposerFrame.width,
+            app.otherElements["terminal.screen"].frame.width * 0.55,
+            "The compact composer must fill the middle dock slot."
+        )
+        let placeholder = app.staticTexts["terminal.composer.placeholder"]
+        XCTAssertTrue(placeholder.exists)
+
+        let mic = app.buttons["terminal.composer.mic"]
+        XCTAssertTrue(mic.waitForExistence(timeout: 3))
+        mic.tap()
+
+        let cancel = app.buttons["terminal.composer.dictation.cancel"]
+        let stop = app.buttons["terminal.composer.dictation.stop"]
+        let meter = app.descendants(matching: .any)["terminal.composer.dictation.meter"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 3))
+        XCTAssertTrue(stop.waitForExistence(timeout: 3))
+        XCTAssertTrue(meter.waitForExistence(timeout: 3))
+        XCTAssertFalse(placeholder.exists)
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "dictation started with keyboard hidden"))
+        attachScreenshot(named: "composer-dictation-recording")
+        XCTAssertEqual(composer.frame.height, compactComposerFrame.height, accuracy: 1)
+        XCTAssertEqual(
+            composer.frame.width,
+            compactComposerFrame.width,
+            accuracy: 1,
+            "Dictation must not shrink the composer."
+        )
+
+        composerToggle.tap()
+        XCTAssertFalse(composer.waitForExistence(timeout: 1))
+        openHomeFromTerminal()
+        let activeSession = activeSessionRows.firstMatch
+        XCTAssertTrue(activeSession.waitForExistence(timeout: 3))
+        activeSession.tap()
+        XCTAssertTrue(app.otherElements["terminal.screen"].waitForExistence(timeout: 5))
+        XCTAssertTrue(composerToggle.waitForExistence(timeout: 3))
+        composerToggle.tap()
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        XCTAssertTrue(stop.waitForExistence(timeout: 3))
+        XCTAssertTrue(meter.waitForExistence(timeout: 3))
+
+        RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+        stop.tap()
+
+        let status = app.staticTexts["terminal.composer.dictation.status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 1))
+        XCTAssertEqual(status.label, "Transcribing…")
+        attachScreenshot(named: "composer-dictation-transcribing")
+
+        let field = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        XCTAssertEqual(field.value as? String, transcript)
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "dictation stopped with keyboard hidden"))
+        attachScreenshot(named: "composer-dictation-result")
+
+        field.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "composer field focused"))
+        field.typeText(" Keep this draft")
+        let visibleKeyboardFrame = app.keyboards.firstMatch.frame
+        guard let originalDraft = field.value as? String else {
+            XCTFail("Composer field did not expose its edited draft")
+            return
+        }
+        mic.tap()
+        XCTAssertTrue(cancel.waitForExistence(timeout: 3))
+        XCTAssertFalse(placeholder.exists)
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "dictation started with keyboard visible"))
+        XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
+        attachScreenshot(named: "composer-dictation-recording-keyboard-visible")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+        cancel.tap()
+
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        XCTAssertEqual(field.value as? String, originalDraft)
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "dictation cancelled with keyboard visible"))
+        XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
+        attachScreenshot(named: "composer-dictation-cancelled")
+
+        mic.tap()
+        XCTAssertTrue(stop.waitForExistence(timeout: 3))
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "second dictation started with keyboard visible"))
+        XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
+        stop.tap()
+
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "dictation stopped with keyboard visible"))
+        XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
+    }
+
+    func testComposerDictationKeepsMiddleDockWidth() {
+        app.launchEnvironment["REMUX_DEBUG_DICTATION_TRANSCRIPT"] = "Width stability"
+        launchSimulatorApp()
+        openConnectionSetup()
+        fillConnectionForm()
+        saveConnectionAndWaitForTerminal()
+        _ = waitForTerminalHomeButton()
+
+        let terminal = app.otherElements["terminal.screen"]
+        XCTAssertTrue(terminal.waitForExistence(timeout: 5))
+        let composerToggle = app.buttons["terminal.composer.toggle"]
+        XCTAssertTrue(composerToggle.waitForExistence(timeout: 5))
+        composerToggle.tap()
+
+        let composer = app.otherElements["terminal.composer.bounds"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        let compactWidth = composer.frame.width
+        XCTAssertGreaterThan(
+            compactWidth,
+            terminal.frame.width * 0.55,
+            "The compact composer must fill the middle dock slot."
+        )
+
+        let mic = app.buttons["terminal.composer.mic"]
+        XCTAssertTrue(mic.waitForExistence(timeout: 3))
+        mic.tap()
+
+        let cancel = app.buttons["terminal.composer.dictation.cancel"]
+        let meter = app.descendants(matching: .any)["terminal.composer.dictation.meter"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 3))
+        XCTAssertTrue(meter.waitForExistence(timeout: 3))
+        XCTAssertEqual(
+            composer.frame.width,
+            compactWidth,
+            accuracy: 1,
+            "Dictation must not shrink the composer."
+        )
+        attachScreenshot(named: "composer-dictation-width-stable")
+
+        cancel.tap()
+        XCTAssertTrue(mic.waitForExistence(timeout: 3))
+        XCTAssertEqual(composer.frame.width, compactWidth, accuracy: 1)
+    }
+
+    func testComposerDictationCanRestartAfterNoSpeech() {
+        app.launchEnvironment["REMUX_DEBUG_DICTATION_NO_SPEECH"] = "1"
+        launchSimulatorApp()
+        openConnectionSetup()
+        fillConnectionForm()
+        saveConnectionAndWaitForTerminal()
+        _ = waitForTerminalHomeButton()
+
+        let composerToggle = app.buttons["terminal.composer.toggle"]
+        XCTAssertTrue(composerToggle.waitForExistence(timeout: 5))
+        composerToggle.tap()
+
+        let mic = app.buttons["terminal.composer.mic"]
+        let stop = app.buttons["terminal.composer.dictation.stop"]
+        XCTAssertTrue(mic.waitForExistence(timeout: 3))
+
+        let field = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.tap()
+        field.typeText("Can you check my Gmail?")
+        attachScreenshot(named: "composer-compact-polished")
+
+        mic.tap()
+        XCTAssertTrue(stop.waitForExistence(timeout: 3))
+        stop.tap()
+
+        XCTAssertTrue(mic.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["No speech detected. Try again."].exists)
+
+        mic.tap()
+        XCTAssertTrue(stop.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.staticTexts["No speech detected. Try again."].exists)
+    }
+
+    func testComposerToggleKeepsOpenKeyboardAndTerminalViewportStable() {
+        app.launchEnvironment["REMUX_UI_TEST_INPUT_READY"] = "1"
+        launchSimulatorApp()
+        openConnectionSetup()
+        fillConnectionForm()
+        saveConnectionAndWaitForTerminal()
+        _ = waitForTerminalHomeButton()
+        waitForLiveTerminalInputReady(timeout: 10)
+
+        let terminal = app.otherElements["terminal.screen"]
+        XCTAssertTrue(terminal.waitForExistence(timeout: 5))
+
+        // The optional password-manager prompt probe may need to tap the app
+        // after the terminal appears. Normalize the hidden-keyboard phase so
+        // this test measures composer behavior rather than that probe's tap.
+        hideKeyboardIfPresent()
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "terminal keyboard hidden before composer toggle"))
+
+        guard let hiddenContinuity = waitForKeyboardContinuity(owner: "none") else {
+            return
+        }
+        let composerToggle = app.buttons["terminal.composer.toggle"]
+        XCTAssertTrue(composerToggle.waitForExistence(timeout: 5))
+        composerToggle.tap()
+        let composerField = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(composerField.waitForExistence(timeout: 3))
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "composer opened with keyboard hidden"))
+        guard let hiddenOpenContinuity = waitForKeyboardContinuity(owner: "none") else {
+            return
+        }
+        XCTAssertEqual(hiddenOpenContinuity.effectiveViewport, hiddenContinuity.effectiveViewport)
+
+        composerToggle.tap()
+        XCTAssertFalse(composerField.waitForExistence(timeout: 1))
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "composer closed with keyboard hidden"))
+        guard let hiddenClosedContinuity = waitForKeyboardContinuity(owner: "none") else {
+            return
+        }
+        XCTAssertEqual(hiddenClosedContinuity.effectiveViewport, hiddenContinuity.effectiveViewport)
+
+        terminal.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "terminal keyboard before composer toggle"))
+        XCTAssertTrue(
+            waitForSoftwareKeyboardOnScreen(timeout: 3),
+            "Composer continuity must be exercised with the software keyboard visibly on screen."
+        )
+
+        let keyboard = app.keyboards.firstMatch
+        let initialKeyboardFrame = keyboard.frame
+        guard let initialContinuity = waitForKeyboardContinuity(owner: "terminal") else {
+            return
+        }
+
+        composerToggle.tap()
+        XCTAssertTrue(composerField.waitForExistence(timeout: 3))
+        guard let composerContinuity = waitForKeyboardContinuity(owner: "composer") else {
+            return
+        }
+        XCTAssertEqual(composerContinuity.willHideCount, initialContinuity.willHideCount)
+        XCTAssertEqual(keyboard.frame, initialKeyboardFrame)
+        XCTAssertEqual(
+            composerContinuity.effectiveViewport,
+            initialContinuity.effectiveViewport,
+            "Opening the composer changed the terminal viewport "
+                + "from live=\(initialContinuity.liveViewport), effective=\(initialContinuity.effectiveViewport) "
+                + "to live=\(composerContinuity.liveViewport), effective=\(composerContinuity.effectiveViewport); "
+                + "bottomChrome \(initialContinuity.bottomChrome) → \(composerContinuity.bottomChrome), "
+                + "safeAreaBottom \(initialContinuity.safeAreaBottom) → \(composerContinuity.safeAreaBottom)."
+        )
+        composerField.typeText("Keep this draft")
+        XCTAssertEqual(composerField.value as? String, "Keep this draft")
+        attachScreenshot(named: "composer-toggle-dock-open")
+
+        composerToggle.tap()
+        XCTAssertFalse(composerField.waitForExistence(timeout: 1))
+        guard let terminalContinuity = waitForKeyboardContinuity(owner: "terminal") else {
+            return
+        }
+        XCTAssertEqual(terminalContinuity.willHideCount, initialContinuity.willHideCount)
+        XCTAssertTrue(keyboard.exists)
+        XCTAssertEqual(keyboard.frame, initialKeyboardFrame)
+        XCTAssertEqual(terminalContinuity.effectiveViewport, initialContinuity.effectiveViewport)
+        attachScreenshot(named: "composer-toggle-dock-closed")
+
+        composerToggle.tap()
+        XCTAssertTrue(composerField.waitForExistence(timeout: 3))
+        guard let reopenedContinuity = waitForKeyboardContinuity(owner: "composer") else {
+            return
+        }
+        XCTAssertEqual(reopenedContinuity.willHideCount, initialContinuity.willHideCount)
+        XCTAssertEqual(composerField.value as? String, "Keep this draft")
+        XCTAssertEqual(keyboard.frame, initialKeyboardFrame)
+        XCTAssertEqual(reopenedContinuity.effectiveViewport, initialContinuity.effectiveViewport)
+
+        composerToggle.tap()
+        XCTAssertFalse(composerField.waitForExistence(timeout: 1))
+        guard let reclosedContinuity = waitForKeyboardContinuity(owner: "terminal") else {
+            return
+        }
+        XCTAssertEqual(reclosedContinuity.willHideCount, initialContinuity.willHideCount)
+        XCTAssertEqual(keyboard.frame, initialKeyboardFrame)
+        XCTAssertEqual(reclosedContinuity.effectiveViewport, initialContinuity.effectiveViewport)
+    }
+
+    func testComposerMultilineKeepsWidthAndKeyboardStable() {
+        app.launchEnvironment["REMUX_UI_TEST_INPUT_READY"] = "1"
+        launchSimulatorApp()
+        openConnectionSetup()
+        fillConnectionForm()
+        saveConnectionAndWaitForTerminal()
+        _ = waitForTerminalHomeButton()
+        waitForLiveTerminalInputReady(timeout: 10)
+
+        let terminal = app.otherElements["terminal.screen"]
+        XCTAssertTrue(terminal.waitForExistence(timeout: 5))
+        hideKeyboardIfPresent()
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "keyboard hidden before composer send"))
+
+        let composerToggle = app.buttons["terminal.composer.toggle"]
+        XCTAssertTrue(composerToggle.waitForExistence(timeout: 5))
+        composerToggle.tap()
+
+        let composerField = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(composerField.waitForExistence(timeout: 3))
+        composerField.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "composer keyboard before send"))
+        XCTAssertTrue(
+            waitForSoftwareKeyboardOnScreen(timeout: 3),
+            "Composer Send continuity must be exercised with the software keyboard visibly on screen."
+        )
+        let compactTextWidth = composerField.frame.width
+
+        let initialText = "Explain why this composer keeps its width"
+        composerField.typeText(initialText)
+        XCTAssertEqual(composerField.value as? String, initialText)
+
+        let composerBounds = app.otherElements["terminal.composer.bounds"]
+        XCTAssertTrue(composerBounds.waitForExistence(timeout: 3))
+        let composerWidthBeforeWrapping = composerBounds.frame.width
+        XCTAssertGreaterThan(
+            composerWidthBeforeWrapping,
+            terminal.frame.width * 0.55,
+            "The composer must fill the middle dock slot rather than shrink-wrap its content."
+        )
+        composerField.typeText(
+            " and explain why the composer keeps the same width while its text wraps across multiple lines"
+        )
+        XCTAssertEqual(
+            composerBounds.frame.width,
+            composerWidthBeforeWrapping,
+            accuracy: 1,
+            "Multiline text must grow the composer upward without changing its width."
+        )
+        XCTAssertGreaterThan(
+            composerField.frame.width,
+            composerBounds.frame.width * 0.88,
+            "Expanded text must use the composer width instead of staying between the controls."
+        )
+        XCTAssertGreaterThan(
+            composerField.frame.width,
+            compactTextWidth,
+            "The text region must widen when it moves above the control row."
+        )
+
+        let attachmentButton = app.buttons["terminal.composer.attachments"]
+        let micButton = app.buttons["terminal.composer.mic"]
+        let sendButton = app.buttons["terminal.composer.send"]
+        XCTAssertLessThanOrEqual(composerField.frame.maxY, attachmentButton.frame.minY)
+        XCTAssertEqual(attachmentButton.frame.midY, micButton.frame.midY, accuracy: 1)
+        XCTAssertEqual(micButton.frame.midY, sendButton.frame.midY, accuracy: 1)
+        attachScreenshot(named: "composer-multiline-width-stable")
+
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.exists)
+        XCTAssertTrue(waitForSoftwareKeyboardOnScreen(timeout: 1))
+        attachScreenshot(named: "composer-multiline-keyboard-stable")
     }
 
     func testCanKeepMultipleSimulatorSessionsActive() {
@@ -80,6 +450,10 @@ final class RemuxAppUITests: XCTestCase {
         app.buttons["library.settings"].tap()
 
         XCTAssertTrue(settingsForm.waitForExistence(timeout: 2))
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 2))
+        let legacyRSAHostKeys = app.switches["settings.allow-insecure-rsa"]
+        XCTAssertTrue(legacyRSAHostKeys.waitForExistence(timeout: 2))
+        XCTAssertEqual(legacyRSAHostKeys.label, "Allow older RSA host keys")
         tapFontDefaultToggle()
         let fontSize = app.descendants(matching: .any)["settings.font-size"]
         XCTAssertTrue(fontSize.waitForExistence(timeout: 2))
@@ -347,7 +721,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Latte"].waitForExistence(timeout: 2))
         app.buttons["Mocha"].tap()
         app.buttons["Latte"].tap()
-        app.navigationBars["Terminal"].buttons.element(boundBy: 0).tap()
+        app.navigationBars["Settings"].buttons.element(boundBy: 0).tap()
 
         let activeSession = activeSessionRows.firstMatch
         XCTAssertTrue(activeSession.waitForExistence(timeout: 5))
@@ -740,6 +1114,173 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(activeSessionRows.firstMatch.waitForExistence(timeout: 5))
         openFirstSavedSession()
         waitForLiveTerminalReady(timeout: 60)
+    }
+
+    func testLiveComposerTypingPerfWhenConfigured() throws {
+        let transcript = "Profile the composer hypothesis path"
+        // Enables the body-eval probe and its accessibility marker without
+        // REMUX_UI_TESTING, which would swap in the fake UI-testing
+        // transport and break the live SSH connection.
+        app.launchEnvironment["REMUX_TRACE_COMPOSER_PERF"] = "1"
+        app.launchEnvironment["REMUX_DEBUG_DICTATION_TRANSCRIPT"] = transcript
+        let sessionName = try generatedLiveLatencySessionName("composer")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 90)
+
+        let composerToggle = app.buttons["terminal.composer.toggle"]
+        XCTAssertTrue(composerToggle.waitForExistence(timeout: 10))
+        composerToggle.tap()
+        XCTAssertTrue(app.otherElements["terminal.composer.bounds"].waitForExistence(timeout: 5))
+
+        // The bar-hosted marker refreshes on every bar re-render, so it
+        // stays current even when the screen body no longer re-evaluates
+        // per keystroke.
+        let probe = app.otherElements["terminal.composer.perf"]
+        XCTAssertTrue(probe.waitForExistence(timeout: 5))
+
+        // Dictation hypothesis path: the debug backend emits 28 audio-level
+        // events plus one hypothesis that writes the draft. Screen body
+        // evals in this window quantify how much of dictation leaks into
+        // whole-screen invalidation.
+        let mic = app.buttons["terminal.composer.mic"]
+        XCTAssertTrue(mic.waitForExistence(timeout: 5))
+        settleComposerPerfProbe()
+        guard let beforeDictation = bodyEvalProbeMetrics(probe) else {
+            XCTFail("Body eval probe unreadable before dictation")
+            return
+        }
+        mic.tap()
+        let stop = app.buttons["terminal.composer.dictation.stop"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 5))
+        RunLoop.current.run(until: Date().addingTimeInterval(1.2))
+        stop.tap()
+
+        let field = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        let transcriptDeadline = Date().addingTimeInterval(6)
+        while Date() < transcriptDeadline, (field.value as? String) != transcript {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertEqual(field.value as? String, transcript)
+        settleComposerPerfProbe()
+        guard let afterDictation = bodyEvalProbeMetrics(probe) else {
+            XCTFail("Body eval probe unreadable after dictation")
+            return
+        }
+
+        // Typing path: every keystroke goes through the composer draft
+        // binding. The typed tail also builds the command submitted below.
+        field.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 8))
+        settleComposerPerfProbe()
+        guard let beforeTyping = bodyEvalProbeMetrics(probe) else {
+            XCTFail("Body eval probe unreadable before typing")
+            return
+        }
+        let token = "REMUX-CPERF-\(UUID().uuidString.prefix(8).uppercased())"
+        let typed = " ; printf %s \(token) | rev"
+        field.typeText(typed)
+        settleComposerPerfProbe()
+        guard let afterTyping = bodyEvalProbeMetrics(probe) else {
+            XCTFail("Body eval probe unreadable after typing")
+            return
+        }
+
+        // Submit to the real tmux session; success clears the draft and
+        // restores the placeholder. The reversed token only appears in the
+        // pane when the pasted command actually executed remotely.
+        let send = app.buttons["terminal.composer.send"]
+        XCTAssertTrue(send.waitForExistence(timeout: 5))
+        let placeholder = app.staticTexts["terminal.composer.placeholder"]
+        let submitStart = Date()
+        send.tap()
+        let submitDeadline = Date().addingTimeInterval(20)
+        while Date() < submitDeadline, !placeholder.exists {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertTrue(
+            placeholder.exists,
+            "Composer draft should clear after a successful live submit."
+        )
+        let submitMs = Date().timeIntervalSince(submitStart) * 1000
+
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: String(token.reversed())
+        )
+
+        let typedCount = typed.count
+        let dictationEvals = probeDelta(afterDictation.evals, beforeDictation.evals, "dictation evals")
+        let dictationBarEvals = probeDelta(afterDictation.barEvals, beforeDictation.barEvals, "dictation bar evals")
+        let dictationPasses = probeDelta(afterDictation.passes, beforeDictation.passes, "dictation passes")
+        let dictationPassMs = afterDictation.passMs - beforeDictation.passMs
+        let typingEvals = probeDelta(afterTyping.evals, beforeTyping.evals, "typing evals")
+        let typingBarEvals = probeDelta(afterTyping.barEvals, beforeTyping.barEvals, "typing bar evals")
+        let typingPasses = probeDelta(afterTyping.passes, beforeTyping.passes, "typing passes")
+        let typingPassMs = afterTyping.passMs - beforeTyping.passMs
+        let summary = """
+        REMUX_COMPOSER_PERF typing chars=\(typedCount) screenEvals=\(typingEvals) \
+        screenEvalsPerKey=\(String(format: "%.2f", Double(typingEvals) / Double(typedCount))) \
+        barEvals=\(typingBarEvals) \
+        barEvalsPerKey=\(String(format: "%.2f", Double(typingBarEvals) / Double(typedCount))) \
+        passes=\(typingPasses) passMs=\(String(format: "%.3f", typingPassMs)) \
+        passMsPerKey=\(String(format: "%.3f", typingPassMs / Double(typedCount)))
+        REMUX_COMPOSER_PERF dictation screenEvals=\(dictationEvals) \
+        barEvals=\(dictationBarEvals) passes=\(dictationPasses) \
+        passMs=\(String(format: "%.3f", dictationPassMs))
+        REMUX_COMPOSER_PERF submit elapsedMs=\(String(format: "%.0f", submitMs))
+        """
+        NSLog("%@", summary)
+        let attachment = XCTAttachment(string: summary)
+        attachment.name = "composer-perf-metrics"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private func probeDelta(_ after: UInt64, _ before: UInt64, _ label: String) -> UInt64 {
+        guard after >= before else {
+            XCTFail("Probe counter \(label) went backwards (\(before) → \(after))")
+            return 0
+        }
+        return after - before
+    }
+
+    private struct ComposerBodyEvalProbeMetrics {
+        let evals: UInt64
+        let barEvals: UInt64
+        let passes: UInt64
+        let passMs: Double
+    }
+
+    private func bodyEvalProbeMetrics(_ marker: XCUIElement) -> ComposerBodyEvalProbeMetrics? {
+        guard marker.exists, let raw = marker.value as? String else { return nil }
+        var fields: [String: String] = [:]
+        for field in raw.split(separator: ";") {
+            let parts = field.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            fields[String(parts[0])] = String(parts[1])
+        }
+        guard let evals = fields["evals"].flatMap({ UInt64($0) }),
+              let passes = fields["passes"].flatMap({ UInt64($0) }),
+              let passMs = fields["passMs"].flatMap({ Double($0) }) else {
+            return nil
+        }
+        return ComposerBodyEvalProbeMetrics(
+            evals: evals,
+            barEvals: fields["barEvals"].flatMap({ UInt64($0) }) ?? 0,
+            passes: passes,
+            passMs: passMs
+        )
+    }
+
+    private func settleComposerPerfProbe() {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.8))
     }
 
     func testLiveSSHStackPaneCreatesExactlyOneRemotePaneWhenConfigured() throws {
@@ -1764,10 +2305,10 @@ final class RemuxAppUITests: XCTestCase {
         guard activeSession.waitForExistence(timeout: 5) else { return }
 
         activeSession.swipeLeft()
-        let close = app.buttons["Close"].firstMatch
-        guard close.waitForExistence(timeout: 3) else { return }
+        let disconnect = app.buttons["Disconnect"].firstMatch
+        guard disconnect.waitForExistence(timeout: 3) else { return }
 
-        close.tap()
+        disconnect.tap()
         RunLoop.current.run(until: Date().addingTimeInterval(2))
     }
 
@@ -1793,6 +2334,79 @@ final class RemuxAppUITests: XCTestCase {
 
         XCTFail("Timed out waiting for keyboard \(expected ? "visible" : "hidden") during \(label)")
         return nil
+    }
+
+    private func waitForKeyboardContinuity(
+        owner expectedOwner: String,
+        timeout: TimeInterval = 3,
+        pollInterval: TimeInterval = 0.01
+    ) -> (
+        owner: String,
+        willHideCount: Int,
+        liveViewport: String,
+        effectiveViewport: String,
+        bottomChrome: String,
+        safeAreaBottom: String,
+        transitionActive: Bool,
+        awaitingSystemKeyboard: Bool
+    )? {
+        let marker = app.otherElements["terminal.keyboard.continuity"]
+        let deadline = Date().addingTimeInterval(timeout)
+
+        repeat {
+            if marker.exists,
+               let value = marker.value as? String,
+               let state = keyboardContinuityState(from: value),
+               state.owner == expectedOwner,
+               !state.transitionActive,
+               !state.awaitingSystemKeyboard {
+                return state
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(pollInterval))
+        } while Date() < deadline
+
+        XCTFail("Timed out waiting for keyboard owner \(expectedOwner)")
+        return nil
+    }
+
+    private func keyboardContinuityState(
+        from value: String
+    ) -> (
+        owner: String,
+        willHideCount: Int,
+        liveViewport: String,
+        effectiveViewport: String,
+        bottomChrome: String,
+        safeAreaBottom: String,
+        transitionActive: Bool,
+        awaitingSystemKeyboard: Bool
+    )? {
+        var fields: [String: String] = [:]
+        for field in value.split(separator: ";") {
+            let parts = field.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            fields[String(parts[0])] = String(parts[1])
+        }
+        guard let owner = fields["owner"],
+              let willHide = fields["willHide"],
+              let willHideCount = Int(willHide),
+              let liveViewport = fields["liveViewport"],
+              let effectiveViewport = fields["effectiveViewport"],
+              let bottomChrome = fields["bottomChrome"],
+              let safeAreaBottom = fields["safeAreaBottom"],
+              let transitionActive = fields["transitionActive"].flatMap(Bool.init),
+              let awaitingSystemKeyboard = fields["awaitingSystemKeyboard"].flatMap(Bool.init)
+        else { return nil }
+        return (
+            owner,
+            willHideCount,
+            liveViewport,
+            effectiveViewport,
+            bottomChrome,
+            safeAreaBottom,
+            transitionActive,
+            awaitingSystemKeyboard
+        )
     }
 
     private func launchSimulatorApp() {
@@ -3320,6 +3934,18 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func dismissTopSheetIfPresent() {
+        for identifier in [
+            "terminal.panes.close",
+            "terminal.windows.close",
+            "terminal.sessions.close",
+        ] {
+            let closeButton = app.buttons[identifier]
+            if closeButton.exists, closeButton.isHittable {
+                closeButton.tap()
+                return
+            }
+        }
+
         let sheet = app.otherElements.matching(identifier: "PopoverDismissRegion").firstMatch
         if sheet.exists, sheet.isHittable {
             sheet.tap()

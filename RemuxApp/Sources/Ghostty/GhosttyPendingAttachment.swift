@@ -164,6 +164,12 @@ enum GhosttyAttachmentPreviewPayload: Equatable, Sendable {
 }
 
 struct GhosttyPendingAttachment: Identifiable, Equatable, Sendable {
+    enum PreparationState: Equatable, Sendable {
+        case preparing
+        case ready
+        case failed
+    }
+
     enum Kind: Equatable, Sendable {
         case photo
         case video
@@ -197,6 +203,7 @@ struct GhosttyPendingAttachment: Identifiable, Equatable, Sendable {
     let detail: String
     let payload: GhosttyAttachmentPayload?
     let previewPayload: GhosttyAttachmentPreviewPayload?
+    let preparationState: PreparationState
 
     init(
         id: UUID = UUID(),
@@ -204,7 +211,8 @@ struct GhosttyPendingAttachment: Identifiable, Equatable, Sendable {
         title: String,
         detail: String = "Attachment",
         payload: GhosttyAttachmentPayload? = nil,
-        previewPayload: GhosttyAttachmentPreviewPayload? = nil
+        previewPayload: GhosttyAttachmentPreviewPayload? = nil,
+        preparationState: PreparationState = .ready
     ) {
         self.id = id
         self.kind = kind
@@ -212,6 +220,7 @@ struct GhosttyPendingAttachment: Identifiable, Equatable, Sendable {
         self.detail = detail
         self.payload = payload
         self.previewPayload = previewPayload ?? payload.map(GhosttyAttachmentPreviewPayload.init)
+        self.preparationState = preparationState
     }
 
     var systemName: String {
@@ -258,7 +267,8 @@ struct GhosttyPendingAttachment: Identifiable, Equatable, Sendable {
             return GhosttyPendingAttachment(
                 kind: kind,
                 title: mediaTitle(kind, number: shouldNumber ? index + 1 : nil),
-                detail: "Loading preview"
+                detail: "Preparing…",
+                preparationState: .preparing
             )
         }
     }
@@ -336,7 +346,8 @@ struct GhosttyPendingAttachment: Identifiable, Equatable, Sendable {
         GhosttyPendingAttachment(
             kind: .pasteboardImage,
             title: "Pasted image",
-            detail: "Loading preview"
+            detail: "Preparing…",
+            preparationState: .preparing
         )
     }
 
@@ -361,7 +372,8 @@ struct GhosttyPendingAttachment: Identifiable, Equatable, Sendable {
     func updating(
         payload: GhosttyAttachmentPayload? = nil,
         previewPayload: GhosttyAttachmentPreviewPayload? = nil,
-        detail: String
+        detail: String,
+        preparationState: PreparationState? = nil
     ) -> GhosttyPendingAttachment {
         GhosttyPendingAttachment(
             id: id,
@@ -369,7 +381,8 @@ struct GhosttyPendingAttachment: Identifiable, Equatable, Sendable {
             title: title,
             detail: detail,
             payload: payload ?? self.payload,
-            previewPayload: previewPayload ?? self.previewPayload
+            previewPayload: previewPayload ?? self.previewPayload,
+            preparationState: preparationState ?? self.preparationState
         )
     }
 

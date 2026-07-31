@@ -1336,17 +1336,17 @@ final class RemuxRootModelTests: XCTestCase {
 
         await harness.model.beginNewWorkspace(for: server.id)
 
-        guard case .setup(let draft, let validation, let mode) = harness.model.state else {
+        guard case .setup(let setup) = harness.model.state else {
             XCTFail("expected setup state")
             return
         }
 
-        XCTAssertEqual(draft.displayName, server.displayName)
-        XCTAssertEqual(draft.host, server.host)
-        XCTAssertEqual(draft.username, server.username)
-        XCTAssertEqual(draft.sessionName, "")
-        XCTAssertEqual(validation, .empty)
-        XCTAssertEqual(mode, .newWorkspace(server.id))
+        XCTAssertEqual(setup.draft.displayName, server.displayName)
+        XCTAssertEqual(setup.draft.host, server.host)
+        XCTAssertEqual(setup.draft.username, server.username)
+        XCTAssertEqual(setup.draft.sessionName, "")
+        XCTAssertEqual(setup.validation, .empty)
+        XCTAssertEqual(setup.mode, .newWorkspace(server.id))
     }
 
     func testBeginNewWorkspaceDoesNotGenerateSessionNameFromExistingWorkspaces() async throws {
@@ -1367,14 +1367,83 @@ final class RemuxRootModelTests: XCTestCase {
 
         await harness.model.beginNewWorkspace(for: server.id)
 
-        guard case .setup(let draft, let validation, let mode) = harness.model.state else {
+        guard case .setup(let setup) = harness.model.state else {
             XCTFail("expected setup state")
             return
         }
 
-        XCTAssertEqual(draft.sessionName, "")
-        XCTAssertEqual(validation, .empty)
-        XCTAssertEqual(mode, .newWorkspace(server.id))
+        XCTAssertEqual(setup.draft.sessionName, "")
+        XCTAssertEqual(setup.validation, .empty)
+        XCTAssertEqual(setup.mode, .newWorkspace(server.id))
+    }
+
+    func testCancelNewWorkspaceFromTerminalReturnsToOriginatingSession() async throws {
+        let passwordBackedServer = makePasswordBackedServer()
+        let server = passwordBackedServer.server
+        let workspace = SavedWorkspace(serverID: server.id, sessionName: "base")
+        let harness = makeHarness(
+            servers: [server],
+            workspaces: [workspace],
+            identities: [passwordBackedServer.identity]
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("demo-password"),
+            identityID: passwordBackedServer.identity.id
+        )
+        await harness.model.load()
+        await harness.model.connect(to: workspace.id)
+
+        await harness.model.beginNewWorkspace(
+            for: server.id,
+            cancelDestination: .terminal(workspace.id)
+        )
+        await harness.model.cancelSetup()
+
+        XCTAssertEqual(harness.model.state, .terminal(workspace.id))
+        XCTAssertEqual(harness.model.activeSessions.map(\.id), [workspace.id])
+    }
+
+    func testCancelNewWorkspaceFallsBackToLibraryWhenOriginatingSessionIsGone() async throws {
+        let passwordBackedServer = makePasswordBackedServer()
+        let server = passwordBackedServer.server
+        let workspace = SavedWorkspace(serverID: server.id, sessionName: "base")
+        let harness = makeHarness(
+            servers: [server],
+            workspaces: [workspace],
+            identities: [passwordBackedServer.identity]
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("demo-password"),
+            identityID: passwordBackedServer.identity.id
+        )
+        await harness.model.load()
+        await harness.model.connect(to: workspace.id)
+
+        await harness.model.beginNewWorkspace(
+            for: server.id,
+            cancelDestination: .terminal(workspace.id)
+        )
+        harness.model.disconnectActiveSession(workspace.id)
+        await harness.model.cancelSetup()
+
+        XCTAssertEqual(harness.model.state, .library)
+        XCTAssertTrue(harness.model.activeSessions.isEmpty)
+    }
+
+    func testCancelNewWorkspaceFromLibraryReturnsToLibrary() async throws {
+        let passwordBackedServer = makePasswordBackedServer()
+        let server = passwordBackedServer.server
+        let harness = makeHarness(
+            servers: [server],
+            workspaces: [],
+            identities: [passwordBackedServer.identity]
+        )
+        await harness.model.load()
+
+        await harness.model.beginNewWorkspace(for: server.id)
+        await harness.model.cancelSetup()
+
+        XCTAssertEqual(harness.model.state, .library)
     }
 
     func testNewWorkspaceSavesTypedSessionNameAndConnectsExistingServer() async throws {
@@ -1478,16 +1547,16 @@ final class RemuxRootModelTests: XCTestCase {
 
         await harness.model.beginEditServer(serverID: server.id)
 
-        guard case .setup(let draft, let validation, let mode) = harness.model.state else {
+        guard case .setup(let setup) = harness.model.state else {
             XCTFail("expected setup state")
             return
         }
 
-        XCTAssertEqual(draft.displayName, server.displayName)
-        XCTAssertEqual(draft.sessionName, "logs")
-        XCTAssertEqual(draft.password, "demo-password")
-        XCTAssertEqual(validation, .empty)
-        XCTAssertEqual(mode, .editServer(server.id, reconnectWorkspaceID: nil))
+        XCTAssertEqual(setup.draft.displayName, server.displayName)
+        XCTAssertEqual(setup.draft.sessionName, "logs")
+        XCTAssertEqual(setup.draft.password, "demo-password")
+        XCTAssertEqual(setup.validation, .empty)
+        XCTAssertEqual(setup.mode, .editServer(server.id, reconnectWorkspaceID: nil))
     }
 
     func testBeginEditServerWorksWithoutExistingWorkspaces() async throws {
@@ -1506,16 +1575,16 @@ final class RemuxRootModelTests: XCTestCase {
 
         await harness.model.beginEditServer(serverID: server.id)
 
-        guard case .setup(let draft, let validation, let mode) = harness.model.state else {
+        guard case .setup(let setup) = harness.model.state else {
             XCTFail("expected setup state")
             return
         }
 
-        XCTAssertEqual(draft.displayName, server.displayName)
-        XCTAssertEqual(draft.sessionName, "")
-        XCTAssertEqual(draft.password, "demo-password")
-        XCTAssertEqual(validation, .empty)
-        XCTAssertEqual(mode, .editServer(server.id, reconnectWorkspaceID: nil))
+        XCTAssertEqual(setup.draft.displayName, server.displayName)
+        XCTAssertEqual(setup.draft.sessionName, "")
+        XCTAssertEqual(setup.draft.password, "demo-password")
+        XCTAssertEqual(setup.validation, .empty)
+        XCTAssertEqual(setup.mode, .editServer(server.id, reconnectWorkspaceID: nil))
     }
 
     func testBeginCredentialRepairCapturesReconnectWorkspace() async throws {
@@ -1535,16 +1604,16 @@ final class RemuxRootModelTests: XCTestCase {
 
         await harness.model.beginCredentialRepair(for: workspace.id)
 
-        guard case .setup(let draft, let validation, let mode) = harness.model.state else {
+        guard case .setup(let setup) = harness.model.state else {
             XCTFail("expected setup state")
             return
         }
 
-        XCTAssertEqual(draft.displayName, server.displayName)
-        XCTAssertEqual(draft.sessionName, workspace.sessionName)
-        XCTAssertEqual(draft.password, "demo-password")
-        XCTAssertEqual(validation, .empty)
-        XCTAssertEqual(mode, .editServer(server.id, reconnectWorkspaceID: workspace.id))
+        XCTAssertEqual(setup.draft.displayName, server.displayName)
+        XCTAssertEqual(setup.draft.sessionName, workspace.sessionName)
+        XCTAssertEqual(setup.draft.password, "demo-password")
+        XCTAssertEqual(setup.validation, .empty)
+        XCTAssertEqual(setup.mode, .editServer(server.id, reconnectWorkspaceID: workspace.id))
     }
 
     func testCredentialRepairReconnectsOriginalWorkspaceWithoutDuplication() async throws {
@@ -1607,16 +1676,16 @@ final class RemuxRootModelTests: XCTestCase {
 
         await harness.model.beginServerRepair(for: workspace.id)
 
-        guard case .setup(let draft, let validation, let mode) = harness.model.state else {
+        guard case .setup(let setup) = harness.model.state else {
             XCTFail("expected setup state")
             return
         }
 
-        XCTAssertEqual(draft.displayName, server.displayName)
-        XCTAssertEqual(draft.sessionName, workspace.sessionName)
-        XCTAssertEqual(draft.password, "demo-password")
-        XCTAssertEqual(validation, .empty)
-        XCTAssertEqual(mode, .editServer(server.id, reconnectWorkspaceID: workspace.id))
+        XCTAssertEqual(setup.draft.displayName, server.displayName)
+        XCTAssertEqual(setup.draft.sessionName, workspace.sessionName)
+        XCTAssertEqual(setup.draft.password, "demo-password")
+        XCTAssertEqual(setup.validation, .empty)
+        XCTAssertEqual(setup.mode, .editServer(server.id, reconnectWorkspaceID: workspace.id))
     }
 
     func testServerRepairReconnectsOriginalWorkspaceWithoutDuplication() async throws {
@@ -1677,16 +1746,16 @@ final class RemuxRootModelTests: XCTestCase {
 
         await harness.model.beginEditWorkspace(serverID: server.id, workspaceID: logs.id)
 
-        guard case .setup(let draft, let validation, let mode) = harness.model.state else {
+        guard case .setup(let setup) = harness.model.state else {
             XCTFail("expected setup state")
             return
         }
 
-        XCTAssertEqual(draft.displayName, server.displayName)
-        XCTAssertEqual(draft.sessionName, "logs")
-        XCTAssertEqual(draft.password, "")
-        XCTAssertEqual(validation, .empty)
-        XCTAssertEqual(mode, .editWorkspace(server.id, logs.id))
+        XCTAssertEqual(setup.draft.displayName, server.displayName)
+        XCTAssertEqual(setup.draft.sessionName, "logs")
+        XCTAssertEqual(setup.draft.password, "")
+        XCTAssertEqual(setup.validation, .empty)
+        XCTAssertEqual(setup.mode, .editWorkspace(server.id, logs.id))
     }
 
     func testEditServerSavesServerWithoutCreatingWorkspaceOrOpeningTerminal() async throws {
@@ -2105,7 +2174,7 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertTrue(harness.model.terminalScreenModel(for: session) === terminalModel)
     }
 
-    func testCloseActiveSessionStopsOwnedTerminalModel() async throws {
+    func testDisconnectActiveSessionStopsOwnedTerminalModel() async throws {
         let server = SavedServer(
             displayName: "Build Host",
             host: "build.example.test",
@@ -2126,9 +2195,10 @@ final class RemuxRootModelTests: XCTestCase {
         let terminalModel = harness.model.terminalScreenModel(for: session)
         await waitForConnecting(terminalModel)
 
-        harness.model.closeActiveSession(workspace.id)
+        harness.model.disconnectActiveSession(workspace.id)
 
         XCTAssertFalse(harness.model.hasTerminalScreenModel(for: session))
+        XCTAssertEqual(harness.model.state, .library)
         // Teardown ordering (surface -> link -> controller) is owned by
         // the model's async stop; completion nils the session.
         await waitForStopped(terminalModel)
@@ -2846,7 +2916,7 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertNotEqual(freshTransport.id, createdID)
     }
 
-    func testCloseActiveSessionRemovesOnlyThatRuntimeSession() async throws {
+    func testDisconnectSelectedSessionSelectsRemainingRuntimeSession() async throws {
         let server = SavedServer(
             displayName: "Build Host",
             host: "build.example.test",
@@ -2861,10 +2931,35 @@ final class RemuxRootModelTests: XCTestCase {
         await harness.model.connect(to: base.id)
         await harness.model.connect(to: logs.id)
 
-        harness.model.closeActiveSession(logs.id)
+        harness.model.disconnectActiveSession(logs.id)
 
-        XCTAssertEqual(harness.model.state, .library)
+        XCTAssertEqual(harness.model.state, .terminal(base.id))
         XCTAssertEqual(harness.model.activeSessions.map(\.id), [base.id])
+    }
+
+    func testDisconnectSelectedSessionSelectsNextInDisplayedOrder() async throws {
+        let server = SavedServer(
+            displayName: "Build Host",
+            host: "build.example.test",
+            username: "builder"
+        )
+        let zeta = SavedWorkspace(serverID: server.id, sessionName: "zeta")
+        let mid = SavedWorkspace(serverID: server.id, sessionName: "mid")
+        let alpha = SavedWorkspace(serverID: server.id, sessionName: "alpha")
+        let harness = makeHarness(servers: [server], workspaces: [zeta, mid, alpha])
+        try await harness.credentialHelper.savePassword("demo-password", for: server.id)
+
+        await harness.model.load()
+        await harness.model.connect(to: zeta.id)
+        await harness.model.connect(to: mid.id)
+        await harness.model.connect(to: alpha.id)
+        harness.model.showActiveSession(mid.id)
+
+        harness.model.disconnectActiveSession(mid.id)
+
+        // Displayed order is most-recent-first: [alpha, mid, zeta].
+        // The session taking mid's display position is zeta.
+        XCTAssertEqual(harness.model.state, .terminal(zeta.id))
     }
 
     func testUpdateTerminalSettingsPersistsSettings() async throws {
@@ -2918,6 +3013,19 @@ final class RemuxRootModelTests: XCTestCase {
             harness.model.activeTerminalScreenEntries.first?.presentation.terminalTheme,
             updated.theme
         )
+
+        var rsaUpdated = updated
+        rsaUpdated.allowInsecureRSAHostKeys = true
+        await harness.model.updateTerminalSettings { settings in
+            settings = rsaUpdated
+        }
+
+        let rsaRefreshedSession = try XCTUnwrap(harness.model.activeSessions.first)
+        XCTAssertEqual(rsaRefreshedSession.instanceID, originalSession.instanceID)
+        XCTAssertEqual(rsaRefreshedSession.target.terminalSettings, rsaUpdated)
+        XCTAssertTrue(originalModel === harness.model.terminalScreenModel(for: rsaRefreshedSession))
+        let savedSettings = try await harness.settingsRepository.loadSettings()
+        XCTAssertEqual(savedSettings, rsaUpdated)
     }
 
     private func makeHarness(
@@ -3092,10 +3200,10 @@ final class RemuxRootModelTests: XCTestCase {
     }
 
     private func setupDraft(from state: RemuxRootModel.State) throws -> TmuxConnectionDraft {
-        guard case .setup(let draft, _, _) = state else {
+        guard case .setup(let setup) = state else {
             throw RootModelSetupTestError.expectedSetup
         }
-        return draft
+        return setup.draft
     }
 
     private func makeHostKeyChallenge(
