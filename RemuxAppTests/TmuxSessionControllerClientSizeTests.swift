@@ -801,6 +801,68 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await shutDown(controller)
     }
 
+    func testTrackedInputCompletesForItsExactTmuxResponse() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1
+        )
+        let completed = expectation(description: "tracked input completed")
+
+        XCTAssertTrue(harness.controller.sendTrackedInput(
+            paneID: 0,
+            Data("message".utf8),
+            completion: { succeeded in
+                XCTAssertTrue(succeeded)
+                completed.fulfill()
+            }
+        ))
+        await drain(harness.controller)
+        XCTAssertEqual(
+            harness.recorder.takeStrings(),
+            ["send-keys -H -t %0 6d 65 73 73 61 67 65\n"]
+        )
+
+        let commandNumber = harness.nextCommandNumber
+        harness.controller.pump(Data(
+            ("%begin \(commandNumber) \(commandNumber) 1\n"
+                + "%end \(commandNumber) \(commandNumber) 1\n").utf8
+        ))
+        await fulfillment(of: [completed], timeout: 1)
+    }
+
+    func testTrackedLiteralInputUsesOneEscapedTmuxArgument() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1
+        )
+        let completed = expectation(description: "tracked literal input completed")
+        let payload = "\u{1B}[200~paste \"$HOME\"\n🙂\u{1B}[201~"
+
+        XCTAssertTrue(harness.controller.sendTrackedLiteralInput(
+            paneID: 0,
+            Data(payload.utf8),
+            completion: { succeeded in
+                XCTAssertTrue(succeeded)
+                completed.fulfill()
+            }
+        ))
+        await drain(harness.controller)
+        XCTAssertEqual(
+            harness.recorder.takeStrings(),
+            [
+                "send-keys -l -t %0 -- \"\\033[200\\176paste \\042\\044HOME"
+                    + "\\042\\012🙂\\033[201\\176\"\n"
+            ]
+        )
+
+        let commandNumber = harness.nextCommandNumber
+        harness.controller.pump(Data(
+            ("%begin \(commandNumber) \(commandNumber) 1\n"
+                + "%end \(commandNumber) \(commandNumber) 1\n").utf8
+        ))
+        await fulfillment(of: [completed], timeout: 1)
+    }
+
     private struct ReadyControllerHarness {
         let runtime: GhosttyKitRuntime
         let controller: TmuxSessionController

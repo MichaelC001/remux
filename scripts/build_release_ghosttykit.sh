@@ -27,3 +27,12 @@ printf 'Building ReleaseFast GhosttyKit from %s\n' "$ghostty_root"
 
 GHOSTTYKIT_XCFRAMEWORK="$xcframework" \
   "$repo_root/scripts/verify_ghosttykit_release_mode.sh"
+
+# Record what is installed so fetch_ghosttykit.sh can tell a local build
+# apart from the pinned release instead of silently keeping either.
+source_ref="$(git -C "$ghostty_root" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if ! git -C "$ghostty_root" diff --quiet 2>/dev/null; then
+  source_ref="${source_ref}-dirty"
+fi
+printf 'local-build %s\n' "$source_ref" >"$(dirname "$xcframework")/.ghosttykit-provenance"
+printf 'Recorded local-build provenance (%s).\n' "$source_ref"

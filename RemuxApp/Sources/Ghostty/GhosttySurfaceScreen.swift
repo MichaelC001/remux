@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 import CoreTransferable
@@ -13,7 +14,6 @@ struct GhosttySurfaceScreenPresentation: Equatable {
 }
 
 struct GhosttyAttachmentInputOwnerProjection: Equatable {
-    let isTrayPresented: Bool
     let isPhotosPickerPresented: Bool
     let isFileImporterPresented: Bool
     let isPreviewPresented: Bool
@@ -50,15 +50,25 @@ enum GhosttyTerminalCoverPhase: Equatable {
 }
 
 struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
+    private struct AttachmentPreviewRequest: Identifiable {
+        let attachmentID: GhosttyPendingAttachment.ID
+
+        var id: GhosttyPendingAttachment.ID {
+            attachmentID
+        }
+    }
+
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
     @ObservedObject private var model: Model
+    private let composer: GhosttyComposerModel
     private let presentation: GhosttySurfaceScreenPresentation
     private let isSelected: Bool
     private let isTerminalCovered: Bool
     private let shortcutStore: ShortcutStore
     @State private var inputCoordinator = GhosttyTerminalInputCoordinator()
     @State private var terminalInputController = GhosttyTerminalInputController()
+    @State private var keyboardResponderHandoff = GhosttyKeyboardResponderHandoff()
     @State private var selectionSheet: GhosttySurfaceSelectionSheet?
     @State private var bottomChromeHeight: CGFloat = 0
     @State private var softwareKeyboardOverlapHeight: CGFloat = 0
@@ -73,17 +83,15 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var isShortcutPalettePresented = false
     @State private var isShortcutsSettingsPresented = false
     @State private var shortcutEditorRequest: ShortcutEditorRequest?
-    @State private var isAttachmentTrayPresented = false
     @State private var isAttachmentPhotosPickerPresented = false
     @State private var isAttachmentFileImporterPresented = false
     @State private var attachmentPhotoSelections: [PhotosPickerItem] = []
-    @State private var isAttachmentPreviewPresented = false
-    @State private var attachmentPreviewDetent: PresentationDetent = .medium
-    @State private var pendingAttachments: [GhosttyPendingAttachment] = []
-    @State private var isAttachmentTransferInProgress = false
-    @State private var attachmentTransferUploadCount = 0
-    @State private var attachmentTransferProgress: GhosttyAttachmentTransferProgress?
+    @State private var attachmentPreviewRequest: AttachmentPreviewRequest?
     @State private var attachmentNotice: GhosttyAttachmentNotice?
+    @State private var composerRevision: UInt64 = 0
+#if DEBUG
+    @State private var uiTestKeyboardWillHideCount = 0
+#endif
 
     private let onReconnect: () -> Void
     private let onShowSessions: () -> Void
@@ -100,6 +108,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         model: Model,
         presentation: GhosttySurfaceScreenPresentation,
         isSelected: Bool,
+        composer: GhosttyComposerModel,
         isTerminalCovered: Bool = false,
         shortcutStore: ShortcutStore,
         attachmentTransferServiceFactory: @escaping @Sendable () -> any GhosttyAttachmentTransferService,
@@ -112,6 +121,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         onTrustHostKey: @escaping () -> Void
     ) {
         self.model = model
+        self.composer = composer
         self.presentation = presentation
         self.isSelected = isSelected
         self.isTerminalCovered = isTerminalCovered
@@ -137,7 +147,44 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         keyboardViewportTransitionCoordinator.isAwaitingSystemKeyboardPresentation
     }
 
+    private var composerUpdates: AnyPublisher<Void, Never> {
+        guard isSelected else {
+            return Empty(completeImmediately: false).eraseToAnyPublisher()
+        }
+        // Draft keystrokes and dictation updates re-render only the compose
+        // bar, which observes the composer directly. The screen re-evaluates
+        // solely for composer state its own chrome and sheets render. Each
+        // branch drops the value replayed on (re)subscription so body
+        // evaluations don't feed back into new invalidations.
+        let presented = composer.$isPresented
+            .removeDuplicates().dropFirst()
+            .map { _ in () }.eraseToAnyPublisher()
+        let submitting = composer.$isSubmitting
+            .removeDuplicates().dropFirst()
+            .map { _ in () }.eraseToAnyPublisher()
+        let attachments = composer.$attachments
+            .removeDuplicates().dropFirst()
+            .map { _ in () }.eraseToAnyPublisher()
+        return Publishers.MergeMany([presented, submitting, attachments])
+            .eraseToAnyPublisher()
+    }
+
+    private var isActiveComposerPresented: Bool {
+        isSelected && composer.isPresented
+    }
+
+    private var composerAttachmentsBinding: Binding<[GhosttyPendingAttachment]> {
+        Binding(
+            get: { composer.attachments },
+            set: { composer.attachments = $0 }
+        )
+    }
+
     var body: some View {
+        let _ = composerRevision
+#if DEBUG
+        let _ = GhosttySurfaceScreenPerfProbe.recordBodyEval()
+#endif
         GeometryReader { screenProxy in
             let renderedKeyboardMode = inputCoordinator.keyboardMode
             let chrome = GhosttyPhoneChromeLayout(
@@ -149,6 +196,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             let terminalResponderFocusPolicy = GhosttyTerminalResponderFocusPolicy(
                 isSelected: isSelected,
                 keyboardMode: inputCoordinator.keyboardMode,
+                keyboardOwner: inputCoordinator.keyboardOwner,
                 isInputAvailable: interactionProjection.isInputAvailable,
                 isTransientInputOwnerPresented: isTransientInputOwnerPresented
             )
@@ -215,6 +263,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             isEnabled: terminalResponderFocusPolicy.isResponderEnabled,
                             wantsFirstResponder: terminalResponderFocusPolicy.wantsFirstResponder,
                             activationToken: inputCoordinator.terminalActivationToken,
+                            responderHandoff: keyboardResponderHandoff,
                             trackpadDriver: trackpadDriver,
                             keyboardAppearance: presentation.terminalTheme.terminalKeyboardAppearance,
                             sendText: sendTerminalText,
@@ -244,6 +293,29 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         )
                         .frame(width: 1, height: 1, alignment: .topLeading)
                         .allowsHitTesting(false)
+
+#if DEBUG
+                        if GhosttySurfaceScreenPerfProbe.isEnabled {
+                            GhosttySurfaceScreenBodyEvalMarker(
+                                value: GhosttySurfaceScreenPerfProbe.markerValue
+                            )
+                            .frame(width: 1, height: 1, alignment: .topLeading)
+                            .allowsHitTesting(false)
+
+                            GhosttyKeyboardContinuityAccessibilityMarker(
+                                owner: inputCoordinator.keyboardOwner,
+                                keyboardWillHideCount: uiTestKeyboardWillHideCount,
+                                liveViewportSize: liveTerminalViewportSize,
+                                effectiveViewportSize: terminalViewportSize,
+                                bottomChromeHeight: bottomChromeHeight,
+                                screenSafeAreaBottom: screenProxy.safeAreaInsets.bottom,
+                                isKeyboardTransitionActive: terminalViewportCoordinator.isKeyboardTransitionActive,
+                                isAwaitingSystemKeyboard: isAwaitingSystemKeyboardPresentation
+                            )
+                            .frame(width: 1, height: 1, alignment: .topLeading)
+                            .allowsHitTesting(false)
+                        }
+#endif
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .overlay {
@@ -330,49 +402,48 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 shortcutPaletteLayer()
             }
             .overlay(alignment: .bottom) {
-                attachmentTrayLayer()
-            }
-            .overlay(alignment: .bottom) {
-                pendingAttachmentLayer()
-            }
-            .overlay(alignment: .bottom) {
                 attachmentNoticeLayer()
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                GhosttyKeyboardChrome(
-                    keyboardMode: renderedKeyboardMode,
-                    isEnabled: interactionProjection.isInputAvailable,
-                    isCompact: chrome.isCompact,
-                    isControlArmed: terminalInputController.isControlArmed,
-                    selectedWindowIndex: interactionProjection.selectedWindowIndex,
-                    windowCount: interactionProjection.windowCount,
-                    selectedPaneIndex: interactionProjection.selectedPaneIndex,
-                    paneCount: interactionProjection.paneCount,
-                    isAttachmentControlActive: isAttachmentTrayPresented,
-                    isAttachmentControlEnabled: !hasPendingAttachments,
-                    pendingAttachmentCount: pendingAttachments.count,
-                    onShowSessions: onShowSessions,
-                    onShowLibrary: onShowLibrary,
-                    onShowWindows: showWindows,
-                    onShowPanes: showPanes,
-                    onShowAttachments: toggleAttachmentTray,
-                    onToggleKeyboard: toggleKeyboardChrome,
-                    onToggleControl: toggleControlModifier,
-                    onShowShortcuts: showShortcutPalette,
-                    sendKey: sendTerminalKeyEvent
-                )
-                .padding(.horizontal, chrome.surfaceHorizontalPadding)
-                .padding(.top, 4)
-                .padding(.bottom, chrome.bottomPadding)
-                .frame(maxWidth: .infinity, alignment: .bottom)
-                .background {
-                    GeometryReader { chromeProxy in
-                        Color.clear.preference(
-                            key: GhosttyBottomChromeHeightPreferenceKey.self,
-                            value: chromeProxy.size.height
-                        )
+                Color.clear
+                    .frame(height: GhosttyKeyboardChromeSizing.baselineHeight)
+                    .overlay(alignment: .bottom) {
+                        GhosttyKeyboardChrome(
+                            keyboardMode: renderedKeyboardMode,
+                            isEnabled: interactionProjection.isInputAvailable,
+                            isInteractionLocked: composerSubmissionState.isSending,
+                            isCompact: chrome.isCompact,
+                            isControlArmed: terminalInputController.isControlArmed,
+                            selectedWindowIndex: interactionProjection.selectedWindowIndex,
+                            windowCount: interactionProjection.windowCount,
+                            selectedPaneIndex: interactionProjection.selectedPaneIndex,
+                            paneCount: interactionProjection.paneCount,
+                            isComposerPresented: isActiveComposerPresented,
+                            onShowSessions: onShowSessions,
+                            onShowLibrary: onShowLibrary,
+                            onShowWindows: showWindows,
+                            onShowPanes: showPanes,
+                            onToggleComposer: toggleComposer,
+                            onToggleKeyboard: toggleKeyboardChrome,
+                            onToggleControl: toggleControlModifier,
+                            onShowShortcuts: showShortcutPalette,
+                            sendKey: sendTerminalKeyEvent
+                        ) {
+                            selectedComposerBar()
+                        }
                     }
-                }
+                    .padding(.horizontal, chrome.surfaceHorizontalPadding)
+                    .padding(.top, 4)
+                    .padding(.bottom, chrome.bottomPadding)
+                    .frame(maxWidth: .infinity, alignment: .bottom)
+                    .background {
+                        GeometryReader { chromeProxy in
+                            Color.clear.preference(
+                                key: GhosttyBottomChromeHeightPreferenceKey.self,
+                                value: chromeProxy.size.height
+                            )
+                        }
+                    }
             }
             .onPreferenceChange(GhosttyBottomChromeHeightPreferenceKey.self) { newHeight in
                 let normalizedHeight = GhosttyViewportSizing.normalizedHeight(newHeight)
@@ -389,6 +460,11 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { notification in
                 guard shouldHandleTerminalKeyboardNotification else { return }
+#if DEBUG
+                if ProcessInfo.processInfo.environment["REMUX_UI_TESTING"] == "1" {
+                    uiTestKeyboardWillHideCount += 1
+                }
+#endif
                 GhosttyRuntimeTrace.perf("kbd.willHide")
                 updateKeyboardVisibility(with: notification)
             }
@@ -446,11 +522,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     chromeStyle: presentation.terminalTheme.terminalChromeStyle
                 )
             }
-            .sheet(isPresented: $isAttachmentPreviewPresented) {
+            .sheet(item: $attachmentPreviewRequest) { request in
                 GhosttyAttachmentPreviewSheet(
-                    attachments: $pendingAttachments
+                    attachments: composerAttachmentsBinding,
+                    initiallySelectedAttachmentID: request.attachmentID
                 )
-                .presentationDetents([.medium, .large], selection: $attachmentPreviewDetent)
+                .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
                 .terminalSelectionSheetPresentationBackground()
                 .ghosttyTerminalChromePresentation(
@@ -480,16 +557,21 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 attachmentPhotoSelections = []
                 handleAttachmentPhotoSelection(items)
             }
-            .onChange(of: pendingAttachments) { _, attachments in
-                guard attachments.isEmpty else { return }
-                isAttachmentPreviewPresented = false
-            }
-            .onChange(of: isAttachmentPreviewPresented) { _, isPresented in
-                guard !isPresented else { return }
-                attachmentPreviewDetent = .medium
+            .onChange(of: composer.attachments) { _, attachments in
+                guard isSelected else { return }
+                composer.clearStatusMessage()
+                if attachments.isEmpty {
+                    attachmentPreviewRequest = nil
+                }
             }
             .onChange(of: interactionProjection.selectedActiveLeafID) { _, activeLeafID in
                 handleActiveLeafChange(activeLeafID)
+            }
+            .onReceive(composerUpdates) { _ in
+                composerRevision &+= 1
+#if DEBUG
+                GhosttySurfaceScreenPerfProbe.beginComposerUpdatePassIfNeeded()
+#endif
             }
             .onChange(of: interactionProjection.isInputAvailable) { _, isInputAvailable in
                 handleTerminalCoverInputAvailabilityChange(isInputAvailable)
@@ -547,15 +629,14 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         isSelected
             && !isShortcutsSettingsPresented
             && shortcutEditorRequest == nil
-            && !isAttachmentPreviewPresented
+            && attachmentPreviewRequest == nil
     }
 
     private var isAttachmentInputOwnerPresented: Bool {
         GhosttyAttachmentInputOwnerProjection(
-            isTrayPresented: isAttachmentTrayPresented,
             isPhotosPickerPresented: isAttachmentPhotosPickerPresented,
             isFileImporterPresented: isAttachmentFileImporterPresented,
-            isPreviewPresented: isAttachmentPreviewPresented
+            isPreviewPresented: attachmentPreviewRequest != nil
         ).isTransientInputOwnerPresented
     }
 
@@ -570,27 +651,58 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         )
     }
 
+    @ViewBuilder
+    private func selectedComposerBar() -> some View {
+        if isSelected {
+            GhosttyComposeBar(
+                composer: composer,
+                isTerminalInputAvailable: isTerminalInputAvailable,
+                wantsKeyboardFocus: inputCoordinator.keyboardMode == .system
+                    && inputCoordinator.keyboardOwner == .composer,
+                keyboardActivationToken: inputCoordinator.composerActivationToken,
+                keyboardResponderHandoff: keyboardResponderHandoff,
+                onKeyboardFocusRequest: handleComposerKeyboardFocusRequest,
+                onKeyboardResponderAttached: handleComposerKeyboardResponderAttached,
+                onChoosePhotos: openAttachmentPhotosPicker,
+                onChooseFiles: openAttachmentFilePicker,
+                onOpenAttachment: showPendingAttachmentPreview,
+                onRetryAttachment: retryPendingAttachment,
+                onRemoveAttachment: removePendingAttachment,
+                onPasteAttachment: handleComposerAttachmentPaste,
+                onStartDictation: startComposerDictation,
+                onCancelDictation: cancelComposerDictation,
+                onFinishDictation: finishComposerDictation,
+                onSend: submitComposer
+            )
+        }
+    }
+
     private var isTerminalInputAvailable: Bool {
         model.terminalInteractionProjection.isInputAvailable
+    }
+
+    private var composerSubmissionState: GhosttyComposeBarSubmissionState {
+        if composer.isSubmitting {
+            return .sending
+        }
+        return .composing(
+            canSend: isTerminalInputAvailable
+                && composer.hasContent
+                && composer.areAttachmentsReady
+        )
+    }
+
+    private var isAttachmentTransferInProgress: Bool {
+        composer.isSubmitting
     }
 
     private var isTerminalViewportFrozen: Bool {
         terminalViewportCoordinator.isFrozen
     }
 
-    private var hasPendingAttachments: Bool {
-        !pendingAttachments.isEmpty
-    }
-
-    private var canSendPendingAttachments: Bool {
-        !isAttachmentTransferInProgress
-            && !pendingAttachments.isEmpty
-            && pendingAttachments.allSatisfy { $0.transferSource != nil }
-    }
-
     private var pendingAttachmentInteractionProjection: GhosttyPendingAttachmentInteractionProjection {
         GhosttyPendingAttachmentInteractionProjection(
-            hasPreviewableAttachments: pendingAttachments.contains(where: \.isPreviewable),
+            hasPreviewableAttachments: composer.attachments.contains(where: \.isPreviewable),
             isTransferInProgress: isAttachmentTransferInProgress
         )
     }
@@ -626,7 +738,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             ]
         )
         let isInputAvailable = isTerminalInputAvailable
-        showSystemKeyboard()
+        if !isActiveComposerPresented {
+            showSystemKeyboard()
+        }
         GhosttyRuntimeTrace.flowEvent(
             "terminal.input",
             event: "ui.tap.surface.end",
@@ -659,7 +773,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func toggleKeyboardChrome() {
-        let isInputAvailable = isTerminalInputAvailable
+        let keyboardOwner: GhosttyKeyboardOwner =
+            isActiveComposerPresented ? .composer : .terminal
+        let isInputAvailable = isActiveComposerPresented || isTerminalInputAvailable
         GhosttyRuntimeTrace.flowBegin(
             "terminal.input",
             event: "ui.tap.keyboardToggle",
@@ -684,10 +800,107 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     _ = beginKeyboardViewportTransition(request)
                 },
                 applyKeyboardToggle: {
-                    inputCoordinator.toggleKeyboard(isInputAvailable: projection.isInputAvailable)
+                    inputCoordinator.toggleKeyboard(
+                        owner: keyboardOwner,
+                        isOwnerAvailable: projection.isInputAvailable
+                    )
                     return inputCoordinator.keyboardMode
                 },
                 completeTransition: completeKeyboardViewportTransition
+            )
+        }
+    }
+
+    private func toggleComposer() {
+        guard !composerSubmissionState.isSending else { return }
+
+        if isActiveComposerPresented {
+            closeComposer()
+        } else {
+            openComposer()
+        }
+    }
+
+    private func openComposer() {
+        withAnimation(GhosttyKeyboardChromeAnimation.composerTransition) {
+            composer.open()
+        }
+    }
+
+    private func closeComposer() {
+        if inputCoordinator.keyboardMode == .system,
+           inputCoordinator.keyboardOwner == .composer {
+            guard isTerminalInputAvailable,
+                  keyboardResponderHandoff.transfer(to: .terminal) else {
+                GhosttyRuntimeTrace.perf(
+                    "composer.toggle close deferred terminalResponderUnavailable"
+                )
+                return
+            }
+            inputCoordinator.transferKeyboardOwnerIfActive(
+                to: .terminal,
+                isOwnerAvailable: true
+            )
+        }
+
+        withAnimation(GhosttyKeyboardChromeAnimation.composerTransition) {
+            composer.close()
+        }
+    }
+
+    private func handleComposerKeyboardResponderAttached() {
+        guard isActiveComposerPresented,
+              inputCoordinator.keyboardMode == .system,
+              inputCoordinator.keyboardOwner == .terminal else { return }
+        guard keyboardResponderHandoff.transfer(to: .composer) else {
+            GhosttyRuntimeTrace.perf(
+                "composer.toggle open handoff deferred composerResponderUnavailable"
+            )
+            return
+        }
+        if inputCoordinator.keyboardOwner != .composer {
+            inputCoordinator.transferKeyboardOwnerIfActive(
+                to: .composer,
+                isOwnerAvailable: true
+            )
+        }
+    }
+
+    private func startComposerDictation() {
+        composer.startDictation()
+    }
+
+    private func cancelComposerDictation() {
+        composer.cancelDictation()
+    }
+
+    private func finishComposerDictation() {
+        composer.finishDictation()
+    }
+
+    private func handleComposerKeyboardFocusRequest() {
+        guard isActiveComposerPresented else { return }
+        guard inputCoordinator.keyboardMode != .system
+                || inputCoordinator.keyboardOwner != .composer else { return }
+        showComposerKeyboard()
+    }
+
+    private func showComposerKeyboard() {
+        performKeyboardChromeStateChange {
+            if inputCoordinator.keyboardMode == .hidden {
+                let projection = GhosttyKeyboardToggleProjection(
+                    keyboardMode: inputCoordinator.keyboardMode,
+                    isInputAvailable: true
+                )
+                if let request = keyboardViewportTransitionCoordinator.transitionRequest(
+                    forToggle: projection
+                ) {
+                    _ = beginKeyboardViewportTransition(request)
+                }
+            }
+            inputCoordinator.showSystemKeyboard(
+                owner: .composer,
+                isOwnerAvailable: true
             )
         }
     }
@@ -803,6 +1016,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func handleTerminalCoverInputAvailabilityChange(_ isInputAvailable: Bool) {
+        if !isInputAvailable {
+            composer.clearStatusMessage()
+        }
         guard terminalCoverPhase.isRestoringKeyboard else { return }
         guard isInputAvailable else {
             cancelTerminalCoverKeyboardRestoration(reason: "inputUnavailable")
@@ -874,6 +1090,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             actionEffect: actionEffect,
             activeLeafID: model.terminalInteractionProjection.selectedActiveLeafID,
             keyboardMode: inputCoordinator.keyboardMode,
+            keyboardOwner: inputCoordinator.keyboardOwner,
             apply: applyTopologyInputRefocusEffect,
             action: action
         )
@@ -958,51 +1175,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     @ViewBuilder
-    private func attachmentTrayLayer() -> some View {
-        if isAttachmentTrayPresented {
-            ZStack(alignment: .bottom) {
-                Color.clear
-                    .ignoresSafeArea()
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        dismissAttachmentTray()
-                    }
-
-                GhosttyAttachmentTray(
-                    onPhotosSelected: openAttachmentPhotosPicker,
-                    onFilesSelected: openAttachmentFilePicker,
-                    onPasteSelected: handleAttachmentPasteSelection
-                )
-                .padding(.horizontal, 18)
-                .padding(.bottom, 8)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-            .transition(.opacity)
-            .zIndex(1)
-        }
-    }
-
-    @ViewBuilder
-    private func pendingAttachmentLayer() -> some View {
-        if hasPendingAttachments, !isAttachmentTrayPresented {
-            GhosttyPendingAttachmentPreview(
-                attachments: pendingAttachments,
-                canSend: canSendPendingAttachments,
-                isSending: isAttachmentTransferInProgress,
-                sendUploadCount: attachmentTransferUploadCount,
-                sendProgress: attachmentTransferProgress,
-                onOpen: showPendingAttachmentPreview,
-                onSend: sendPendingAttachments,
-                onRemove: clearPendingAttachments
-            )
-            .padding(.horizontal, 18)
-            .padding(.bottom, 8)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
-            .zIndex(2)
-        }
-    }
-
-    @ViewBuilder
     private func attachmentNoticeLayer() -> some View {
         if let attachmentNotice {
             GhosttyAttachmentNoticeBanner(notice: attachmentNotice)
@@ -1013,280 +1185,74 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
     }
 
-    private func clearPendingAttachments() {
-        guard hasPendingAttachments, !isAttachmentTransferInProgress else { return }
-        let attachments = pendingAttachments
-        withAnimation(.easeOut(duration: 0.14)) {
-            pendingAttachments.removeAll()
-        }
-        GhosttyAttachmentStagingStore.cleanup(attachments)
-    }
-
-    private func showPendingAttachmentPreview() {
-        guard pendingAttachmentInteractionProjection.canOpenPreview else { return }
-        attachmentPreviewDetent = .medium
-        isAttachmentPreviewPresented = true
-    }
-
-    private func sendPendingAttachments() {
-        guard canSendPendingAttachments else {
-            presentAttachmentNotice("Attachment is still loading.")
-            return
-        }
-
-        guard isTerminalInputAvailable else {
-            presentAttachmentNotice("Terminal is not ready.")
-            return
-        }
-
-        guard let targetSurfaceID = model.terminalInteractionProjection.selectedActiveLeafID else {
-            presentAttachmentNotice("Terminal is not ready.")
-            return
-        }
-
-        let attachments = pendingAttachments
-        let job: GhosttyAttachmentTransferJob
-        do {
-            job = try GhosttyAttachmentTransferJobBuilder.job(
-                workspaceID: presentation.workspaceID,
-                attachments: attachments
-            )
-        } catch {
-            presentAttachmentNotice("Attachment is still loading.")
-            return
-        }
-
-        isAttachmentTransferInProgress = true
-        attachmentTransferUploadCount = job.uploadSourceCount
-        attachmentTransferProgress = nil
-        isAttachmentPreviewPresented = false
-        attachmentNotice = nil
-
-        Task {
-            let service = attachmentTransferServiceFactory()
-            do {
-                let result = try await service.transfer(job) { progress in
-                    await MainActor.run {
-                        attachmentTransferProgress = progress
-                    }
-                }
-                let insertionText = GhosttyAttachmentTerminalInsertionFormatter.insertionText(for: result)
-                await MainActor.run {
-                    completePendingAttachmentSend(
-                        insertionText: insertionText,
-                        attachments: attachments,
-                        targetSurfaceID: targetSurfaceID
-                    )
-                }
-            } catch {
-                await MainActor.run {
-                    handlePendingAttachmentSendFailure(error)
-                }
-            }
+    private func removePendingAttachment(_ id: GhosttyPendingAttachment.ID) {
+        _ = withAnimation(.easeOut(duration: 0.14)) {
+            composer.removeAttachment(id)
         }
     }
 
-    private func completePendingAttachmentSend(
-        insertionText: String,
-        attachments: [GhosttyPendingAttachment],
-        targetSurfaceID: UUID
-    ) {
-        isAttachmentTransferInProgress = false
-        attachmentTransferUploadCount = 0
-        attachmentTransferProgress = nil
-
-        guard !insertionText.isEmpty else {
-            presentAttachmentNotice("No attachment content to insert.")
+    private func showPendingAttachmentPreview(_ attachmentID: GhosttyPendingAttachment.ID) {
+        guard pendingAttachmentInteractionProjection.canOpenPreview,
+              composer.attachments.contains(where: {
+                  $0.id == attachmentID && $0.isPreviewable
+              }) else {
             return
         }
 
-        guard sendTerminalPaste(insertionText, to: targetSurfaceID) else {
-            presentAttachmentNotice("Could not insert attachment.")
-            return
-        }
-
-        withAnimation(.easeOut(duration: 0.14)) {
-            pendingAttachments.removeAll()
-            isAttachmentPreviewPresented = false
-        }
-        GhosttyAttachmentStagingStore.cleanup(attachments)
+        attachmentPreviewRequest = AttachmentPreviewRequest(attachmentID: attachmentID)
     }
 
-    private func handlePendingAttachmentSendFailure(_ error: Error) {
-        isAttachmentTransferInProgress = false
-        attachmentTransferUploadCount = 0
-        attachmentTransferProgress = nil
-        presentAttachmentNotice(pendingAttachmentSendFailureMessage(for: error))
-    }
-
-    private func pendingAttachmentSendFailureMessage(for error: Error) -> String {
-        guard let transferError = error as? GhosttyAttachmentTransferError else {
-            return "Attachment send failed."
-        }
-
-        switch transferError {
-        case .noSources, .localSourceUnavailable:
-            return "Attachment is not ready."
-        case .securityScopedSourceUnavailable:
-            return "File needs to be selected again."
-        case .remoteDirectoryCreationFailed:
-            return "Server could not create the upload folder."
-        case .uploadFailed, .remoteRenameFailed:
-            return "Server could not save the attachment."
-        case .remoteOperationTimedOut:
-            return "Connection stalled while uploading. Check network or VPN."
-        case .remotePathResolutionFailed:
-            return "Remux could not start the upload. Try again."
-        case .cancelled:
-            return "Attachment send cancelled."
-        case .terminalInsertionFailed:
-            return "Could not insert attachment."
-        }
+    private func retryPendingAttachment(_ attachmentID: GhosttyPendingAttachment.ID) {
+        composer.retryAttachment(attachmentID)
     }
 
     private func openAttachmentPhotosPicker() {
-        dismissAttachmentTray()
         isAttachmentPhotosPickerPresented = true
     }
 
     private func openAttachmentFilePicker() {
-        dismissAttachmentTray()
         isAttachmentFileImporterPresented = true
     }
 
     private func handleAttachmentPhotoSelection(_ items: [PhotosPickerItem]) {
-        let attachments = GhosttyPendingAttachment.mediaSelections(
-            contentTypes: items.map(\.supportedContentTypes)
-        )
-
-        guard !attachments.isEmpty else {
-            presentAttachmentNotice("No media selected.")
+        guard !items.isEmpty else {
+            presentAttachmentNotice("Couldn’t add the photos.")
             return
         }
 
         withAnimation(.easeOut(duration: 0.16)) {
-            replacePendingAttachments(attachments)
+            guard composer.addPhotoSelections(items) else {
+                presentAttachmentNotice("Couldn’t add the photos.")
+                return
+            }
             attachmentNotice = nil
         }
-
-        for (item, attachment) in zip(items, attachments) {
-            loadPhotoPreview(item, for: attachment)
-        }
-    }
-
-    private func loadPhotoPreview(_ item: PhotosPickerItem, for attachment: GhosttyPendingAttachment) {
-        let attachmentID = attachment.id
-
-        guard item.supportedContentTypes.contains(where: { $0.conforms(to: .image) }) else {
-            updatePendingAttachment(
-                id: attachmentID,
-                detail: "Preview unavailable"
-            )
-            return
-        }
-
-        Task {
-            do {
-                guard let transfer = try await item.loadTransferable(
-                    type: GhosttyPhotoPickerTransfer.self
-                ) else {
-                    await MainActor.run {
-                        updatePendingAttachment(
-                            id: attachmentID,
-                            detail: "Preview unavailable"
-                        )
-                    }
-                    return
-                }
-
-                let stagedURL = try await GhosttyAttachmentStagingStore.renameStagedFile(
-                    transfer.stagedURL,
-                    filename: GhosttyAttachmentStagingStore.imageFilename(
-                        title: attachment.title,
-                        contentTypes: item.supportedContentTypes,
-                        uniqueID: attachment.id
-                    )
-                )
-                guard let photo = await GhosttyPendingAttachment.photo(
-                    title: attachment.title,
-                    stagedFileURL: stagedURL
-                ) else {
-                    await MainActor.run {
-                        updatePendingAttachment(
-                            id: attachmentID,
-                            detail: "Preview unavailable"
-                        )
-                    }
-                    return
-                }
-
-                let didApply = await MainActor.run { () -> Bool in
-                    guard pendingAttachments.contains(where: { $0.id == attachmentID }) else {
-                        return false
-                    }
-                    updatePendingAttachment(
-                        id: attachmentID,
-                        payload: photo.payload,
-                        previewPayload: photo.previewPayload,
-                        detail: photo.detail
-                    )
-                    return true
-                }
-                if !didApply {
-                    GhosttyAttachmentStagingStore.cleanupSynchronously([stagedURL])
-                }
-            } catch {
-                await MainActor.run {
-                    updatePendingAttachment(
-                        id: attachmentID,
-                        detail: "Preview unavailable"
-                    )
-                }
-            }
-        }
-    }
-
-    private func updatePendingAttachment(
-        id: UUID,
-        payload: GhosttyAttachmentPayload? = nil,
-        previewPayload: GhosttyAttachmentPreviewPayload? = nil,
-        detail: String
-    ) {
-        guard let index = pendingAttachments.firstIndex(where: { $0.id == id }) else { return }
-        pendingAttachments[index] = pendingAttachments[index].updating(
-            payload: payload,
-            previewPayload: previewPayload,
-            detail: detail
-        )
     }
 
     private func handleAttachmentFileSelection(_ result: Result<[URL], Error>) {
         switch result {
         case .success(let urls):
             guard !urls.isEmpty else {
-                presentAttachmentNotice("No file selected.")
+                presentAttachmentNotice("Couldn’t add the file.")
                 return
             }
 
             Task {
                 do {
-                    let attachments = try await Task.detached(priority: .utility) {
-                        try GhosttyPendingAttachment.securityScopedFiles(urls: urls)
-                    }.value
+                    let didAdd = try await composer.addSecurityScopedFiles(urls)
                     await MainActor.run {
-                        guard !attachments.isEmpty else {
-                            presentAttachmentNotice("No file selected.")
+                        guard didAdd else {
+                            presentAttachmentNotice("Couldn’t add the file.")
                             return
                         }
 
                         withAnimation(.easeOut(duration: 0.16)) {
-                            replacePendingAttachments(attachments)
                             attachmentNotice = nil
                         }
                     }
                 } catch {
                     await MainActor.run {
-                        presentAttachmentNotice("File selection failed.")
+                        presentAttachmentNotice("Couldn’t add the file.")
                     }
                 }
             }
@@ -1295,70 +1261,38 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             guard !(nsError.domain == NSCocoaErrorDomain && nsError.code == NSUserCancelledError) else {
                 return
             }
-            presentAttachmentNotice("File selection failed.")
+            presentAttachmentNotice("Couldn’t add the file.")
         }
     }
 
-    private func handleAttachmentPasteSelection() {
-        let snapshot = GhosttyAttachmentPasteboardSnapshot.current()
-        if snapshot.hasImages {
-            let attachment = GhosttyPendingAttachment.pasteboardImagePlaceholder()
+    private func handleComposerAttachmentPaste() -> Bool {
+        let pasteboard = UIPasteboard.general
+
+        if pasteboard.hasImages {
+            guard let request = GhosttyAttachmentPasteboardSnapshot.currentImageProviderRequest()
+            else {
+                presentAttachmentNotice("Couldn’t paste the image.")
+                return false
+            }
             withAnimation(.easeOut(duration: 0.16)) {
-                replacePendingAttachments([attachment])
-                isAttachmentTrayPresented = false
+                composer.addPastedImage(request)
                 attachmentNotice = nil
             }
-            loadPasteboardImageAttachment(for: attachment.id)
-            return
+            return true
         }
 
-        let attachments = snapshot.pendingAttachments
-        guard !attachments.isEmpty else {
-            dismissAttachmentTray()
-            presentAttachmentNotice(snapshot.emptyPasteMessage)
-            return
+        if let url = pasteboard.url, url.isFileURL {
+            stagePastedFile(url)
+            return true
         }
 
+        return false
+    }
+
+    private func stagePastedFile(_ url: URL) {
         withAnimation(.easeOut(duration: 0.16)) {
-            replacePendingAttachments(attachments)
-            isAttachmentTrayPresented = false
+            composer.addPastedFile(url)
             attachmentNotice = nil
-        }
-    }
-
-    private func replacePendingAttachments(_ attachments: [GhosttyPendingAttachment]) {
-        let oldAttachments = pendingAttachments
-        pendingAttachments = attachments
-        GhosttyAttachmentStagingStore.cleanup(oldAttachments)
-    }
-
-    private func loadPasteboardImageAttachment(for attachmentID: UUID) {
-        Task {
-            let attachment = await GhosttyAttachmentPasteboardSnapshot.currentImageAttachment()
-
-            let didApply = await MainActor.run { () -> Bool in
-                guard pendingAttachments.contains(where: { $0.id == attachmentID }) else {
-                    return false
-                }
-                guard let attachment else {
-                    updatePendingAttachment(
-                        id: attachmentID,
-                        detail: "Preview unavailable"
-                    )
-                    return true
-                }
-
-                updatePendingAttachment(
-                    id: attachmentID,
-                    payload: attachment.payload,
-                    previewPayload: attachment.previewPayload,
-                    detail: "Image"
-                )
-                return true
-            }
-            if !didApply, let attachment {
-                GhosttyAttachmentStagingStore.cleanup([attachment])
-            }
         }
     }
 
@@ -1384,28 +1318,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func showShortcutPalette() {
         terminalInputController.clearControl()
-        dismissAttachmentTray()
         isShortcutPalettePresented = true
-    }
-
-    private func toggleAttachmentTray() {
-        terminalInputController.clearControl()
-        isShortcutPalettePresented = false
-
-        if isAttachmentTrayPresented {
-            dismissAttachmentTray()
-        } else {
-            withAnimation(.easeOut(duration: 0.16)) {
-                isAttachmentTrayPresented = true
-            }
-        }
-    }
-
-    private func dismissAttachmentTray() {
-        guard isAttachmentTrayPresented else { return }
-        withAnimation(.easeOut(duration: 0.14)) {
-            isAttachmentTrayPresented = false
-        }
     }
 
     private func executeShortcut(_ shortcut: Shortcut) {
@@ -1428,6 +1341,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func showWindows() {
+        guard !isAttachmentTransferInProgress else { return }
         guard let projection = model.windowSheetPresentationProjection() else { return }
         GhosttyRuntimeTrace.flowEventIfActive("tmux.newWindow", event: "ui.showWindows")
         applySelectionSheetPresentation(
@@ -1466,6 +1380,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func showPanes() {
+        guard !isAttachmentTransferInProgress else { return }
         guard let projection = model.selectedPaneSheetPresentationProjection() else { return }
         GhosttyRuntimeTrace.flowEventIfActive("tmux.splitPane", event: "ui.showPanes")
 
@@ -1590,11 +1505,85 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         )
     }
 
-    private func sendTerminalPaste(_ text: String, to surfaceID: UUID) -> Bool {
-        terminalInputController.performPaste(
-            text,
-            submitPendingPrefix: submitTerminalText(_:),
-            sendPaste: { model.sendPaste($0, to: surfaceID).isAccepted }
+    private func submitComposer() {
+        let interaction = model.terminalInteractionProjection
+        guard interaction.isInputAvailable,
+              let surfaceID = interaction.selectedActiveLeafID else {
+            composer.statusMessage = "Couldn’t send. Message kept."
+            return
+        }
+
+        attachmentPreviewRequest = nil
+        attachmentNotice = nil
+        let selectedWindowName = model.windowSelectionSheetRenderProjection()
+            .windows.first(where: \.isSelected)?.displayName
+        composer.submit(
+            to: GhosttyComposerSubmissionDestination(
+                workspaceID: presentation.workspaceID,
+                surfaceID: surfaceID,
+                destinationLabel: GhosttyComposerSubmissionDestination.label(
+                    sessionName: presentation.sessionName,
+                    windowName: selectedWindowName
+                ),
+                makeAttachmentTransferService: attachmentTransferServiceFactory,
+                prepareTerminalInput: {
+                    terminalInputController.clearControl()
+                    scrollComposerDestinationToBottom(surfaceID)
+                },
+                sendPaste: { text in
+                    await sendTerminalPaste(text, to: surfaceID)
+                },
+                sendEnter: {
+                    await sendComposerEnter(to: surfaceID)
+                }
+            )
+        )
+    }
+
+    private func sendTerminalPaste(_ text: String, to surfaceID: UUID) async -> Bool {
+        let action = terminalInputController.receivePaste(text)
+        if let pendingPrefixInput = action.pendingPrefixInput {
+            _ = submitTerminalText(pendingPrefixInput)
+        }
+        return await model.sendPasteAwaitingCommandCompletion(
+            action.text,
+            to: surfaceID
+        )
+    }
+
+    private func sendComposerEnter(to surfaceID: UUID) async -> Bool {
+        let keyCode = GhosttySurfaceKeyEvent.KeyCode.enter
+        let start = GhosttyRuntimeTrace.nowNanos()
+        let pressDelivered = await model.sendKeyEventAwaitingCommandCompletion(
+            GhosttySurfaceKeyEvent(action: .press, keyCode: keyCode),
+            to: surfaceID
+        )
+        guard pressDelivered else {
+            GhosttyRuntimeTrace.perf(
+                "composer.sendEnter delivered=false elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
+            )
+            return false
+        }
+
+        _ = model.sendKeyEvent(
+            GhosttySurfaceKeyEvent(action: .release, keyCode: keyCode),
+            to: surfaceID
+        )
+        GhosttyRuntimeTrace.perf(
+            "composer.sendEnter delivered=true elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: start))"
+        )
+        return true
+    }
+
+    private func scrollComposerDestinationToBottom(_ surfaceID: UUID) {
+        guard let surface = model.terminalManagedSurfaceLookup.managedSurface(for: surfaceID) else {
+            return
+        }
+        surface.refreshInteractionState()
+        guard surface.scrollRoute == .viewport else { return }
+        _ = surface.scrollToPosition(
+            row: surface.scrollState.maxRow,
+            cellOffset: 0
         )
     }
 
@@ -2090,19 +2079,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 }
 
-private struct GhosttyPhotoPickerTransfer: Transferable, Sendable {
-    let stagedURL: URL
-
-    static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(importedContentType: .image) { receivedFile in
-            let stagedURL = try await GhosttyAttachmentStagingStore.stageFileURL(
-                receivedFile.file
-            )
-            return GhosttyPhotoPickerTransfer(stagedURL: stagedURL)
-        }
-    }
-}
-
 private struct GhosttyTerminalScreenAccessibilityMarker: View {
     var body: some View {
         Color.clear
@@ -2125,6 +2101,107 @@ private struct GhosttyTerminalInputReadyAccessibilityMarker: View {
         }
     }
 }
+
+#if DEBUG
+/// UI-test-only probe quantifying how often the selected terminal screen's
+/// body re-evaluates and how much main-thread time each composer-driven
+/// update pass consumes (invalidation through the end of the run-loop
+/// iteration, which covers every body evaluation plus commit for that pass).
+@MainActor
+enum GhosttySurfaceScreenPerfProbe {
+    static let isEnabled = ProcessInfo.processInfo.environment["REMUX_UI_TESTING"] == "1" ||
+        ProcessInfo.processInfo.environment["REMUX_TRACE_COMPOSER_PERF"] == "1"
+
+    private(set) static var bodyEvalCount: UInt64 = 0
+    private(set) static var barEvalCount: UInt64 = 0
+    private(set) static var updatePassCount: UInt64 = 0
+    private(set) static var updatePassTotalNanos: UInt64 = 0
+    private static var pendingPass: (startedAt: UInt64, evalsAtStart: UInt64)?
+
+    static func recordBodyEval() {
+        guard isEnabled else { return }
+        bodyEvalCount &+= 1
+    }
+
+    static func recordBarEval() {
+        guard isEnabled else { return }
+        barEvalCount &+= 1
+    }
+
+    static func beginComposerUpdatePassIfNeeded() {
+        guard isEnabled, pendingPass == nil else { return }
+        pendingPass = (GhosttyRuntimeTrace.nowNanos(), bodyEvalCount)
+        DispatchQueue.main.async {
+            finishComposerUpdatePass()
+        }
+    }
+
+    private static func finishComposerUpdatePass() {
+        guard let pass = pendingPass else { return }
+        pendingPass = nil
+        let elapsedNanos = GhosttyRuntimeTrace.nowNanos() - pass.startedAt
+        updatePassCount &+= 1
+        updatePassTotalNanos &+= elapsedNanos
+        GhosttyRuntimeTrace.perf(
+            "composer.updatePass evals=\(bodyEvalCount - pass.evalsAtStart) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: pass.startedAt))"
+        )
+    }
+
+    static var markerValue: String {
+        let totalMs = Double(updatePassTotalNanos) / 1_000_000
+        return "evals=\(bodyEvalCount);barEvals=\(barEvalCount);"
+            + "passes=\(updatePassCount);"
+            + "passMs=\(String(format: "%.3f", totalMs))"
+    }
+}
+
+private struct GhosttySurfaceScreenBodyEvalMarker: View {
+    let value: String
+
+    var body: some View {
+        Color.clear
+            .accessibilityElement()
+            .accessibilityLabel("Body eval probe")
+            .accessibilityValue(value)
+            .accessibilityIdentifier("terminal.perf.bodyEvals")
+    }
+}
+
+private struct GhosttyKeyboardContinuityAccessibilityMarker: View {
+    let owner: GhosttyKeyboardOwner
+    let keyboardWillHideCount: Int
+    let liveViewportSize: CGSize
+    let effectiveViewportSize: CGSize
+    let bottomChromeHeight: CGFloat
+    let screenSafeAreaBottom: CGFloat
+    let isKeyboardTransitionActive: Bool
+    let isAwaitingSystemKeyboard: Bool
+
+    private var ownerLabel: String {
+        switch owner {
+        case .none: "none"
+        case .terminal: "terminal"
+        case .composer: "composer"
+        }
+    }
+
+    var body: some View {
+        Color.clear
+            .accessibilityElement()
+            .accessibilityLabel("Keyboard continuity")
+            .accessibilityValue(
+                "owner=\(ownerLabel);willHide=\(keyboardWillHideCount);"
+                    + "liveViewport=\(liveViewportSize.traceLabel);"
+                    + "effectiveViewport=\(effectiveViewportSize.traceLabel);"
+                    + "bottomChrome=\(bottomChromeHeight.traceLabel);"
+                    + "safeAreaBottom=\(screenSafeAreaBottom.traceLabel);"
+                    + "transitionActive=\(isKeyboardTransitionActive);"
+                    + "awaitingSystemKeyboard=\(isAwaitingSystemKeyboard)"
+            )
+            .accessibilityIdentifier("terminal.keyboard.continuity")
+    }
+}
+#endif
 
 private struct GhosttyBottomChromeHeightPreferenceKey: PreferenceKey {
     static let defaultValue: CGFloat = 0

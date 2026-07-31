@@ -26,10 +26,12 @@ struct RootView: View {
 
 private struct RemuxRootContentView: View {
     @StateObject private var model: RemuxRootModel
+    @State private var composer: GhosttyComposerModel
     @State private var shortcutStore: ShortcutStore
 
     init(dependencies: RemuxAppDependencies) {
         _model = StateObject(wrappedValue: RemuxRootModel(dependencies: dependencies))
+        _composer = State(initialValue: GhosttyComposerModel())
         _shortcutStore = State(
             initialValue: ShortcutStore(repository: dependencies.shortcutRepository)
         )
@@ -46,7 +48,11 @@ private struct RemuxRootContentView: View {
                 }
 
         case .library, .setup, .terminal:
-            RemuxWorkspaceShell(model: model, shortcutStore: shortcutStore)
+            RemuxWorkspaceShell(
+                model: model,
+                composer: composer,
+                shortcutStore: shortcutStore
+            )
 
         case .failed(let message):
             FailureView(message: message)
@@ -57,6 +63,7 @@ private struct RemuxRootContentView: View {
 private struct RemuxWorkspaceShell: View {
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var model: RemuxRootModel
+    let composer: GhosttyComposerModel
     let shortcutStore: ShortcutStore
     @State private var retainedTerminalID: SavedWorkspace.ID?
     @State private var isSessionSwitcherPresented = false
@@ -70,11 +77,17 @@ private struct RemuxWorkspaceShell: View {
             model.handleAppLifecyclePhase(
                 RemuxAppLifecycleProjection(scenePhase: scenePhase).appLifecyclePhase
             )
+            if scenePhase == .background {
+                composer.stopDictationImmediately()
+            }
         }
         .onChange(of: scenePhase) { _, newPhase in
             model.handleAppLifecyclePhase(
                 RemuxAppLifecycleProjection(scenePhase: newPhase).appLifecyclePhase
             )
+            if newPhase == .background {
+                composer.stopDictationImmediately()
+            }
         }
         .onChange(of: selectedTerminalID) { _, newValue in
             guard let newValue else { return }
@@ -143,6 +156,7 @@ private struct RemuxWorkspaceShell: View {
                     entry: entry,
                     isSelected: isSelected,
                     isAppSheetPresented: isSessionSwitcherPresented && isSelected,
+                    composer: composer,
                     shortcutStore: shortcutStore,
                     onReconnect: {
                         model.reconnectActiveSession(entry.id, source: .manualButton)
@@ -319,6 +333,7 @@ private struct ActiveTerminalSessionView: View {
     let entry: ActiveTerminalScreenEntry
     let isSelected: Bool
     let isAppSheetPresented: Bool
+    let composer: GhosttyComposerModel
     let shortcutStore: ShortcutStore
     let onReconnect: () -> Void
     let onUpdateCredentials: () -> Void
@@ -333,6 +348,7 @@ private struct ActiveTerminalSessionView: View {
         entry: ActiveTerminalScreenEntry,
         isSelected: Bool,
         isAppSheetPresented: Bool,
+        composer: GhosttyComposerModel,
         shortcutStore: ShortcutStore,
         onReconnect: @escaping () -> Void,
         onUpdateCredentials: @escaping () -> Void,
@@ -344,6 +360,7 @@ private struct ActiveTerminalSessionView: View {
         self.entry = entry
         self.isSelected = isSelected
         self.isAppSheetPresented = isAppSheetPresented
+        self.composer = composer
         self.shortcutStore = shortcutStore
         self.onReconnect = onReconnect
         self.onUpdateCredentials = onUpdateCredentials
@@ -365,6 +382,7 @@ private struct ActiveTerminalSessionView: View {
                 model: entry.model.terminalScreenAdapter,
                 presentation: entry.presentation,
                 isSelected: isSelected,
+                composer: composer,
                 isTerminalCovered: isAppSheetPresented || previewSession.isPresented,
                 shortcutStore: shortcutStore,
                 attachmentTransferServiceFactory: entry.attachmentTransferServiceFactory,

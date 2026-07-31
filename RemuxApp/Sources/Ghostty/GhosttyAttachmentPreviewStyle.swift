@@ -1,11 +1,20 @@
 import SwiftUI
 import UIKit
 
-struct GhosttyAttachmentPreviewDoneButtonStyle: ButtonStyle {
+enum GhosttyAttachmentSurfaceStyle {
+    static let panelGlassTint = Color.primary.opacity(0.055)
+    static let panelGlassStroke = Color.primary.opacity(0.14)
+    static let panelGlassShadow = Color.black.opacity(0.16)
+    static let fallbackPanelFill = Color(uiColor: .secondarySystemBackground).opacity(0.72)
+    static let fallbackPanelStroke = Color.primary.opacity(0.08)
+    static let fallbackShadow = Color.black.opacity(0.20)
+}
+
+struct GhosttyAttachmentPreviewCloseButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundStyle(GhosttySheetPalette.primary)
-            .ghosttyAttachmentPreviewDoneButtonSurface(isPressed: configuration.isPressed)
+            .ghosttyAttachmentPreviewCloseButtonSurface(isPressed: configuration.isPressed)
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
@@ -34,7 +43,7 @@ struct GhosttyAttachmentPreviewActionButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundStyle(foreground)
-            .ghosttyAttachmentPreviewOverlayActionSurface(isPressed: configuration.isPressed)
+            .ghosttyAttachmentPreviewActionSurface(isPressed: configuration.isPressed)
             .scaleEffect(configuration.isPressed ? 0.94 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
@@ -53,7 +62,7 @@ enum GhosttyAttachmentPreviewStyle {
 }
 
 extension View {
-    func ghosttyAttachmentPreviewDoneButtonSurface(isPressed: Bool) -> some View {
+    func ghosttyAttachmentPreviewCloseButtonSurface(isPressed: Bool) -> some View {
         let shape = Capsule()
 
         return self
@@ -122,34 +131,19 @@ extension View {
             .contentShape(shape)
     }
 
-    @ViewBuilder
-    func ghosttyAttachmentPreviewOverlayActionSurface(isPressed: Bool) -> some View {
+    func ghosttyAttachmentPreviewActionSurface(isPressed: Bool) -> some View {
         let shape = Circle()
 
-        if #available(iOS 26.0, *) {
-            self
-                .glassEffect(
-                    .regular
-                        .tint(GhosttyAttachmentTrayStyle.panelGlassTint)
-                        .interactive(),
-                    in: shape
-                )
-                .overlay {
-                    shape.strokeBorder(GhosttyAttachmentTrayStyle.panelGlassStroke, lineWidth: 0.75)
-                }
-                .shadow(color: GhosttyAttachmentTrayStyle.panelGlassShadow, radius: 12, y: 7)
-                .contentShape(shape)
-        } else {
-            self
-                .background(.regularMaterial, in: shape)
-                .background {
-                    shape.fill(isPressed ? GhosttyAttachmentPreviewStyle.controlPressedFill : GhosttyAttachmentPreviewStyle.controlFill)
-                }
-                .overlay {
-                    shape.strokeBorder(GhosttyAttachmentPreviewStyle.controlStroke, lineWidth: 0.75)
-                }
-                .shadow(color: GhosttyAttachmentTrayStyle.fallbackShadow, radius: 12, y: 7)
-                .contentShape(shape)
-        }
+        return self
+            .background(
+                isPressed
+                    ? GhosttyAttachmentPreviewStyle.controlPressedFill
+                    : GhosttyAttachmentPreviewStyle.controlFill,
+                in: shape
+            )
+            .overlay {
+                shape.strokeBorder(GhosttyAttachmentPreviewStyle.controlStroke, lineWidth: 1)
+            }
+            .contentShape(shape)
     }
 }
