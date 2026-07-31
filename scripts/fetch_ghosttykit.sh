@@ -13,6 +13,9 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Must match the framework path in project.yml.
 framework_parent="$repo_root/../ghostty-remux-upstream-rebuild/macos"
 framework_path="$framework_parent/GhosttyKit.xcframework"
+# Written by this script and build_release_ghosttykit.sh so an installed
+# framework can be matched against the pinned release above.
+provenance_path="$framework_parent/.ghosttykit-provenance"
 
 force=0
 if [[ "${1:-}" == "--force" ]]; then
@@ -23,10 +26,34 @@ elif [[ -n "${1:-}" ]]; then
 fi
 
 if [[ -d "$framework_path" && "$force" -ne 1 ]]; then
-  echo "GhosttyKit.xcframework already present at:"
-  echo "  $framework_path"
-  echo "Re-run with --force to replace it with release $release_tag."
-  exit 0
+  installed_kind=""
+  installed_ref=""
+  installed_sha=""
+  if [[ -f "$provenance_path" ]]; then
+    read -r installed_kind installed_ref installed_sha <"$provenance_path" || true
+  fi
+
+  if [[ "$installed_kind" == "release" &&
+    "$installed_ref" == "$release_tag" &&
+    "$installed_sha" == "$asset_sha256" ]]; then
+    echo "GhosttyKit release $release_tag already installed at:"
+    echo "  $framework_path"
+    exit 0
+  fi
+
+  if [[ "$installed_kind" == "release" ]]; then
+    echo "Installed GhosttyKit ($installed_ref) does not match pinned release $release_tag; reinstalling."
+  else
+    echo "Keeping existing GhosttyKit at:"
+    echo "  $framework_path"
+    if [[ "$installed_kind" == "local-build" ]]; then
+      echo "It was built locally from $installed_ref; the pinned release is $release_tag."
+    else
+      echo "It has no provenance record; the pinned release is $release_tag."
+    fi
+    echo "Re-run with --force to replace it with release $release_tag."
+    exit 0
+  fi
 fi
 
 workdir="$(mktemp -d)"
@@ -47,6 +74,7 @@ fi
 
 echo "Installing to $framework_path"
 mkdir -p "$framework_parent"
+rm -f "$provenance_path"
 rm -rf "$framework_path"
 ditto -x -k "$zip_path" "$framework_parent"
 
@@ -54,5 +82,7 @@ if [[ ! -d "$framework_path" ]]; then
   echo "Archive did not contain GhosttyKit.xcframework at its root." >&2
   exit 1
 fi
+
+printf 'release %s %s\n' "$release_tag" "$asset_sha256" >"$provenance_path"
 
 echo "Done. Generate the project with 'xcodegen generate' and build."
