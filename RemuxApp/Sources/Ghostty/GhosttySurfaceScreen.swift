@@ -1515,10 +1515,16 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
         attachmentPreviewRequest = nil
         attachmentNotice = nil
+        let selectedWindowName = model.windowSelectionSheetRenderProjection()
+            .windows.first(where: \.isSelected)?.displayName
         composer.submit(
             to: GhosttyComposerSubmissionDestination(
                 workspaceID: presentation.workspaceID,
                 surfaceID: surfaceID,
+                destinationLabel: GhosttyComposerSubmissionDestination.label(
+                    sessionName: presentation.sessionName,
+                    windowName: selectedWindowName
+                ),
                 makeAttachmentTransferService: attachmentTransferServiceFactory,
                 prepareTerminalInput: {
                     terminalInputController.clearControl()

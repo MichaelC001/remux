@@ -99,6 +99,7 @@ final class GhosttyComposerSubmissionControllerTests: XCTestCase {
         let destination = GhosttyComposerSubmissionDestination(
             workspaceID: UUID(),
             surfaceID: UUID(),
+            destinationLabel: nil,
             makeAttachmentTransferService: {
                 XCTFail("Text-only submission must not create an attachment service")
                 return FailingComposerAttachmentTransferService()
@@ -135,6 +136,7 @@ final class GhosttyComposerSubmissionControllerTests: XCTestCase {
         let destination = GhosttyComposerSubmissionDestination(
             workspaceID: UUID(),
             surfaceID: UUID(),
+            destinationLabel: nil,
             makeAttachmentTransferService: {
                 FailingComposerAttachmentTransferService()
             },
@@ -152,6 +154,59 @@ final class GhosttyComposerSubmissionControllerTests: XCTestCase {
         XCTAssertEqual(enterCount, 0)
         XCTAssertEqual(composer.draft, "Keep this")
         XCTAssertEqual(composer.statusMessage, "Couldn’t send. Message kept.")
+    }
+
+    @MainActor
+    func testUnconfirmedEnterNamesDestinationInStatus() async {
+        let composer = GhosttyComposerModel()
+        composer.draft = "Run the tests"
+        let destination = GhosttyComposerSubmissionDestination(
+            workspaceID: UUID(),
+            surfaceID: UUID(),
+            destinationLabel: "mini: claude",
+            makeAttachmentTransferService: {
+                FailingComposerAttachmentTransferService()
+            },
+            prepareTerminalInput: {},
+            sendPaste: { _ in true },
+            sendEnter: { false }
+        )
+
+        composer.submit(to: destination)
+        await waitUntil { !composer.isSubmitting }
+
+        XCTAssertEqual(composer.draft, "")
+        XCTAssertEqual(
+            composer.statusMessage,
+            "Couldn’t finish sending. Check “mini: claude”."
+        )
+    }
+
+    func testDestinationLabelJoinsClampsAndFallsBack() {
+        XCTAssertEqual(
+            GhosttyComposerSubmissionDestination.label(
+                sessionName: "mini",
+                windowName: "claude"
+            ),
+            "mini: claude"
+        )
+        XCTAssertEqual(
+            GhosttyComposerSubmissionDestination.label(
+                sessionName: nil,
+                windowName: "claude"
+            ),
+            "claude"
+        )
+        XCTAssertNil(
+            GhosttyComposerSubmissionDestination.label(sessionName: "  ", windowName: nil)
+        )
+        XCTAssertEqual(
+            GhosttyComposerSubmissionDestination.label(
+                sessionName: "api-server-production",
+                windowName: "claude-code"
+            ),
+            "api-ser…de-code"
+        )
     }
 
     func testUploadedAttachmentAndDraftCanBeginSubmission() {

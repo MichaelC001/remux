@@ -22,10 +22,29 @@ private struct GhosttyPhotoPickerTransfer: Transferable, Sendable {
 struct GhosttyComposerSubmissionDestination {
     let workspaceID: UUID
     let surfaceID: UUID
+    /// Recognition hint for the half-delivered status, quoting the same
+    /// names the switcher and windows sheet display. Nil when unavailable.
+    let destinationLabel: String?
     let makeAttachmentTransferService: @Sendable () -> any GhosttyAttachmentTransferService
     let prepareTerminalInput: () -> Void
     let sendPaste: (String) async -> Bool
     let sendEnter: () async -> Bool
+
+    nonisolated static func label(sessionName: String?, windowName: String?) -> String? {
+        let parts = [sessionName, windowName]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !parts.isEmpty else { return nil }
+        return clampedMiddle(parts.joined(separator: ": "), maxLength: 15)
+    }
+
+    private nonisolated static func clampedMiddle(_ text: String, maxLength: Int) -> String {
+        guard text.count > maxLength else { return text }
+        let keep = maxLength - 1
+        let head = text.prefix((keep + 1) / 2)
+        let tail = text.suffix(keep / 2)
+        return "\(head)…\(tail)"
+    }
 }
 
 @MainActor
@@ -313,20 +332,20 @@ final class GhosttyComposerModel: ObservableObject {
 
         let didPaste = await destination.sendPaste(message)
         guard didPaste else {
-            finishDelivery(.pasteRejected, session: session)
+            finishDelivery(.pasteRejected, session: session, destination: destination)
             return
         }
 
         do {
             try await Task.sleep(for: Self.pasteSettlementDelay)
         } catch {
-            finishDelivery(.pastedAwaitingSubmit, session: session)
+            finishDelivery(.pastedAwaitingSubmit, session: session, destination: destination)
             return
         }
 
         let result: GhosttyComposerSubmissionController.DraftResult =
             await destination.sendEnter() ? .submitted : .pastedAwaitingSubmit
-        finishDelivery(result, session: session)
+        finishDelivery(result, session: session, destination: destination)
     }
 
     private func finishBeforeDelivery(status: String?) {
@@ -338,7 +357,8 @@ final class GhosttyComposerModel: ObservableObject {
 
     private func finishDelivery(
         _ proposedResult: GhosttyComposerSubmissionController.DraftResult,
-        session: GhosttyComposerSessionState
+        session: GhosttyComposerSessionState,
+        destination: GhosttyComposerSubmissionDestination
     ) {
         var controller = submissionController
         let result = controller.finishSubmission(proposedResult)
@@ -361,7 +381,11 @@ final class GhosttyComposerModel: ObservableObject {
         case .submitted:
             statusMessage = nil
         case .pastedAwaitingSubmit:
-            statusMessage = "Couldn’t finish sending. Check the terminal."
+            if let label = destination.destinationLabel {
+                statusMessage = "Couldn’t finish sending. Check “\(label)”."
+            } else {
+                statusMessage = "Couldn’t finish sending. Check the terminal."
+            }
         }
     }
 
