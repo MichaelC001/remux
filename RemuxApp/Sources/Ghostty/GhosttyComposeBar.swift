@@ -168,18 +168,15 @@ private struct GhosttyComposerInputLayout: Layout {
 struct GhosttyComposeBar: View {
     @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
 
-    @Binding var text: String
-    @Binding var attachments: [GhosttyPendingAttachment]
+    // The bar observes the composer directly so draft keystrokes and
+    // dictation updates re-render only this subtree, not the terminal
+    // screen that hosts it.
+    @ObservedObject var composer: GhosttyComposerModel
+    let isTerminalInputAvailable: Bool
 
     let wantsKeyboardFocus: Bool
     let keyboardActivationToken: Int
     let keyboardResponderHandoff: GhosttyKeyboardResponderHandoff
-    let submissionState: GhosttyComposeBarSubmissionState
-    let dictationPhase: GhosttyComposerDictationPhase
-    let dictationAudioLevelModel: GhosttyComposerAudioLevelModel
-    let statusMessage: String?
-    let attachmentUploadCount: Int
-    let attachmentTransferProgress: GhosttyAttachmentTransferProgress?
     let onKeyboardFocusRequest: () -> Void
     let onKeyboardResponderAttached: () -> Void
     let onChoosePhotos: () -> Void
@@ -192,6 +189,41 @@ struct GhosttyComposeBar: View {
     let onCancelDictation: () -> Void
     let onFinishDictation: () -> Void
     let onSend: () -> Void
+
+    private var attachments: [GhosttyPendingAttachment] {
+        composer.attachments
+    }
+
+    private var dictationPhase: GhosttyComposerDictationPhase {
+        composer.dictationController.phase
+    }
+
+    private var dictationAudioLevelModel: GhosttyComposerAudioLevelModel {
+        composer.dictationController.audioLevelModel
+    }
+
+    private var statusMessage: String? {
+        composer.statusMessage
+    }
+
+    private var attachmentUploadCount: Int {
+        composer.attachmentTransferUploadCount
+    }
+
+    private var attachmentTransferProgress: GhosttyAttachmentTransferProgress? {
+        composer.attachmentTransferProgress
+    }
+
+    private var submissionState: GhosttyComposeBarSubmissionState {
+        if composer.isSubmitting {
+            return .sending
+        }
+        return .composing(
+            canSend: isTerminalInputAvailable
+                && composer.hasContent
+                && composer.areAttachmentsReady
+        )
+    }
 
     var body: some View {
         VStack(spacing: attachments.isEmpty ? 0 : 6) {
@@ -262,7 +294,7 @@ struct GhosttyComposeBar: View {
 
             ZStack(alignment: .topLeading) {
                 GhosttyComposerTextView(
-                    text: $text,
+                    text: $composer.draft,
                     caretColor: UIColor(chromeStyle.accent),
                     allowsUserEdits: submissionState.allowsComposerInput
                         && !dictationPhase.isActive,
@@ -291,7 +323,7 @@ struct GhosttyComposeBar: View {
             dictationCenterContent
                 .frame(maxWidth: .infinity)
                 .frame(height: 32)
-        } else if text.isEmpty {
+        } else if composer.draft.isEmpty {
             Text(composerPlaceholder)
                 .foregroundStyle(GhosttyPhoneChromePalette.chromeSecondaryForeground)
                 .padding(.leading, 4)

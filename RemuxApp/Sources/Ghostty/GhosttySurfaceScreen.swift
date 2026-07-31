@@ -149,18 +149,26 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         guard isSelected else {
             return Empty(completeImmediately: false).eraseToAnyPublisher()
         }
-        return composer.objectWillChange.eraseToAnyPublisher()
+        // Draft keystrokes and dictation updates re-render only the compose
+        // bar, which observes the composer directly. The screen re-evaluates
+        // solely for composer state its own chrome and sheets render. Each
+        // branch drops the value replayed on (re)subscription so body
+        // evaluations don't feed back into new invalidations.
+        let presented = composer.$isPresented
+            .removeDuplicates().dropFirst()
+            .map { _ in () }.eraseToAnyPublisher()
+        let submitting = composer.$isSubmitting
+            .removeDuplicates().dropFirst()
+            .map { _ in () }.eraseToAnyPublisher()
+        let attachments = composer.$attachments
+            .removeDuplicates().dropFirst()
+            .map { _ in () }.eraseToAnyPublisher()
+        return Publishers.MergeMany([presented, submitting, attachments])
+            .eraseToAnyPublisher()
     }
 
     private var isActiveComposerPresented: Bool {
         isSelected && composer.isPresented
-    }
-
-    private var composerDraftBinding: Binding<String> {
-        Binding(
-            get: { composer.draft },
-            set: { composer.draft = $0 }
-        )
     }
 
     private var composerAttachmentsBinding: Binding<[GhosttyPendingAttachment]> {
@@ -628,18 +636,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private func selectedComposerBar() -> some View {
         if isSelected {
             GhosttyComposeBar(
-                text: composerDraftBinding,
-                attachments: composerAttachmentsBinding,
+                composer: composer,
+                isTerminalInputAvailable: isTerminalInputAvailable,
                 wantsKeyboardFocus: inputCoordinator.keyboardMode == .system
                     && inputCoordinator.keyboardOwner == .composer,
                 keyboardActivationToken: inputCoordinator.composerActivationToken,
                 keyboardResponderHandoff: keyboardResponderHandoff,
-                submissionState: composerSubmissionState,
-                dictationPhase: composer.dictationController.phase,
-                dictationAudioLevelModel: composer.dictationController.audioLevelModel,
-                statusMessage: composer.statusMessage,
-                attachmentUploadCount: attachmentTransferUploadCount,
-                attachmentTransferProgress: attachmentTransferProgress,
                 onKeyboardFocusRequest: handleComposerKeyboardFocusRequest,
                 onKeyboardResponderAttached: handleComposerKeyboardResponderAttached,
                 onChoosePhotos: openAttachmentPhotosPicker,
@@ -673,14 +675,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private var isAttachmentTransferInProgress: Bool {
         composer.isSubmitting
-    }
-
-    private var attachmentTransferUploadCount: Int {
-        composer.attachmentTransferUploadCount
-    }
-
-    private var attachmentTransferProgress: GhosttyAttachmentTransferProgress? {
-        composer.attachmentTransferProgress
     }
 
     private var isTerminalViewportFrozen: Bool {
