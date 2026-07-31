@@ -194,6 +194,29 @@ struct TerminalSelectionSheetActionButton: View {
 }
 
 extension View {
+    func terminalSelectionTileChrome(
+        isSelected: Bool,
+        chromeStyle: GhosttyTerminalChromeStyle
+    ) -> some View {
+        background(TerminalSelectionSheetPalette.row)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(
+                        isSelected
+                            ? TerminalSelectionSheetPalette.selectedStroke(chromeStyle)
+                            : TerminalSelectionSheetPalette.stroke,
+                        lineWidth: isSelected ? 1.25 : 1
+                    )
+            }
+            .overlay(alignment: .topTrailing) {
+                if isSelected {
+                    TerminalSelectionTileCheckmark(chromeStyle: chromeStyle)
+                        .padding(6)
+                }
+            }
+    }
+
     func terminalSelectionSheetPresentation(
         colorScheme: ColorScheme,
         chromeStyle: GhosttyTerminalChromeStyle

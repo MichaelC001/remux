@@ -524,23 +524,7 @@ private struct GhosttyWindowSelectionTile: View {
             height: layout.tilePointSize.height,
             alignment: .topLeading
         )
-        .background(TerminalSelectionSheetPalette.row)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(
-                    isSelected
-                        ? TerminalSelectionSheetPalette.selectedStroke(chromeStyle)
-                        : TerminalSelectionSheetPalette.stroke,
-                    lineWidth: isSelected ? 1.25 : 1
-                )
-        }
-        .overlay(alignment: .topTrailing) {
-            if isSelected {
-                TerminalSelectionTileCheckmark(chromeStyle: chromeStyle)
-                    .padding(6)
-            }
-        }
+        .terminalSelectionTileChrome(isSelected: isSelected, chromeStyle: chromeStyle)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(previewState.accessibilityValue)
@@ -630,23 +614,7 @@ private struct GhosttyPaneSelectionTile: View {
             height: layout.tilePointSize.height,
             alignment: .topLeading
         )
-        .background(TerminalSelectionSheetPalette.row)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(
-                    isSelected
-                        ? TerminalSelectionSheetPalette.selectedStroke(chromeStyle)
-                        : TerminalSelectionSheetPalette.stroke,
-                    lineWidth: isSelected ? 1.25 : 1
-                )
-        }
-        .overlay(alignment: .topTrailing) {
-            if isSelected {
-                TerminalSelectionTileCheckmark(chromeStyle: chromeStyle)
-                    .padding(6)
-            }
-        }
+        .terminalSelectionTileChrome(isSelected: isSelected, chromeStyle: chromeStyle)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(state.accessibilityValue)
