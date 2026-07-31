@@ -50,7 +50,7 @@ enum PanePreviewLayout {
         while height(fullRows: rows + 1) <= budget {
             rows += 1
         }
-        return height(fullRows: rows)
+        return min(height(fullRows: rows), fullHeight)
     }
 
     private static let defaultSheetContentWidth: CGFloat = 361
