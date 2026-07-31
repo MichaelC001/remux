@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 import CoreTransferable
@@ -60,7 +61,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
     @ObservedObject private var model: Model
-    @ObservedObject private var composer: GhosttyComposerModel
+    private let composer: GhosttyComposerModel
     private let presentation: GhosttySurfaceScreenPresentation
     private let isSelected: Bool
     private let isTerminalCovered: Bool
@@ -88,6 +89,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var attachmentPhotoSelections: [PhotosPickerItem] = []
     @State private var attachmentPreviewRequest: AttachmentPreviewRequest?
     @State private var attachmentNotice: GhosttyAttachmentNotice?
+    @State private var composerRevision: UInt64 = 0
 #if DEBUG
     @State private var uiTestKeyboardWillHideCount = 0
 #endif
@@ -118,7 +120,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         onTrustHostKey: @escaping () -> Void
     ) {
         self.model = model
-        _composer = ObservedObject(wrappedValue: composer)
+        self.composer = composer
         self.presentation = presentation
         self.isSelected = isSelected
         self.isTerminalCovered = isTerminalCovered
@@ -143,6 +145,13 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         keyboardViewportTransitionCoordinator.isAwaitingSystemKeyboardPresentation
     }
 
+    private var composerUpdates: AnyPublisher<Void, Never> {
+        guard isSelected else {
+            return Empty(completeImmediately: false).eraseToAnyPublisher()
+        }
+        return composer.objectWillChange.eraseToAnyPublisher()
+    }
+
     private var isActiveComposerPresented: Bool {
         isSelected && composer.isPresented
     }
@@ -162,6 +171,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     var body: some View {
+        let _ = composerRevision
         GeometryReader { screenProxy in
             let renderedKeyboardMode = inputCoordinator.keyboardMode
             let chrome = GhosttyPhoneChromeLayout(
@@ -536,6 +546,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             .onChange(of: composer.draft) { _, _ in
                 guard isSelected else { return }
                 composer.statusMessage = nil
+            }
+            .onReceive(composerUpdates) { _ in
+                composerRevision &+= 1
             }
             .onChange(of: interactionProjection.isInputAvailable) { _, isInputAvailable in
                 handleTerminalCoverInputAvailabilityChange(isInputAvailable)
