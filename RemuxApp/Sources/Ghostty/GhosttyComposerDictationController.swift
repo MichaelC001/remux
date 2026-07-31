@@ -191,35 +191,6 @@ private extension GhosttyComposerDictationAuthorizationClient.Result {
     }
 }
 
-/// AVAudioSession is process-wide even though each retained terminal has its
-/// own composer controller. This lease makes microphone ownership equally
-/// process-wide and prevents two terminal sessions from racing audio setup and
-/// teardown against each other.
-final class GhosttyComposerDictationLease: @unchecked Sendable {
-    static let shared = GhosttyComposerDictationLease()
-
-    private let lock = NSLock()
-    private var ownerID: UUID?
-
-    func acquire(ownerID: UUID) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard self.ownerID == nil || self.ownerID == ownerID else { return false }
-        self.ownerID = ownerID
-        return true
-    }
-
-    func release(ownerID: UUID) {
-        lock.lock()
-        defer { lock.unlock() }
-
-        if self.ownerID == ownerID {
-            self.ownerID = nil
-        }
-    }
-}
-
 /// Owns Speech and AVAudioEngine on one serial queue. The UI controller never
 /// waits for teardown and never touches audio objects directly.
 final class GhosttyLegacyComposerDictationBackend: GhosttyComposerDictationBackendProtocol,
@@ -657,13 +628,10 @@ final class GhosttyComposerDictationController: ObservableObject {
 
     private let backend: any GhosttyComposerDictationBackendProtocol
     private let authorizationClient: GhosttyComposerDictationAuthorizationClient
-    private let lease: GhosttyComposerDictationLease
-    private let leaseOwnerID: UUID
     private let startDeadline: Duration
     private var authorizationTask: Task<Void, Never>?
     private var startDeadlineTask: Task<Void, Never>?
     private var sessionID: UInt64 = 0
-    private var leaseGeneration: UInt64 = 0
     private var backendRunRequested = false
     private var startRequestedAt: UInt64?
     private var draftSnapshot = ""
@@ -687,23 +655,16 @@ final class GhosttyComposerDictationController: ObservableObject {
     init(
         backend: any GhosttyComposerDictationBackendProtocol = GhosttyComposerDictationBackendFactory.makeDefault(),
         authorizationClient: GhosttyComposerDictationAuthorizationClient = .live,
-        lease: GhosttyComposerDictationLease = .shared,
         startDeadline: Duration = .seconds(8)
     ) {
         self.backend = backend
         self.authorizationClient = authorizationClient
-        self.lease = lease
-        leaseOwnerID = UUID()
         self.startDeadline = startDeadline
         audioLevelModel = GhosttyComposerAudioLevelModel()
     }
 
     deinit {
-        let lease = lease
-        let leaseOwnerID = leaseOwnerID
-        backend.cancelAll {
-            lease.release(ownerID: leaseOwnerID)
-        }
+        backend.cancelAll {}
     }
 
     func prepare() {
@@ -716,11 +677,6 @@ final class GhosttyComposerDictationController: ObservableObject {
         onFailure: @escaping (String) -> Void
     ) {
         guard phase == .idle else { return }
-        guard lease.acquire(ownerID: leaseOwnerID) else {
-            onFailure("Microphone is already in use by another terminal")
-            return
-        }
-        leaseGeneration &+= 1
 
         sessionID &+= 1
         let requestedSessionID = sessionID
@@ -949,7 +905,6 @@ final class GhosttyComposerDictationController: ObservableObject {
 
     private func invalidateSession() {
         let invalidatedSessionID = sessionID
-        let invalidatedLeaseGeneration = leaseGeneration
         let shouldCancelBackend = backendRunRequested
         sessionID &+= 1
         backendRunRequested = false
@@ -963,23 +918,8 @@ final class GhosttyComposerDictationController: ObservableObject {
         onTranscript = nil
         onFailure = nil
         afterTranscription = nil
-        guard shouldCancelBackend else {
-            lease.release(ownerID: leaseOwnerID)
-            return
-        }
-
-        let lease = lease
-        let leaseOwnerID = leaseOwnerID
-        backend.cancel(id: invalidatedSessionID) { [weak self] in
-            DispatchQueue.main.async { [weak self, lease] in
-                guard let self else {
-                    lease.release(ownerID: leaseOwnerID)
-                    return
-                }
-                guard leaseGeneration == invalidatedLeaseGeneration else { return }
-                lease.release(ownerID: leaseOwnerID)
-            }
-        }
+        guard shouldCancelBackend else { return }
+        backend.cancel(id: invalidatedSessionID) {}
     }
 
     private func isCurrentStartingSession(_ requestedSessionID: UInt64) -> Bool {
