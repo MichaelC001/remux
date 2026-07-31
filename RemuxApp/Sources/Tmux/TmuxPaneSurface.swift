@@ -132,6 +132,11 @@ final class TmuxPaneSurface {
         }
 
         static let writeCallback: ghostty_terminal_surface_write_cb = { userdata, pointer, count in
+            // ghostty.h: write_cb fires only from terminal-surface input
+            // operations on the presentation-owner thread, never from the
+            // output feed. `trackedWrite` is single-threaded because of
+            // this contract.
+            assert(Thread.isMainThread)
             guard let userdata else { return false }
             let box = Unmanaged<CallbackBox>.fromOpaque(userdata).takeUnretainedValue()
             guard count > 0 else { return true }
