@@ -66,6 +66,7 @@ private struct RemuxWorkspaceShell: View {
     let composer: GhosttyComposerModel
     let shortcutStore: ShortcutStore
     @State private var retainedTerminalID: SavedWorkspace.ID?
+    @State private var isSessionSwitcherPresented = false
 
     var body: some View {
         ZStack {
@@ -104,6 +105,29 @@ private struct RemuxWorkspaceShell: View {
 
             retainedTerminalID = ids[0]
         }
+        .onChange(of: model.state) { _, state in
+            guard case .terminal = state else {
+                isSessionSwitcherPresented = false
+                return
+            }
+        }
+        .sheet(isPresented: $isSessionSwitcherPresented) {
+            ActiveSessionSwitcherView(
+                sessions: ActiveSessionSwitcherProjection.items(
+                    sessions: model.activeSessions,
+                    selectedSessionID: selectedTerminalID
+                ),
+                servers: model.library.servers,
+                currentServerID: selectedActiveSession?.target.server.id,
+                onSelectSession: model.showActiveSession,
+                onDisconnectSession: model.disconnectActiveSession,
+                onCreateSession: beginNewWorkspaceFromTerminal
+            )
+            .terminalSelectionSheetPresentation(
+                colorScheme: model.terminalSettings.theme.terminalChromeColorScheme,
+                chromeStyle: model.terminalSettings.theme.terminalChromeStyle
+            )
+        }
     }
 
     private var selectedTerminalID: SavedWorkspace.ID? {
@@ -118,6 +142,11 @@ private struct RemuxWorkspaceShell: View {
         selectedTerminalID ?? retainedTerminalID ?? model.activeTerminalScreenEntries.first?.id
     }
 
+    private var selectedActiveSession: ActiveTerminalSession? {
+        guard let selectedTerminalID else { return nil }
+        return model.activeSessions.first { $0.id == selectedTerminalID }
+    }
+
     private var activeTerminalLayer: some View {
         ZStack {
             ForEach(model.activeTerminalScreenEntries) { entry in
@@ -126,6 +155,7 @@ private struct RemuxWorkspaceShell: View {
                 ActiveTerminalSessionView(
                     entry: entry,
                     isSelected: isSelected,
+                    isAppSheetPresented: isSessionSwitcherPresented && isSelected,
                     composer: composer,
                     shortcutStore: shortcutStore,
                     onReconnect: {
@@ -143,6 +173,9 @@ private struct RemuxWorkspaceShell: View {
                     },
                     onTrustHostKey: {
                         model.trustHostKeyAndReconnect(entry.id)
+                    },
+                    onShowSessions: {
+                        isSessionSwitcherPresented = true
                     },
                     onShowLibrary: {
                         dismissKeyboard()
@@ -165,19 +198,19 @@ private struct RemuxWorkspaceShell: View {
         case .library:
             libraryStack
 
-        case .setup(let draft, let validation, let mode):
+        case .setup(let setup):
             NavigationStack {
                 ConnectionSetupView(
-                    draft: draft,
-                    validation: validation,
-                    mode: mode,
+                    draft: setup.draft,
+                    validation: setup.validation,
+                    mode: setup.mode,
                     terminalTheme: model.terminalSettings.theme,
                     onChange: model.updateDraft,
                     onConnect: {
                         Task { await model.saveAndConnect() }
                     },
                     onCancel: {
-                        Task { await model.showLibrary() }
+                        Task { await model.cancelSetup() }
                     }
                 )
             }
@@ -221,7 +254,7 @@ private struct RemuxWorkspaceShell: View {
                     )
                     model.showActiveSession(workspaceID)
                 },
-                onCloseActiveSession: model.closeActiveSession,
+                onDisconnectActiveSession: model.disconnectActiveSession,
                 onDeleteServer: { serverID in
                     Task { await model.deleteServer(serverID) }
                 },
@@ -265,6 +298,16 @@ private struct RemuxWorkspaceShell: View {
         "session.show.\(workspaceID.uuidString)"
     }
 
+    private func beginNewWorkspaceFromTerminal(on serverID: SavedServer.ID) {
+        guard let selectedTerminalID else { return }
+        Task {
+            await model.beginNewWorkspace(
+                for: serverID,
+                cancelDestination: .terminal(selectedTerminalID)
+            )
+        }
+    }
+
 }
 
 struct RemuxAppLifecycleProjection: Equatable {
@@ -289,12 +332,14 @@ struct RemuxAppLifecycleProjection: Equatable {
 private struct ActiveTerminalSessionView: View {
     let entry: ActiveTerminalScreenEntry
     let isSelected: Bool
+    let isAppSheetPresented: Bool
     let composer: GhosttyComposerModel
     let shortcutStore: ShortcutStore
     let onReconnect: () -> Void
     let onUpdateCredentials: () -> Void
     let onEditServer: () -> Void
     let onTrustHostKey: () -> Void
+    let onShowSessions: () -> Void
     let onShowLibrary: () -> Void
 
     @StateObject private var previewSession: TerminalPreviewSession
@@ -302,22 +347,26 @@ private struct ActiveTerminalSessionView: View {
     init(
         entry: ActiveTerminalScreenEntry,
         isSelected: Bool,
+        isAppSheetPresented: Bool,
         composer: GhosttyComposerModel,
         shortcutStore: ShortcutStore,
         onReconnect: @escaping () -> Void,
         onUpdateCredentials: @escaping () -> Void,
         onEditServer: @escaping () -> Void,
         onTrustHostKey: @escaping () -> Void,
+        onShowSessions: @escaping () -> Void,
         onShowLibrary: @escaping () -> Void
     ) {
         self.entry = entry
         self.isSelected = isSelected
+        self.isAppSheetPresented = isAppSheetPresented
         self.composer = composer
         self.shortcutStore = shortcutStore
         self.onReconnect = onReconnect
         self.onUpdateCredentials = onUpdateCredentials
         self.onEditServer = onEditServer
         self.onTrustHostKey = onTrustHostKey
+        self.onShowSessions = onShowSessions
         self.onShowLibrary = onShowLibrary
         _previewSession = StateObject(
             wrappedValue: TerminalPreviewSession(
@@ -334,12 +383,13 @@ private struct ActiveTerminalSessionView: View {
                 presentation: entry.presentation,
                 isSelected: isSelected,
                 composer: composer,
-                isTerminalCovered: previewSession.isPresented,
+                isTerminalCovered: isAppSheetPresented || previewSession.isPresented,
                 shortcutStore: shortcutStore,
                 attachmentTransferServiceFactory: entry.attachmentTransferServiceFactory,
                 onPreviewSelection: previewSelectionHandler,
                 onReconnect: onReconnect,
-                onEditConnection: onShowLibrary,
+                onShowSessions: onShowSessions,
+                onShowLibrary: onShowLibrary,
                 onUpdateCredentials: onUpdateCredentials,
                 onEditServer: onEditServer,
                 onTrustHostKey: onTrustHostKey
@@ -389,7 +439,7 @@ private struct ConnectionLibraryView: View {
     let onEditWorkspace: (SavedServer.ID, SavedWorkspace.ID) -> Void
     let onConnect: (SavedWorkspace.ID) -> Void
     let onShowActiveSession: (SavedWorkspace.ID) -> Void
-    let onCloseActiveSession: (SavedWorkspace.ID) -> Void
+    let onDisconnectActiveSession: (SavedWorkspace.ID) -> Void
     let onDeleteServer: (SavedServer.ID) -> Void
     let onDeleteWorkspace: (SavedWorkspace.ID) -> Void
     let onSettingsChange: (TerminalSettings) -> Void
@@ -463,8 +513,8 @@ private struct ConnectionLibraryView: View {
                     }
                     .buttonStyle(.plain)
                     .swipeActions(edge: .trailing) {
-                        Button("Close") {
-                            closeActiveSession(session.id)
+                        Button("Disconnect") {
+                            disconnectActiveSession(session.id)
                         }
                         .tint(.red)
                     }
@@ -626,9 +676,7 @@ private struct ConnectionLibraryView: View {
     }
 
     private var sortedActiveSessions: [ActiveTerminalSession] {
-        activeSessions.sorted {
-            $0.target.workspace.lastOpenedAt > $1.target.workspace.lastOpenedAt
-        }
+        RemuxActiveSessionCollection.sortedForDisplay(activeSessions)
     }
 
     private var visibleConnectedSessions: [ActiveTerminalSession] {
@@ -664,12 +712,12 @@ private struct ConnectionLibraryView: View {
         }.count
     }
 
-    private func closeActiveSession(_ sessionID: SavedWorkspace.ID) {
+    private func disconnectActiveSession(_ sessionID: SavedWorkspace.ID) {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
 
         withTransaction(transaction) {
-            onCloseActiveSession(sessionID)
+            onDisconnectActiveSession(sessionID)
         }
     }
 }
@@ -683,7 +731,6 @@ private enum LibraryHomePalette {
     static let controlAccent = Color(uiColor: .libraryHomeControlAccent)
     static let rowIconForeground = Color(uiColor: .libraryHomeRowIconForeground)
     static let rowIconSurface = Color(uiColor: .libraryHomeRowIconSurface)
-    static let connectedStatus = Color(uiColor: .libraryHomeConnectedStatus)
 }
 
 private extension TerminalTheme {
@@ -804,14 +851,6 @@ private extension UIColor {
         }
     }
 
-    static let libraryHomeConnectedStatus = UIColor { traits in
-        switch traits.userInterfaceStyle {
-        case .dark:
-            UIColor(red: 0.43, green: 0.89, blue: 0.66, alpha: 1.0)
-        default:
-            .systemGreen
-        }
-    }
 }
 
 private struct ServerDetailView: View {
@@ -831,7 +870,7 @@ private struct ServerDetailView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Address")
 
-                    Text(serverAddress(server))
+                    Text(server.displayAddress)
                         .font(.footnote.monospaced())
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -1020,7 +1059,7 @@ private struct ActiveSessionLibraryRow: View {
 
             Spacer()
 
-            RuntimeStateIndicator(state: session.runtimeState)
+            TerminalRuntimeStateIndicator(state: session.runtimeState)
 
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.semibold))
@@ -1065,7 +1104,7 @@ private struct SessionLibraryRow: View {
             Spacer()
 
             if let runtimeState {
-                RuntimeStateIndicator(state: runtimeState)
+                TerminalRuntimeStateIndicator(state: runtimeState)
             }
 
             Image(systemName: "chevron.right")
@@ -1118,7 +1157,7 @@ private struct ServerLibraryRow: View {
                     .font(.headline)
                     .lineLimit(1)
 
-                Text(serverAddress(server))
+                Text(server.displayAddress)
                     .font(.footnote.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -1141,43 +1180,6 @@ private struct ServerLibraryRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
     }
-}
-
-private struct RuntimeStateIndicator: View {
-    let state: TerminalRuntimeState
-
-    private var presentation: TerminalRuntimeStatusPresentation {
-        TerminalRuntimeStatusPresentation.projection(for: state)
-    }
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Circle()
-                .fill(color)
-                .frame(width: 6, height: 6)
-            Text(presentation.label)
-                .font(.caption.weight(.medium))
-        }
-        .foregroundStyle(color)
-        .accessibilityElement(children: .combine)
-    }
-
-    private var color: Color {
-        switch presentation.tone {
-        case .connecting:
-            .blue
-        case .reconnecting:
-            .orange
-        case .connected:
-            LibraryHomePalette.connectedStatus
-        case .disconnected:
-            .red
-        }
-    }
-}
-
-private func serverAddress(_ server: SavedServer) -> String {
-    "\(server.username)@\(server.host)\(server.port == 22 ? "" : ":\(server.port)")"
 }
 
 private func serverSummary(
@@ -1249,10 +1251,28 @@ private struct TerminalSettingsView: View {
                     .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 16, trailing: 16))
             }
             .libraryHomeListRowSurface()
+
+            Section {
+                Toggle("Allow older RSA host keys", isOn: allowInsecureRSAHostKeysBinding)
+                    .tint(LibraryHomePalette.controlAccent)
+                    .accessibilityIdentifier("settings.allow-insecure-rsa")
+                    .accessibilityHint(
+                        "Allows legacy RSA host-key signatures using SHA-1; "
+                            + "host identity is still verified."
+                    )
+            } header: {
+                Text("Security")
+            } footer: {
+                Text(
+                    "For servers that only support ssh-rsa (SHA-1). Enabling takes effect "
+                        + "immediately; disabling takes effect after restarting Remux."
+                )
+            }
+            .libraryHomeListRowSurface()
         }
         .libraryHomeGroupedScrollBackground()
         .libraryHomeChrome(theme: settings.theme)
-        .navigationTitle("Terminal")
+        .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("settings.form")
     }
@@ -1282,6 +1302,16 @@ private struct TerminalSettingsView: View {
             get: { settings.theme },
             set: { value in
                 settings.theme = value
+                onChange(settings)
+            }
+        )
+    }
+
+    private var allowInsecureRSAHostKeysBinding: Binding<Bool> {
+        Binding(
+            get: { settings.allowInsecureRSAHostKeys },
+            set: { value in
+                settings.allowInsecureRSAHostKeys = value
                 onChange(settings)
             }
         )
@@ -1408,7 +1438,7 @@ private struct ConnectionSetupView: View {
                         keyPath: \.displayName,
                         field: .displayName,
                         validationMessage: validation.displayName,
-                        textInputAutocapitalization: .words,
+                        textInputAutocapitalization: .never,
                         autocorrectionDisabled: false,
                         accessibilityIdentifier: "connection.name"
                     )

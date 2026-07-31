@@ -1,4 +1,5 @@
 @preconcurrency import Citadel
+@preconcurrency import Crypto
 import Foundation
 import NIO
 import NIOConcurrencyHelpers
@@ -1134,6 +1135,23 @@ private extension RemuxSSHPreparedRoot {
                 trace: trace
             )
         }
+    }
+}
+
+/// Registers the legacy `ssh-rsa` host-key algorithm (RSA with SHA-1
+/// signatures) process-wide. This is enabled only after explicit user
+/// opt-in for servers that offer no supported modern host-key algorithm.
+/// Remux's normal trusted-host verification still applies.
+enum RemuxSSHAlgorithmRegistration {
+    private static let registerOnce: Void = {
+        NIOSSHAlgorithms.register(
+            publicKey: Insecure.RSA.PublicKey.self,
+            signature: Insecure.RSA.Signature.self
+        )
+    }()
+
+    static func ensureRegistered() {
+        _ = registerOnce
     }
 }
 

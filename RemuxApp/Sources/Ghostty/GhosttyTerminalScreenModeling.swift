@@ -162,8 +162,7 @@ protocol GhosttyTmuxSelectionModeling: ObservableObject {
 
     func windowSheetPresentationProjection() -> GhosttyWindowSheetPresentationProjection?
     func selectedPaneSheetPresentationProjection() -> GhosttyPaneSheetPresentationProjection?
-    func paneSheetDetentPaneCount(topLevelID: UUID) -> Int
-    func windowSheetDetentCellCount() -> Int
+    func paneCount(topLevelID: UUID) -> Int
     func paneSelectionSheetTopologyProjection(
         topLevelID: UUID?
     ) -> GhosttyPaneSelectionSheetTopologyProjection

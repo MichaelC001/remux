@@ -120,12 +120,40 @@ struct TerminalSettings: Equatable, Codable, Sendable {
     var fontSize: Float32?
     var theme: TerminalTheme
 
+    /// Opt-in to the legacy `ssh-rsa` host-key algorithm, which uses SHA-1
+    /// signatures.
+    /// Defaults to `false` when absent from persisted settings.
+    var allowInsecureRSAHostKeys: Bool
+
     init(
         fontSize: Float32?,
-        theme: TerminalTheme
+        theme: TerminalTheme,
+        allowInsecureRSAHostKeys: Bool = false
     ) {
         self.fontSize = Self.normalizedFontSize(fontSize)
         self.theme = theme
+        self.allowInsecureRSAHostKeys = allowInsecureRSAHostKeys
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case fontSize
+        case theme
+        case allowInsecureRSAHostKeys
+    }
+
+    // Custom decoding keeps older persisted settings (written before these keys
+    // existed) loadable rather than failing the whole store on a missing key.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            fontSize: try container.decodeIfPresent(Float32.self, forKey: .fontSize),
+            theme: try container.decodeIfPresent(TerminalTheme.self, forKey: .theme) ?? .ghosttyDefault,
+            allowInsecureRSAHostKeys: try container.decodeIfPresent(Bool.self, forKey: .allowInsecureRSAHostKeys) ?? false
+        )
+    }
+
+    func hasSameTerminalAppearance(as other: TerminalSettings) -> Bool {
+        fontSize == other.fontSize && theme == other.theme
     }
 
     var ghosttyConfigContents: String? {

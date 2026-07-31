@@ -120,7 +120,6 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         )
         XCTAssertEqual(second.windows.first?.totalCount, 1)
         XCTAssertEqual(second.windows.first?.displayName, "renamed")
-        XCTAssertEqual(second.cellCount, 1)
 
         await session.shutdown()
     }

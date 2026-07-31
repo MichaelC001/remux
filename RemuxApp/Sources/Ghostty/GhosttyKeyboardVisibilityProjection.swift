@@ -72,7 +72,7 @@ struct GhosttyKeyboardVisibilityProjection: Equatable {
         self.frameEnd = frameEnd
         self.screenBounds = screenBounds
 
-        let visibleOverlapHeight = GhosttySelectionSheetSizing.normalizedHeight(
+        let visibleOverlapHeight = GhosttyViewportSizing.normalizedHeight(
             GhosttySoftwareKeyboardVisibility.visibleOverlapHeight(
                 frameEnd: frameEnd,
                 screenBounds: screenBounds

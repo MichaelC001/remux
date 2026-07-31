@@ -450,6 +450,10 @@ final class RemuxAppUITests: XCTestCase {
         app.buttons["library.settings"].tap()
 
         XCTAssertTrue(settingsForm.waitForExistence(timeout: 2))
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 2))
+        let legacyRSAHostKeys = app.switches["settings.allow-insecure-rsa"]
+        XCTAssertTrue(legacyRSAHostKeys.waitForExistence(timeout: 2))
+        XCTAssertEqual(legacyRSAHostKeys.label, "Allow older RSA host keys")
         tapFontDefaultToggle()
         let fontSize = app.descendants(matching: .any)["settings.font-size"]
         XCTAssertTrue(fontSize.waitForExistence(timeout: 2))
@@ -662,7 +666,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Latte"].waitForExistence(timeout: 2))
         app.buttons["Mocha"].tap()
         app.buttons["Latte"].tap()
-        app.navigationBars["Terminal"].buttons.element(boundBy: 0).tap()
+        app.navigationBars["Settings"].buttons.element(boundBy: 0).tap()
 
         let activeSession = activeSessionRows.firstMatch
         XCTAssertTrue(activeSession.waitForExistence(timeout: 5))
@@ -2244,10 +2248,10 @@ final class RemuxAppUITests: XCTestCase {
         guard activeSession.waitForExistence(timeout: 5) else { return }
 
         activeSession.swipeLeft()
-        let close = app.buttons["Close"].firstMatch
-        guard close.waitForExistence(timeout: 3) else { return }
+        let disconnect = app.buttons["Disconnect"].firstMatch
+        guard disconnect.waitForExistence(timeout: 3) else { return }
 
-        close.tap()
+        disconnect.tap()
         RunLoop.current.run(until: Date().addingTimeInterval(2))
     }
 
@@ -3860,6 +3864,18 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func dismissTopSheetIfPresent() {
+        for identifier in [
+            "terminal.panes.close",
+            "terminal.windows.close",
+            "terminal.sessions.close",
+        ] {
+            let closeButton = app.buttons[identifier]
+            if closeButton.exists, closeButton.isHittable {
+                closeButton.tap()
+                return
+            }
+        }
+
         let sheet = app.otherElements.matching(identifier: "PopoverDismissRegion").firstMatch
         if sheet.exists, sheet.isHittable {
             sheet.tap()

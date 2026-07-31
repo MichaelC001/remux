@@ -292,6 +292,10 @@ final class TmuxScreenModel: ObservableObject {
     /// before each retained pane surface re-snapshots it in place.
     func applyTerminalSettings(_ settings: TerminalSettings) throws {
         guard settings != currentTerminalSettings else { return }
+        guard !settings.hasSameTerminalAppearance(as: currentTerminalSettings) else {
+            currentTerminalSettings = settings
+            return
+        }
         try runtime?.applyTerminalSettings(settings)
         currentTerminalSettings = settings
         session?.applyTerminalConfiguration(theme: settings.theme)
