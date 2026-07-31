@@ -180,6 +180,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     var body: some View {
         let _ = composerRevision
+#if DEBUG
+        let _ = GhosttySurfaceScreenPerfProbe.recordBodyEval()
+#endif
         GeometryReader { screenProxy in
             let renderedKeyboardMode = inputCoordinator.keyboardMode
             let chrome = GhosttyPhoneChromeLayout(
@@ -290,7 +293,13 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         .allowsHitTesting(false)
 
 #if DEBUG
-                        if ProcessInfo.processInfo.environment["REMUX_UI_TESTING"] == "1" {
+                        if GhosttySurfaceScreenPerfProbe.isEnabled {
+                            GhosttySurfaceScreenBodyEvalMarker(
+                                value: GhosttySurfaceScreenPerfProbe.markerValue
+                            )
+                            .frame(width: 1, height: 1, alignment: .topLeading)
+                            .allowsHitTesting(false)
+
                             GhosttyKeyboardContinuityAccessibilityMarker(
                                 owner: inputCoordinator.keyboardOwner,
                                 keyboardWillHideCount: uiTestKeyboardWillHideCount,
@@ -553,6 +562,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             }
             .onReceive(composerUpdates) { _ in
                 composerRevision &+= 1
+#if DEBUG
+                GhosttySurfaceScreenPerfProbe.beginComposerUpdatePassIfNeeded()
+#endif
             }
             .onChange(of: interactionProjection.isInputAvailable) { _, isInputAvailable in
                 handleTerminalCoverInputAvailabilityChange(isInputAvailable)
@@ -2110,6 +2122,70 @@ private struct GhosttyTerminalInputReadyAccessibilityMarker: View {
 }
 
 #if DEBUG
+/// UI-test-only probe quantifying how often the selected terminal screen's
+/// body re-evaluates and how much main-thread time each composer-driven
+/// update pass consumes (invalidation through the end of the run-loop
+/// iteration, which covers every body evaluation plus commit for that pass).
+@MainActor
+enum GhosttySurfaceScreenPerfProbe {
+    static let isEnabled = ProcessInfo.processInfo.environment["REMUX_UI_TESTING"] == "1" ||
+        ProcessInfo.processInfo.environment["REMUX_TRACE_COMPOSER_PERF"] == "1"
+
+    private(set) static var bodyEvalCount: UInt64 = 0
+    private(set) static var barEvalCount: UInt64 = 0
+    private(set) static var updatePassCount: UInt64 = 0
+    private(set) static var updatePassTotalNanos: UInt64 = 0
+    private static var pendingPass: (startedAt: UInt64, evalsAtStart: UInt64)?
+
+    static func recordBodyEval() {
+        guard isEnabled else { return }
+        bodyEvalCount &+= 1
+    }
+
+    static func recordBarEval() {
+        guard isEnabled else { return }
+        barEvalCount &+= 1
+    }
+
+    static func beginComposerUpdatePassIfNeeded() {
+        guard isEnabled, pendingPass == nil else { return }
+        pendingPass = (GhosttyRuntimeTrace.nowNanos(), bodyEvalCount)
+        DispatchQueue.main.async {
+            finishComposerUpdatePass()
+        }
+    }
+
+    private static func finishComposerUpdatePass() {
+        guard let pass = pendingPass else { return }
+        pendingPass = nil
+        let elapsedNanos = GhosttyRuntimeTrace.nowNanos() - pass.startedAt
+        updatePassCount &+= 1
+        updatePassTotalNanos &+= elapsedNanos
+        GhosttyRuntimeTrace.perf(
+            "composer.updatePass evals=\(bodyEvalCount - pass.evalsAtStart) elapsed_ms=\(GhosttyRuntimeTrace.elapsedMilliseconds(from: pass.startedAt))"
+        )
+    }
+
+    static var markerValue: String {
+        let totalMs = Double(updatePassTotalNanos) / 1_000_000
+        return "evals=\(bodyEvalCount);barEvals=\(barEvalCount);"
+            + "passes=\(updatePassCount);"
+            + "passMs=\(String(format: "%.3f", totalMs))"
+    }
+}
+
+private struct GhosttySurfaceScreenBodyEvalMarker: View {
+    let value: String
+
+    var body: some View {
+        Color.clear
+            .accessibilityElement()
+            .accessibilityLabel("Body eval probe")
+            .accessibilityValue(value)
+            .accessibilityIdentifier("terminal.perf.bodyEvals")
+    }
+}
+
 private struct GhosttyKeyboardContinuityAccessibilityMarker: View {
     let owner: GhosttyKeyboardOwner
     let keyboardWillHideCount: Int

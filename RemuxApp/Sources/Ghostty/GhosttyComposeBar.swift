@@ -226,6 +226,9 @@ struct GhosttyComposeBar: View {
     }
 
     var body: some View {
+#if DEBUG
+        let _ = GhosttySurfaceScreenPerfProbe.recordBarEval()
+#endif
         VStack(spacing: attachments.isEmpty ? 0 : 6) {
             if !attachments.isEmpty {
                 GhosttyComposerAttachmentStrip(
@@ -256,6 +259,15 @@ struct GhosttyComposeBar: View {
                 .accessibilityElement()
                 .accessibilityIdentifier("terminal.composer.bounds")
         }
+#if DEBUG
+        .overlay {
+            if GhosttySurfaceScreenPerfProbe.isEnabled {
+                GhosttyComposeBarPerfMarker(
+                    value: GhosttySurfaceScreenPerfProbe.markerValue
+                )
+            }
+        }
+#endif
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("terminal.composer")
     }
@@ -673,6 +685,9 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
         }
 
         func textViewDidChange(_ textView: UITextView) {
+#if DEBUG
+            GhosttySurfaceScreenPerfProbe.beginComposerUpdatePassIfNeeded()
+#endif
             parent.text = textView.text
             textView.invalidateIntrinsicContentSize()
         }
@@ -724,6 +739,20 @@ private struct GhosttyComposerTextView: UIViewRepresentable {
         }
     }
 }
+
+#if DEBUG
+private struct GhosttyComposeBarPerfMarker: View {
+    let value: String
+
+    var body: some View {
+        Color.clear
+            .accessibilityElement()
+            .accessibilityLabel("Composer perf probe")
+            .accessibilityValue(value)
+            .accessibilityIdentifier("terminal.composer.perf")
+    }
+}
+#endif
 
 private final class GhosttyComposerUITextView: UITextView {
     var onPasteAttachment: (() -> Bool)?

@@ -1057,6 +1057,171 @@ final class RemuxAppUITests: XCTestCase {
         waitForLiveTerminalReady(timeout: 60)
     }
 
+    func testLiveComposerTypingPerfWhenConfigured() throws {
+        let transcript = "Profile the composer hypothesis path"
+        // Enables the body-eval probe and its accessibility marker without
+        // REMUX_UI_TESTING, which would swap in the fake UI-testing
+        // transport and break the live SSH connection.
+        app.launchEnvironment["REMUX_TRACE_COMPOSER_PERF"] = "1"
+        app.launchEnvironment["REMUX_DEBUG_DICTATION_TRANSCRIPT"] = transcript
+        let sessionName = try generatedLiveLatencySessionName("composer")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 90)
+
+        let composerToggle = app.buttons["terminal.composer.toggle"]
+        XCTAssertTrue(composerToggle.waitForExistence(timeout: 10))
+        composerToggle.tap()
+        XCTAssertTrue(app.otherElements["terminal.composer.bounds"].waitForExistence(timeout: 5))
+
+        // The bar-hosted marker refreshes on every bar re-render, so it
+        // stays current even when the screen body no longer re-evaluates
+        // per keystroke.
+        let probe = app.otherElements["terminal.composer.perf"]
+        XCTAssertTrue(probe.waitForExistence(timeout: 5))
+
+        // Dictation hypothesis path: the debug backend emits 28 audio-level
+        // events plus one hypothesis that writes the draft. Screen body
+        // evals in this window quantify how much of dictation leaks into
+        // whole-screen invalidation.
+        let mic = app.buttons["terminal.composer.mic"]
+        XCTAssertTrue(mic.waitForExistence(timeout: 5))
+        settleComposerPerfProbe()
+        guard let beforeDictation = bodyEvalProbeMetrics(probe) else {
+            XCTFail("Body eval probe unreadable before dictation")
+            return
+        }
+        mic.tap()
+        let stop = app.buttons["terminal.composer.dictation.stop"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 5))
+        RunLoop.current.run(until: Date().addingTimeInterval(1.2))
+        stop.tap()
+
+        let field = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        let transcriptDeadline = Date().addingTimeInterval(6)
+        while Date() < transcriptDeadline, (field.value as? String) != transcript {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertEqual(field.value as? String, transcript)
+        settleComposerPerfProbe()
+        guard let afterDictation = bodyEvalProbeMetrics(probe) else {
+            XCTFail("Body eval probe unreadable after dictation")
+            return
+        }
+
+        // Typing path: every keystroke goes through the composer draft
+        // binding. The typed tail also builds the command submitted below.
+        field.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 8))
+        settleComposerPerfProbe()
+        guard let beforeTyping = bodyEvalProbeMetrics(probe) else {
+            XCTFail("Body eval probe unreadable before typing")
+            return
+        }
+        let token = "REMUX-CPERF-\(UUID().uuidString.prefix(8).uppercased())"
+        let typed = " ; printf %s \(token) | rev"
+        field.typeText(typed)
+        settleComposerPerfProbe()
+        guard let afterTyping = bodyEvalProbeMetrics(probe) else {
+            XCTFail("Body eval probe unreadable after typing")
+            return
+        }
+
+        // Submit to the real tmux session; success clears the draft and
+        // restores the placeholder. The reversed token only appears in the
+        // pane when the pasted command actually executed remotely.
+        let send = app.buttons["terminal.composer.send"]
+        XCTAssertTrue(send.waitForExistence(timeout: 5))
+        let placeholder = app.staticTexts["terminal.composer.placeholder"]
+        let submitStart = Date()
+        send.tap()
+        let submitDeadline = Date().addingTimeInterval(20)
+        while Date() < submitDeadline, !placeholder.exists {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertTrue(
+            placeholder.exists,
+            "Composer draft should clear after a successful live submit."
+        )
+        let submitMs = Date().timeIntervalSince(submitStart) * 1000
+
+        recordLiveTmuxPaneCaptureExpectation(
+            sessionName: sessionName,
+            paneIndex: 1,
+            marker: String(token.reversed())
+        )
+
+        let typedCount = typed.count
+        let dictationEvals = afterDictation.evals - beforeDictation.evals
+        let dictationBarEvals = afterDictation.barEvals - beforeDictation.barEvals
+        let dictationPasses = afterDictation.passes - beforeDictation.passes
+        let dictationPassMs = afterDictation.passMs - beforeDictation.passMs
+        let typingEvals = afterTyping.evals - beforeTyping.evals
+        let typingBarEvals = afterTyping.barEvals - beforeTyping.barEvals
+        let typingPasses = afterTyping.passes - beforeTyping.passes
+        let typingPassMs = afterTyping.passMs - beforeTyping.passMs
+        let summary = """
+        REMUX_COMPOSER_PERF typing chars=\(typedCount) screenEvals=\(typingEvals) \
+        screenEvalsPerKey=\(String(format: "%.2f", Double(typingEvals) / Double(typedCount))) \
+        barEvals=\(typingBarEvals) \
+        barEvalsPerKey=\(String(format: "%.2f", Double(typingBarEvals) / Double(typedCount))) \
+        passes=\(typingPasses) passMs=\(String(format: "%.3f", typingPassMs)) \
+        passMsPerKey=\(String(format: "%.3f", typingPassMs / Double(typedCount)))
+        REMUX_COMPOSER_PERF dictation screenEvals=\(dictationEvals) \
+        barEvals=\(dictationBarEvals) passes=\(dictationPasses) \
+        passMs=\(String(format: "%.3f", dictationPassMs))
+        REMUX_COMPOSER_PERF submit elapsedMs=\(String(format: "%.0f", submitMs))
+        """
+        NSLog("%@", summary)
+        let attachment = XCTAttachment(string: summary)
+        attachment.name = "composer-perf-metrics"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+
+        XCTAssertGreaterThanOrEqual(
+            typingEvals,
+            0,
+            "Probe deltas must be monotonic."
+        )
+    }
+
+    private struct ComposerBodyEvalProbeMetrics {
+        let evals: UInt64
+        let barEvals: UInt64
+        let passes: UInt64
+        let passMs: Double
+    }
+
+    private func bodyEvalProbeMetrics(_ marker: XCUIElement) -> ComposerBodyEvalProbeMetrics? {
+        guard marker.exists, let raw = marker.value as? String else { return nil }
+        var fields: [String: String] = [:]
+        for field in raw.split(separator: ";") {
+            let parts = field.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            fields[String(parts[0])] = String(parts[1])
+        }
+        guard let evals = fields["evals"].flatMap({ UInt64($0) }),
+              let passes = fields["passes"].flatMap({ UInt64($0) }),
+              let passMs = fields["passMs"].flatMap({ Double($0) }) else {
+            return nil
+        }
+        return ComposerBodyEvalProbeMetrics(
+            evals: evals,
+            barEvals: fields["barEvals"].flatMap({ UInt64($0) }) ?? 0,
+            passes: passes,
+            passMs: passMs
+        )
+    }
+
+    private func settleComposerPerfProbe() {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.8))
+    }
+
     func testLiveSSHStackPaneCreatesExactlyOneRemotePaneWhenConfigured() throws {
         let sessionName = try generatedLiveLatencySessionName("stack")
         let marker = "REMUX_STACK_PANE2_\(UUID().uuidString.prefix(8).uppercased())"
