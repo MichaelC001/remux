@@ -641,22 +641,69 @@ private struct GhosttyComposerPressButtonStyle: ButtonStyle {
     }
 }
 
+struct GhosttyComposerDictationMeterSizing {
+    static let height: CGFloat = 32
+    static let barWidth: CGFloat = 2.5
+    static let barSpacing: CGFloat = 2
+    static let maximumWidth: CGFloat = 220
+    static let targetWidthFraction: CGFloat = 0.86
+    static let minimumSideInset: CGFloat = 12
+
+    static func visibleBarCount(
+        availableWidth: CGFloat,
+        sampleCount: Int
+    ) -> Int {
+        guard sampleCount > 0 else { return 0 }
+
+        let proportionalWidth = availableWidth * targetWidthFraction
+        let insetWidth = availableWidth - (minimumSideInset * 2)
+        let targetWidth = min(maximumWidth, min(proportionalWidth, insetWidth))
+        guard targetWidth >= barWidth else { return 0 }
+
+        let fittingCount = Int(
+            floor((targetWidth + barSpacing) / (barWidth + barSpacing))
+        )
+        return min(sampleCount, fittingCount)
+    }
+
+    static func renderedWidth(barCount: Int) -> CGFloat {
+        guard barCount > 0 else { return 0 }
+        return (CGFloat(barCount) * barWidth)
+            + (CGFloat(barCount - 1) * barSpacing)
+    }
+}
+
 private struct GhosttyComposerDictationMeter: View {
     @ObservedObject var model: GhosttyComposerAudioLevelModel
 
     var body: some View {
-        HStack(spacing: 2) {
-            ForEach(model.levels.indices, id: \.self) { index in
-                Capsule()
-                    .fill(GhosttyPhoneChromePalette.chromeForeground.opacity(0.72))
-                    .frame(
-                        width: 2.5,
-                        height: max(4, 6 + (model.levels[index] * 24))
-                    )
+        GeometryReader { geometry in
+            let visibleBarCount = GhosttyComposerDictationMeterSizing.visibleBarCount(
+                availableWidth: geometry.size.width,
+                sampleCount: model.levels.count
+            )
+            let levels = Array(model.levels.suffix(visibleBarCount))
+
+            HStack(spacing: GhosttyComposerDictationMeterSizing.barSpacing) {
+                ForEach(levels.indices, id: \.self) { index in
+                    Capsule()
+                        .fill(GhosttyPhoneChromePalette.chromeForeground.opacity(0.72))
+                        .frame(
+                            width: GhosttyComposerDictationMeterSizing.barWidth,
+                            height: max(4, 6 + (levels[index] * 24))
+                        )
+                }
             }
+            .frame(
+                width: GhosttyComposerDictationMeterSizing.renderedWidth(
+                    barCount: visibleBarCount
+                ),
+                height: geometry.size.height
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 32)
+        .frame(height: GhosttyComposerDictationMeterSizing.height)
         .clipped()
         .accessibilityLabel("Recording audio")
         .accessibilityIdentifier("terminal.composer.dictation.meter")
