@@ -40,10 +40,6 @@ enum GhosttyKeyboardChromeSizing {
     /// grow above this baseline without changing the terminal viewport.
     static let baselineHeight = dockButtonHeight + (controlGroupVerticalPadding * 2)
 
-    /// Standalone controls fill the dock baseline in both axes so their
-    /// circular material cannot be compressed into a capsule.
-    static let standaloneControlDiameter = baselineHeight
-
     static func keyboardReplacementHeight(
         keyboardOverlapHeight: CGFloat,
         bottomSafeAreaHeight: CGFloat
@@ -122,7 +118,6 @@ enum GhosttyKeyboardChromeAnimation {
 
 struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
-    @Namespace private var inputControlTransition
 
     let keyboardMode: GhosttyKeyboardChromeMode
     let isEnabled: Bool
@@ -138,7 +133,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     let onShowLibrary: () -> Void
     let onShowWindows: () -> Void
     let onShowPanes: () -> Void
-    let onToggleComposer: () -> Void
+    let onOpenComposer: () -> Void
     let onToggleKeyboard: () -> Void
     let onToggleControl: () -> Void
     let onShowShortcuts: () -> Void
@@ -181,21 +176,9 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     }
 
     private var composerSelectorRow: some View {
-        HStack(alignment: .bottom, spacing: isCompact ? 8 : 10) {
-            standaloneControlGroup {
-                composerToggleButton(systemName: "xmark", isStandalone: true)
-            }
-
-            composerContent()
-                .frame(maxWidth: .infinity)
-                .layoutPriority(1)
-                .transition(.opacity)
-
-            standaloneControlGroup {
-                keyboardToggleButton(isStandalone: true)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .center)
+        composerContent()
+            .frame(maxWidth: .infinity)
+            .transition(.opacity)
     }
 
     private var navigationControls: some View {
@@ -285,64 +268,41 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
                     action: onShowLibrary
                 )
 
-                composerToggleButton(systemName: "square.and.pencil")
+                composerButton
                 keyboardToggleButton
             }
         }
     }
 
-    private func composerToggleButton(
-        systemName: String,
-        isStandalone: Bool = false
-    ) -> some View {
-        let dimension = isStandalone
-            ? GhosttyKeyboardChromeSizing.standaloneControlDiameter
-            : nil
-        return GhosttyKeyboardChromeDockButton(
-            systemName: systemName,
+    private var composerButton: some View {
+        GhosttyKeyboardChromeDockButton(
+            systemName: "square.and.pencil",
             badge: nil,
             chromeStyle: chromeStyle,
-            width: dimension ?? dockButtonWidth,
-            height: dimension ?? GhosttyKeyboardChromeSizing.dockButtonHeight,
-            accessibilityLabel: isComposerPresented ? "Close composer" : "Open composer",
-            accessibilityHint: isComposerPresented
-                ? "Hide the compose field while preserving its draft."
-                : "Prepare an editable message before sending it to the terminal.",
+            width: dockButtonWidth,
+            height: GhosttyKeyboardChromeSizing.dockButtonHeight,
+            accessibilityLabel: "Open composer",
+            accessibilityHint: "Prepare an editable message before sending it to the terminal.",
             accessibilityIdentifier: "terminal.composer.toggle",
             isActive: false,
             isEnabled: !isInteractionLocked,
-            action: onToggleComposer
-        )
-        .matchedGeometryEffect(
-            id: "terminal.composer.toggle",
-            in: inputControlTransition
+            action: onOpenComposer
         )
     }
 
     private var keyboardToggleButton: some View {
-        keyboardToggleButton(isStandalone: false)
-    }
-
-    private func keyboardToggleButton(isStandalone: Bool) -> some View {
-        let dimension = isStandalone
-            ? GhosttyKeyboardChromeSizing.standaloneControlDiameter
-            : nil
-        return GhosttyKeyboardChromeDockButton(
+        GhosttyKeyboardChromeDockButton(
             systemName: "keyboard",
             badge: nil,
             chromeStyle: chromeStyle,
-            width: dimension ?? dockButtonWidth,
-            height: dimension ?? GhosttyKeyboardChromeSizing.dockButtonHeight,
+            width: dockButtonWidth,
+            height: GhosttyKeyboardChromeSizing.dockButtonHeight,
             accessibilityLabel: keyboardMode == .hidden ? "Show keyboard controls" : "Hide keyboard controls",
             accessibilityHint: nil,
             accessibilityIdentifier: "terminal.keyboard",
             isActive: keyboardMode != .hidden,
-            isEnabled: isEnabled || isComposerPresented,
+            isEnabled: isEnabled,
             action: onToggleKeyboard
-        )
-        .matchedGeometryEffect(
-            id: "terminal.keyboard",
-            in: inputControlTransition
         )
     }
 
@@ -351,14 +311,6 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
             .padding(.horizontal, isCompact ? 3 : 5)
             .padding(.vertical, GhosttyKeyboardChromeSizing.controlGroupVerticalPadding)
             .ghosttyToolbarGroupSurface()
-    }
-
-    private func standaloneControlGroup<Content: View>(
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        content()
-            .ghosttyStandaloneToolbarSurface()
-            .fixedSize()
     }
 
     private func accessoryKey(
@@ -593,11 +545,6 @@ private extension View {
     @ViewBuilder
     func ghosttyToolbarGroupSurface() -> some View {
         ghosttyToolbarSurface(in: Capsule())
-    }
-
-    @ViewBuilder
-    func ghosttyStandaloneToolbarSurface() -> some View {
-        ghosttyToolbarSurface(in: Circle())
     }
 
     @ViewBuilder
