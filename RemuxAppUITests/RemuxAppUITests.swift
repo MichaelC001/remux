@@ -172,6 +172,13 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertNotNil(waitForKeyboardPresence(true, label: "dictation stopped with keyboard visible"))
         XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
         XCTAssertTrue(keyboardDismiss.waitForExistence(timeout: 3))
+
+        composerToggle.tap()
+        XCTAssertFalse(
+            composer.waitForExistence(timeout: 1),
+            "Close must dismiss the composer when terminal keyboard handoff is unavailable."
+        )
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "composer close fallback"))
     }
 
     func testComposerDictationKeepsFullChromeWidth() {

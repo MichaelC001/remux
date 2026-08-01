@@ -824,17 +824,18 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private func closeComposer() {
         if inputCoordinator.keyboardMode == .system,
            inputCoordinator.keyboardOwner == .composer {
-            guard isTerminalInputAvailable,
-                  keyboardResponderHandoff.transfer(to: .terminal) else {
-                GhosttyRuntimeTrace.perf(
-                    "composer.toggle close deferred terminalResponderUnavailable"
+            if isTerminalInputAvailable,
+               keyboardResponderHandoff.transfer(to: .terminal) {
+                inputCoordinator.transferKeyboardOwnerIfActive(
+                    to: .terminal,
+                    isOwnerAvailable: true
                 )
-                return
+            } else {
+                GhosttyRuntimeTrace.perf(
+                    "composer.toggle close fallback=dismissKeyboard terminalResponderUnavailable"
+                )
+                dismissComposerKeyboard()
             }
-            inputCoordinator.transferKeyboardOwnerIfActive(
-                to: .terminal,
-                isOwnerAvailable: true
-            )
         }
 
         withAnimation(GhosttyKeyboardChromeAnimation.composerTransition) {
