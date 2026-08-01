@@ -169,6 +169,20 @@ final class RemuxAppUITests: XCTestCase {
 
         let composer = app.otherElements["terminal.composer.bounds"]
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        let keyboardToggle = app.buttons["terminal.keyboard"]
+        XCTAssertTrue(keyboardToggle.waitForExistence(timeout: 3))
+        XCTAssertEqual(
+            composerToggle.frame.width,
+            composerToggle.frame.height,
+            accuracy: 1,
+            "The standalone composer control must remain circular."
+        )
+        XCTAssertEqual(
+            keyboardToggle.frame.width,
+            keyboardToggle.frame.height,
+            accuracy: 1,
+            "The standalone keyboard control must remain circular."
+        )
         let compactWidth = composer.frame.width
         XCTAssertGreaterThan(
             compactWidth,
