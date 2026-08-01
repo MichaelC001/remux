@@ -448,7 +448,7 @@ struct GhosttyComposeBar: View {
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
                 .frame(width: 42, height: 42)
-                .contentShape(Circle())
+                .contentShape(Rectangle())
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -523,7 +523,7 @@ private struct GhosttyComposerPressButtonStyle: ButtonStyle {
                             : Color.clear
                     )
             }
-            .contentShape(Circle())
+            .contentShape(Rectangle())
             .animation(.easeOut(duration: 0.10), value: configuration.isPressed)
     }
 }

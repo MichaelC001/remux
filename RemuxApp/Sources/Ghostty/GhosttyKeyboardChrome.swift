@@ -34,7 +34,6 @@ enum GhosttyKeyboardChromeSizing {
     static let dockButtonHeight: CGFloat = 38
     static let dockButtonWidth: CGFloat = 38
     static let compactDockButtonWidth: CGFloat = 35
-    static let dockButtonCornerRadius: CGFloat = 17
     static let controlGroupVerticalPadding: CGFloat = 4
 
     /// The bottom chrome always reserves one dock row. Composer content may
@@ -208,7 +207,6 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
                     chromeStyle: chromeStyle,
                     width: dockButtonWidth,
                     height: GhosttyKeyboardChromeSizing.dockButtonHeight,
-                    shape: .roundedRectangle,
                     accessibilityLabel: "Sessions",
                     accessibilityHint: "Switch active sessions or open the Remux library.",
                     accessibilityIdentifier: "terminal.sessions",
@@ -223,7 +221,6 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
                     chromeStyle: chromeStyle,
                     width: dockButtonWidth,
                     height: GhosttyKeyboardChromeSizing.dockButtonHeight,
-                    shape: .roundedRectangle,
                     accessibilityLabel: windowAccessibilityLabel,
                     accessibilityHint: windowDetail,
                     accessibilityIdentifier: "terminal.windows",
@@ -238,7 +235,6 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
                     chromeStyle: chromeStyle,
                     width: dockButtonWidth,
                     height: GhosttyKeyboardChromeSizing.dockButtonHeight,
-                    shape: .roundedRectangle,
                     accessibilityLabel: paneAccessibilityLabel,
                     accessibilityHint: paneDetail,
                     accessibilityIdentifier: "terminal.panes",
@@ -281,7 +277,6 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
                     chromeStyle: chromeStyle,
                     width: dockButtonWidth,
                     height: GhosttyKeyboardChromeSizing.dockButtonHeight,
-                    shape: .roundedRectangle,
                     accessibilityLabel: "Home",
                     accessibilityHint: "Open the Remux library.",
                     accessibilityIdentifier: "terminal.home",
@@ -309,7 +304,6 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
             chromeStyle: chromeStyle,
             width: dimension ?? dockButtonWidth,
             height: dimension ?? GhosttyKeyboardChromeSizing.dockButtonHeight,
-            shape: isStandalone ? .circle : .roundedRectangle,
             accessibilityLabel: isComposerPresented ? "Close composer" : "Open composer",
             accessibilityHint: isComposerPresented
                 ? "Hide the compose field while preserving its draft."
@@ -339,7 +333,6 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
             chromeStyle: chromeStyle,
             width: dimension ?? dockButtonWidth,
             height: dimension ?? GhosttyKeyboardChromeSizing.dockButtonHeight,
-            shape: isStandalone ? .circle : .roundedRectangle,
             accessibilityLabel: keyboardMode == .hidden ? "Show keyboard controls" : "Hide keyboard controls",
             accessibilityHint: nil,
             accessibilityIdentifier: "terminal.keyboard",
@@ -434,7 +427,6 @@ private struct GhosttyKeyboardChromeDockButton: View {
     let chromeStyle: GhosttyTerminalChromeStyle
     let width: CGFloat
     let height: CGFloat
-    let shape: GhosttyChromeDockButtonShape
     let accessibilityLabel: String
     let accessibilityHint: String?
     let accessibilityIdentifier: String
@@ -460,8 +452,7 @@ private struct GhosttyKeyboardChromeDockButton: View {
             isEnabled: isEnabled,
             chromeStyle: chromeStyle,
             width: width,
-            height: height,
-            shape: shape
+            height: height
         ))
         .disabled(!isEnabled)
         .accessibilityLabel(accessibilityLabel)
@@ -512,17 +503,11 @@ private struct GhosttyKeyboardKeyButton: View {
                 isActive: isActive,
                 isPressed: isPressed,
                 isEnabled: isEnabled,
-                chromeStyle: chromeStyle,
-                shape: .roundedRectangle
+                chromeStyle: chromeStyle
             )
             .scaleEffect(isPressed && isEnabled ? 0.96 : 1)
             .opacity(isEnabled ? 1 : 0.42)
-            .contentShape(
-                RoundedRectangle(
-                    cornerRadius: GhosttyKeyboardChromeSizing.dockButtonCornerRadius,
-                    style: .continuous
-                )
-            )
+            .contentShape(Rectangle())
             .accessibilityLabel(title)
             .accessibilityIdentifier(accessibilityIdentifier)
             .accessibilityAddTraits(.isButton)
@@ -583,7 +568,6 @@ private struct GhosttyChromeDockButtonStyle: ButtonStyle {
     let chromeStyle: GhosttyTerminalChromeStyle
     let width: CGFloat
     let height: CGFloat
-    let shape: GhosttyChromeDockButtonShape
 
     func makeBody(configuration: Configuration) -> some View {
         GhosttyChromePressBody(
@@ -598,16 +582,11 @@ private struct GhosttyChromeDockButtonStyle: ButtonStyle {
                     isActive: isActive,
                     isPressed: configuration.isPressed,
                     isEnabled: isEnabled,
-                    chromeStyle: chromeStyle,
-                    shape: shape
+                    chromeStyle: chromeStyle
                 )
+                .contentShape(Rectangle())
         }
     }
-}
-
-private enum GhosttyChromeDockButtonShape {
-    case roundedRectangle
-    case circle
 }
 
 private extension View {
@@ -656,40 +635,9 @@ private extension View {
         isActive: Bool,
         isPressed: Bool,
         isEnabled: Bool,
-        chromeStyle: GhosttyTerminalChromeStyle,
-        shape: GhosttyChromeDockButtonShape
+        chromeStyle: GhosttyTerminalChromeStyle
     ) -> some View {
-        switch shape {
-        case .roundedRectangle:
-            ghosttyToolbarButtonSurface(
-                isActive: isActive,
-                isPressed: isPressed,
-                isEnabled: isEnabled,
-                chromeStyle: chromeStyle,
-                in: RoundedRectangle(
-                    cornerRadius: GhosttyKeyboardChromeSizing.dockButtonCornerRadius,
-                    style: .continuous
-                )
-            )
-        case .circle:
-            ghosttyToolbarButtonSurface(
-                isActive: isActive,
-                isPressed: isPressed,
-                isEnabled: isEnabled,
-                chromeStyle: chromeStyle,
-                in: Circle()
-            )
-        }
-    }
-
-    @ViewBuilder
-    private func ghosttyToolbarButtonSurface<S: Shape>(
-        isActive: Bool,
-        isPressed: Bool,
-        isEnabled: Bool,
-        chromeStyle: GhosttyTerminalChromeStyle,
-        in shape: S
-    ) -> some View {
+        let shape = Circle()
 
         if #available(iOS 26.0, *) {
             self
@@ -697,7 +645,6 @@ private extension View {
                 .overlay {
                     shape.fill(isPressed && isEnabled ? GhosttyPhoneChromePalette.toolbarButtonPressedFill : Color.clear)
                 }
-                .contentShape(shape)
         } else {
             let activeFill = isActive ? chromeStyle.toolbarButtonActiveFill : Color.clear
             let pressedFill = isPressed && isEnabled ? GhosttyPhoneChromePalette.toolbarButtonPressedFill : Color.clear
@@ -707,7 +654,6 @@ private extension View {
                 .overlay {
                     shape.fill(pressedFill)
                 }
-                .contentShape(shape)
         }
     }
 }
