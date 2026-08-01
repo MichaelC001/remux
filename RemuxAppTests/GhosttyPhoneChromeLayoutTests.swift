@@ -99,4 +99,30 @@ final class GhosttyPhoneChromeLayoutTests: XCTestCase {
             274
         )
     }
+
+    func testBottomChromeReservationTracksSettledChromeHeight() {
+        var reservation = GhosttyBottomChromeReservation()
+
+        XCTAssertEqual(reservation.layoutHeight(fallback: 52), 52)
+        XCTAssertTrue(reservation.observe(renderedHeight: 91.2, isTransient: false))
+        XCTAssertEqual(reservation.settledHeight, 92)
+        XCTAssertEqual(reservation.layoutHeight(fallback: 52), 92)
+    }
+
+    func testBottomChromeReservationIgnoresTransientDictationHeight() {
+        var reservation = GhosttyBottomChromeReservation()
+        reservation.observe(renderedHeight: 124, isTransient: false)
+
+        XCTAssertFalse(reservation.observe(renderedHeight: 54, isTransient: true))
+        XCTAssertEqual(reservation.settledHeight, 124)
+    }
+
+    func testBottomChromeReservationAdoptsFinalComposerHeightAfterDictation() {
+        var reservation = GhosttyBottomChromeReservation()
+        reservation.observe(renderedHeight: 92, isTransient: false)
+        reservation.observe(renderedHeight: 54, isTransient: true)
+
+        XCTAssertTrue(reservation.observe(renderedHeight: 138, isTransient: false))
+        XCTAssertEqual(reservation.settledHeight, 138)
+    }
 }

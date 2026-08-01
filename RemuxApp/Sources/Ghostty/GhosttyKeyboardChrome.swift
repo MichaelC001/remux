@@ -36,8 +36,8 @@ enum GhosttyKeyboardChromeSizing {
     static let compactDockButtonWidth: CGFloat = 35
     static let controlGroupVerticalPadding: CGFloat = 4
 
-    /// The bottom chrome always reserves one dock row. Composer content may
-    /// grow above this baseline without changing the terminal viewport.
+    /// Fallback reservation before the bottom chrome reports its intrinsic
+    /// height. Settled chrome subsequently owns its full measured footprint.
     static let baselineHeight = dockButtonHeight + (controlGroupVerticalPadding * 2)
 
     static func keyboardReplacementHeight(
@@ -49,6 +49,26 @@ enum GhosttyKeyboardChromeSizing {
         }
         let safeAreaHeight = bottomSafeAreaHeight.isFinite ? max(0, bottomSafeAreaHeight) : 0
         return ceil(max(0, keyboardOverlapHeight - safeAreaHeight))
+    }
+}
+
+struct GhosttyBottomChromeReservation: Equatable {
+    private(set) var settledHeight: CGFloat = 0
+
+    func layoutHeight(fallback: CGFloat) -> CGFloat {
+        settledHeight > 0 ? settledHeight : fallback
+    }
+
+    @discardableResult
+    mutating func observe(renderedHeight: CGFloat, isTransient: Bool) -> Bool {
+        guard !isTransient,
+              renderedHeight.isFinite,
+              renderedHeight > 0 else { return false }
+
+        let normalizedHeight = ceil(renderedHeight)
+        guard settledHeight != normalizedHeight else { return false }
+        settledHeight = normalizedHeight
+        return true
     }
 }
 

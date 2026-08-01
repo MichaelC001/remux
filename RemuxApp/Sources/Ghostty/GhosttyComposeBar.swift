@@ -273,14 +273,15 @@ struct GhosttyComposeBar: View {
             value: dictationPhase.isActive
         )
         .overlay(alignment: .top) {
-            keyboardDismissAffordance
-                .opacity(showsKeyboardDismissAffordance ? 1 : 0)
-                .allowsHitTesting(showsKeyboardDismissAffordance)
-                .accessibilityHidden(!showsKeyboardDismissAffordance)
-                .animation(
-                    .easeOut(duration: showsKeyboardDismissAffordance ? 0.12 : 0.08),
-                    value: showsKeyboardDismissAffordance
-                )
+            if showsKeyboardDismissAffordance {
+                keyboardDismissAffordance
+                    .transition(
+                        .asymmetric(
+                            insertion: .opacity.animation(.easeOut(duration: 0.12)),
+                            removal: .opacity.animation(.easeOut(duration: 0.08))
+                        )
+                    )
+            }
         }
         .onChange(of: showsKeyboardDismissAffordance, initial: true) { _, isVisible in
             guard isVisible else {

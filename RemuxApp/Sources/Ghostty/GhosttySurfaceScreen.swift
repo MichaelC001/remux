@@ -70,7 +70,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var terminalInputController = GhosttyTerminalInputController()
     @State private var keyboardResponderHandoff = GhosttyKeyboardResponderHandoff()
     @State private var selectionSheet: GhosttySurfaceSelectionSheet?
-    @State private var bottomChromeHeight: CGFloat = 0
+    @State private var bottomChromeReservation = GhosttyBottomChromeReservation()
     @State private var softwareKeyboardOverlapHeight: CGFloat = 0
     @State private var lastSoftwareKeyboardOverlapHeight: CGFloat = 0
     @State private var terminalViewportCoordinator = GhosttyTerminalViewportCoordinator()
@@ -173,6 +173,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         isSelected && composer.isPresented
     }
 
+    private var isComposerChromeHeightTransient: Bool {
+        isActiveComposerPresented && composer.dictationController.phase.isActive
+    }
+
     private var composerAttachmentsBinding: Binding<[GhosttyPendingAttachment]> {
         Binding(
             get: { composer.attachments },
@@ -189,6 +193,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             let renderedKeyboardMode = inputCoordinator.keyboardMode
             let chrome = GhosttyPhoneChromeLayout(
                 screenSize: screenProxy.size
+            )
+            let bottomChromeFallbackHeight = GhosttyKeyboardChromeSizing.baselineHeight
+                + 4
+                + chrome.bottomPadding
+            let bottomChromeHeight = bottomChromeReservation.layoutHeight(
+                fallback: bottomChromeFallbackHeight
             )
             let screenProjection = model.terminalScreenPresentationProjection
             let readiness = screenProjection.readiness
@@ -406,7 +416,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 Color.clear
-                    .frame(height: GhosttyKeyboardChromeSizing.baselineHeight)
+                    .frame(height: bottomChromeHeight)
                     .overlay(alignment: .bottom) {
                         GhosttyKeyboardChrome(
                             keyboardMode: renderedKeyboardMode,
@@ -431,27 +441,30 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         ) {
                             selectedComposerBar()
                         }
-                    }
-                    .padding(.horizontal, chrome.surfaceHorizontalPadding)
-                    .padding(.top, 4)
-                    .padding(.bottom, chrome.bottomPadding)
-                    .frame(maxWidth: .infinity, alignment: .bottom)
-                    .background {
-                        GeometryReader { chromeProxy in
-                            Color.clear.preference(
-                                key: GhosttyBottomChromeHeightPreferenceKey.self,
-                                value: chromeProxy.size.height
-                            )
+                        .padding(.horizontal, chrome.surfaceHorizontalPadding)
+                        .padding(.top, 4)
+                        .padding(.bottom, chrome.bottomPadding)
+                        .frame(maxWidth: .infinity, alignment: .bottom)
+                        .background {
+                            GeometryReader { chromeProxy in
+                                Color.clear.preference(
+                                    key: GhosttyRenderedBottomChromeHeightPreferenceKey.self,
+                                    value: chromeProxy.size.height
+                                )
+                            }
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .bottom)
             }
-            .onPreferenceChange(GhosttyBottomChromeHeightPreferenceKey.self) { newHeight in
-                let normalizedHeight = GhosttyViewportSizing.normalizedHeight(newHeight)
-                guard bottomChromeHeight != normalizedHeight else { return }
+            .onPreferenceChange(GhosttyRenderedBottomChromeHeightPreferenceKey.self) { renderedHeight in
+                let previousHeight = bottomChromeReservation.settledHeight
+                guard bottomChromeReservation.observe(
+                    renderedHeight: renderedHeight,
+                    isTransient: isComposerChromeHeightTransient
+                ) else { return }
                 GhosttyRuntimeTrace.tmuxViewport(
-                    "viewport.bottomChrome old=\(bottomChromeHeight.traceLabel) new=\(normalizedHeight.traceLabel) keyboardMode=\(inputCoordinator.keyboardMode.traceLabel) renderedMode=\(renderedKeyboardMode.traceLabel) softwareKeyboardVisible=\(inputCoordinator.isSoftwareKeyboardVisible) overlap=\(softwareKeyboardOverlapHeight.traceLabel)"
+                    "viewport.bottomChrome old=\(previousHeight.traceLabel) new=\(bottomChromeReservation.settledHeight.traceLabel) rendered=\(renderedHeight.traceLabel) keyboardMode=\(inputCoordinator.keyboardMode.traceLabel) renderedMode=\(renderedKeyboardMode.traceLabel) softwareKeyboardVisible=\(inputCoordinator.isSoftwareKeyboardVisible) overlap=\(softwareKeyboardOverlapHeight.traceLabel)"
                 )
-                bottomChromeHeight = normalizedHeight
             }
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) {
                 guard shouldHandleTerminalKeyboardNotification else { return }
@@ -2208,7 +2221,7 @@ private struct GhosttyKeyboardContinuityAccessibilityMarker: View {
 }
 #endif
 
-private struct GhosttyBottomChromeHeightPreferenceKey: PreferenceKey {
+private struct GhosttyRenderedBottomChromeHeightPreferenceKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {

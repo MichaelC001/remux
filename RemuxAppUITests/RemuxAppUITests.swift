@@ -62,6 +62,10 @@ final class RemuxAppUITests: XCTestCase {
         let composer = app.otherElements["terminal.composer.bounds"]
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         let editingComposerFrame = composer.frame
+        let editingTerminalFrame = app.otherElements["terminal.screen"].frame
+        guard let editingContinuity = waitForKeyboardContinuity(owner: "none") else {
+            return
+        }
         XCTAssertGreaterThan(
             editingComposerFrame.height,
             60,
@@ -101,6 +105,16 @@ final class RemuxAppUITests: XCTestCase {
             accuracy: 1,
             "Dictation must not shrink the composer."
         )
+        XCTAssertEqual(
+            app.otherElements["terminal.screen"].frame,
+            editingTerminalFrame,
+            "Transient dictation must not resize the terminal surface."
+        )
+        guard let recordingContinuity = waitForKeyboardContinuity(owner: "none") else {
+            return
+        }
+        XCTAssertEqual(recordingContinuity.effectiveViewport, editingContinuity.effectiveViewport)
+        XCTAssertEqual(recordingContinuity.bottomChrome, editingContinuity.bottomChrome)
 
         RunLoop.current.run(until: Date().addingTimeInterval(0.6))
         stop.tap()
@@ -247,7 +261,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["No speech detected. Try again."].exists)
     }
 
-    func testComposerToggleKeepsOpenKeyboardAndTerminalViewportStable() {
+    func testComposerTogglePreservesKeyboardWhileReservingComposerViewport() {
         app.launchEnvironment["REMUX_UI_TEST_INPUT_READY"] = "1"
         launchSimulatorApp()
         openConnectionSetup()
@@ -277,7 +291,8 @@ final class RemuxAppUITests: XCTestCase {
         guard let hiddenOpenContinuity = waitForKeyboardContinuity(owner: "none") else {
             return
         }
-        XCTAssertEqual(hiddenOpenContinuity.effectiveViewport, hiddenContinuity.effectiveViewport)
+        XCTAssertNotEqual(hiddenOpenContinuity.effectiveViewport, hiddenContinuity.effectiveViewport)
+        XCTAssertNotEqual(hiddenOpenContinuity.bottomChrome, hiddenContinuity.bottomChrome)
 
         composerToggle.tap()
         XCTAssertFalse(composerField.waitForExistence(timeout: 1))
@@ -308,10 +323,10 @@ final class RemuxAppUITests: XCTestCase {
         }
         XCTAssertEqual(composerContinuity.willHideCount, initialContinuity.willHideCount)
         XCTAssertEqual(keyboard.frame, initialKeyboardFrame)
-        XCTAssertEqual(
+        XCTAssertNotEqual(
             composerContinuity.effectiveViewport,
             initialContinuity.effectiveViewport,
-            "Opening the composer changed the terminal viewport "
+            "Opening the composer must reserve its full height from the terminal viewport "
                 + "from live=\(initialContinuity.liveViewport), effective=\(initialContinuity.effectiveViewport) "
                 + "to live=\(composerContinuity.liveViewport), effective=\(composerContinuity.effectiveViewport); "
                 + "bottomChrome \(initialContinuity.bottomChrome) → \(composerContinuity.bottomChrome), "
@@ -348,7 +363,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertEqual(reopenedContinuity.willHideCount, initialContinuity.willHideCount)
         XCTAssertEqual(composerField.value as? String, "Keep this draft")
         XCTAssertEqual(keyboard.frame, initialKeyboardFrame)
-        XCTAssertEqual(reopenedContinuity.effectiveViewport, initialContinuity.effectiveViewport)
+        XCTAssertEqual(reopenedContinuity.effectiveViewport, composerContinuity.effectiveViewport)
 
         composerToggle.tap()
         XCTAssertFalse(composerField.waitForExistence(timeout: 1))
