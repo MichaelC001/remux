@@ -113,9 +113,13 @@ private struct GhosttyComposerInputLayout: Layout {
 
         var x = bounds.minX
         for (index, size) in metrics.compactSizes.enumerated() {
+            let centersDictationContent = isDictationActive && index == 1
             subviews[index].place(
-                at: CGPoint(x: x, y: bounds.maxY),
-                anchor: .bottomLeading,
+                at: CGPoint(
+                    x: x,
+                    y: centersDictationContent ? bounds.midY : bounds.maxY
+                ),
+                anchor: centersDictationContent ? .leading : .bottomLeading,
                 proposal: ProposedViewSize(size)
             )
             x += size.width + horizontalSpacing
@@ -448,7 +452,7 @@ struct GhosttyComposeBar: View {
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(GhosttyPhoneChromePalette.chromeForeground)
                 .frame(width: 42, height: 42)
-                .contentShape(Circle())
+                .contentShape(Rectangle())
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -523,7 +527,7 @@ private struct GhosttyComposerPressButtonStyle: ButtonStyle {
                             : Color.clear
                     )
             }
-            .contentShape(Circle())
+            .contentShape(Rectangle())
             .animation(.easeOut(duration: 0.10), value: configuration.isPressed)
     }
 }

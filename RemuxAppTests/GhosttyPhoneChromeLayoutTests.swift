@@ -3,6 +3,17 @@ import XCTest
 @testable import Remux
 
 final class GhosttyPhoneChromeLayoutTests: XCTestCase {
+    func testStandaloneControlDiameterMatchesDockBaseline() {
+        XCTAssertEqual(
+            GhosttyKeyboardChromeSizing.standaloneControlDiameter,
+            GhosttyKeyboardChromeSizing.baselineHeight
+        )
+        XCTAssertGreaterThanOrEqual(
+            GhosttyKeyboardChromeSizing.standaloneControlDiameter,
+            44
+        )
+    }
+
     func testNarrowPortraitUsesCompactChrome() {
         let layout = GhosttyPhoneChromeLayout(
             screenSize: CGSize(width: 390, height: 844)

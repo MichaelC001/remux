@@ -163,12 +163,33 @@ final class RemuxAppUITests: XCTestCase {
 
         let terminal = app.otherElements["terminal.screen"]
         XCTAssertTrue(terminal.waitForExistence(timeout: 5))
+
         let composerToggle = app.buttons["terminal.composer.toggle"]
         XCTAssertTrue(composerToggle.waitForExistence(timeout: 5))
-        composerToggle.tap()
+        // Exercise the allocated button cell outside the inscribed circular
+        // feedback. The full cell must remain interactive even though only
+        // the circle is rendered when the control is pressed.
+        composerToggle
+            .coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
+            .withOffset(CGVector(dx: 2, dy: 2))
+            .tap()
 
         let composer = app.otherElements["terminal.composer.bounds"]
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        let keyboardToggle = app.buttons["terminal.keyboard"]
+        XCTAssertTrue(keyboardToggle.waitForExistence(timeout: 3))
+        XCTAssertEqual(
+            composerToggle.frame.width,
+            composerToggle.frame.height,
+            accuracy: 1,
+            "The standalone composer control must remain circular."
+        )
+        XCTAssertEqual(
+            keyboardToggle.frame.width,
+            keyboardToggle.frame.height,
+            accuracy: 1,
+            "The standalone keyboard control must remain circular."
+        )
         let compactWidth = composer.frame.width
         XCTAssertGreaterThan(
             compactWidth,
