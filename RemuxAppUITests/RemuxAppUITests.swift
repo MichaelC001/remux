@@ -61,12 +61,16 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertNotNil(waitForKeyboardPresence(false, label: "composer opened without keyboard"))
         let composer = app.otherElements["terminal.composer.bounds"]
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
-        let compactComposerFrame = composer.frame
-        XCTAssertLessThanOrEqual(compactComposerFrame.height, 60)
+        let editingComposerFrame = composer.frame
         XCTAssertGreaterThan(
-            compactComposerFrame.width,
-            app.otherElements["terminal.screen"].frame.width * 0.55,
-            "The compact composer must fill the middle dock slot."
+            editingComposerFrame.height,
+            60,
+            "The editor and controls must use distinct rows even for an empty draft."
+        )
+        XCTAssertGreaterThan(
+            editingComposerFrame.width,
+            app.otherElements["terminal.screen"].frame.width * 0.9,
+            "The composer must use the full bottom-chrome width."
         )
         let placeholder = app.staticTexts["terminal.composer.placeholder"]
         XCTAssertTrue(placeholder.exists)
@@ -78,32 +82,25 @@ final class RemuxAppUITests: XCTestCase {
         let cancel = app.buttons["terminal.composer.dictation.cancel"]
         let stop = app.buttons["terminal.composer.dictation.stop"]
         let meter = app.descendants(matching: .any)["terminal.composer.dictation.meter"]
+        let keyboardDismiss = app.descendants(matching: .any)["terminal.composer.keyboard-dismiss"]
         XCTAssertTrue(cancel.waitForExistence(timeout: 3))
         XCTAssertTrue(stop.waitForExistence(timeout: 3))
         XCTAssertTrue(meter.waitForExistence(timeout: 3))
         XCTAssertFalse(placeholder.exists)
         XCTAssertNotNil(waitForKeyboardPresence(false, label: "dictation started with keyboard hidden"))
+        XCTAssertFalse(keyboardDismiss.exists)
         attachScreenshot(named: "composer-dictation-recording")
-        XCTAssertEqual(composer.frame.height, compactComposerFrame.height, accuracy: 1)
+        XCTAssertLessThan(
+            composer.frame.height,
+            editingComposerFrame.height,
+            "Active dictation must collapse the same composer surface into a compact row."
+        )
         XCTAssertEqual(
             composer.frame.width,
-            compactComposerFrame.width,
+            editingComposerFrame.width,
             accuracy: 1,
             "Dictation must not shrink the composer."
         )
-
-        composerToggle.tap()
-        XCTAssertFalse(composer.waitForExistence(timeout: 1))
-        openHomeFromTerminal()
-        let activeSession = activeSessionRows.firstMatch
-        XCTAssertTrue(activeSession.waitForExistence(timeout: 3))
-        activeSession.tap()
-        XCTAssertTrue(app.otherElements["terminal.screen"].waitForExistence(timeout: 5))
-        XCTAssertTrue(composerToggle.waitForExistence(timeout: 3))
-        composerToggle.tap()
-        XCTAssertTrue(composer.waitForExistence(timeout: 3))
-        XCTAssertTrue(stop.waitForExistence(timeout: 3))
-        XCTAssertTrue(meter.waitForExistence(timeout: 3))
 
         RunLoop.current.run(until: Date().addingTimeInterval(0.6))
         stop.tap()
@@ -111,6 +108,8 @@ final class RemuxAppUITests: XCTestCase {
         let status = app.staticTexts["terminal.composer.dictation.status"]
         XCTAssertTrue(status.waitForExistence(timeout: 1))
         XCTAssertEqual(status.label, "Transcribing…")
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "transcribing kept keyboard hidden"))
+        XCTAssertFalse(keyboardDismiss.exists)
         attachScreenshot(named: "composer-dictation-transcribing")
 
         let field = app.textViews["terminal.composer.field"]
@@ -121,8 +120,8 @@ final class RemuxAppUITests: XCTestCase {
 
         field.tap()
         XCTAssertNotNil(waitForKeyboardPresence(true, label: "composer field focused"))
-        field.typeText(" Keep this draft")
         let visibleKeyboardFrame = app.keyboards.firstMatch.frame
+        field.typeText(" Keep this draft")
         guard let originalDraft = field.value as? String else {
             XCTFail("Composer field did not expose its edited draft")
             return
@@ -130,8 +129,9 @@ final class RemuxAppUITests: XCTestCase {
         mic.tap()
         XCTAssertTrue(cancel.waitForExistence(timeout: 3))
         XCTAssertFalse(placeholder.exists)
-        XCTAssertNotNil(waitForKeyboardPresence(true, label: "dictation started with keyboard visible"))
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "dictation kept keyboard visible"))
         XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
+        XCTAssertFalse(keyboardDismiss.exists, "Transient dictation states must not show the keyboard drag affordance.")
         attachScreenshot(named: "composer-dictation-recording-keyboard-visible")
         RunLoop.current.run(until: Date().addingTimeInterval(0.6))
         cancel.tap()
@@ -140,20 +140,27 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertEqual(field.value as? String, originalDraft)
         XCTAssertNotNil(waitForKeyboardPresence(true, label: "dictation cancelled with keyboard visible"))
         XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
+        XCTAssertTrue(keyboardDismiss.waitForExistence(timeout: 3))
         attachScreenshot(named: "composer-dictation-cancelled")
 
         mic.tap()
         XCTAssertTrue(stop.waitForExistence(timeout: 3))
-        XCTAssertNotNil(waitForKeyboardPresence(true, label: "second dictation started with keyboard visible"))
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "second dictation kept keyboard visible"))
         XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
+        XCTAssertFalse(keyboardDismiss.exists)
         stop.tap()
 
+        XCTAssertTrue(status.waitForExistence(timeout: 1))
+        XCTAssertEqual(status.label, "Transcribing…")
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "transcribing kept keyboard visible"))
+        XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
         XCTAssertTrue(field.waitForExistence(timeout: 3))
         XCTAssertNotNil(waitForKeyboardPresence(true, label: "dictation stopped with keyboard visible"))
         XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
+        XCTAssertTrue(keyboardDismiss.waitForExistence(timeout: 3))
     }
 
-    func testComposerDictationKeepsMiddleDockWidth() {
+    func testComposerDictationKeepsFullChromeWidth() {
         app.launchEnvironment["REMUX_DEBUG_DICTATION_TRANSCRIPT"] = "Width stability"
         launchSimulatorApp()
         openConnectionSetup()
@@ -177,24 +184,12 @@ final class RemuxAppUITests: XCTestCase {
         let composer = app.otherElements["terminal.composer.bounds"]
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         let keyboardToggle = app.buttons["terminal.keyboard"]
-        XCTAssertTrue(keyboardToggle.waitForExistence(timeout: 3))
-        XCTAssertEqual(
-            composerToggle.frame.width,
-            composerToggle.frame.height,
-            accuracy: 1,
-            "The standalone composer control must remain circular."
-        )
-        XCTAssertEqual(
-            keyboardToggle.frame.width,
-            keyboardToggle.frame.height,
-            accuracy: 1,
-            "The standalone keyboard control must remain circular."
-        )
-        let compactWidth = composer.frame.width
+        XCTAssertFalse(keyboardToggle.exists, "Composer mode must not expose a keyboard button.")
+        let composerWidth = composer.frame.width
         XCTAssertGreaterThan(
-            compactWidth,
-            terminal.frame.width * 0.55,
-            "The compact composer must fill the middle dock slot."
+            composerWidth,
+            terminal.frame.width * 0.9,
+            "The composer must use the full bottom-chrome width."
         )
 
         let mic = app.buttons["terminal.composer.mic"]
@@ -207,7 +202,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(meter.waitForExistence(timeout: 3))
         XCTAssertEqual(
             composer.frame.width,
-            compactWidth,
+            composerWidth,
             accuracy: 1,
             "Dictation must not shrink the composer."
         )
@@ -215,7 +210,7 @@ final class RemuxAppUITests: XCTestCase {
 
         cancel.tap()
         XCTAssertTrue(mic.waitForExistence(timeout: 3))
-        XCTAssertEqual(composer.frame.width, compactWidth, accuracy: 1)
+        XCTAssertEqual(composer.frame.width, composerWidth, accuracy: 1)
     }
 
     func testComposerDictationCanRestartAfterNoSpeech() {
@@ -307,6 +302,7 @@ final class RemuxAppUITests: XCTestCase {
 
         composerToggle.tap()
         XCTAssertTrue(composerField.waitForExistence(timeout: 3))
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "composer keyboard after terminal handoff"))
         guard let composerContinuity = waitForKeyboardContinuity(owner: "composer") else {
             return
         }
@@ -327,6 +323,13 @@ final class RemuxAppUITests: XCTestCase {
 
         composerToggle.tap()
         XCTAssertFalse(composerField.waitForExistence(timeout: 1))
+        XCTAssertNotNil(
+            waitForKeyboardPresence(
+                true,
+                label: "terminal keyboard after composer close",
+                stableFor: 0.75
+            )
+        )
         guard let terminalContinuity = waitForKeyboardContinuity(owner: "terminal") else {
             return
         }
@@ -338,6 +341,7 @@ final class RemuxAppUITests: XCTestCase {
 
         composerToggle.tap()
         XCTAssertTrue(composerField.waitForExistence(timeout: 3))
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "composer keyboard after reopen"))
         guard let reopenedContinuity = waitForKeyboardContinuity(owner: "composer") else {
             return
         }
@@ -348,12 +352,63 @@ final class RemuxAppUITests: XCTestCase {
 
         composerToggle.tap()
         XCTAssertFalse(composerField.waitForExistence(timeout: 1))
+        XCTAssertNotNil(
+            waitForKeyboardPresence(
+                true,
+                label: "terminal keyboard after second composer close",
+                stableFor: 0.75
+            )
+        )
         guard let reclosedContinuity = waitForKeyboardContinuity(owner: "terminal") else {
             return
         }
         XCTAssertEqual(reclosedContinuity.willHideCount, initialContinuity.willHideCount)
         XCTAssertEqual(keyboard.frame, initialKeyboardFrame)
         XCTAssertEqual(reclosedContinuity.effectiveViewport, initialContinuity.effectiveViewport)
+    }
+
+    func testComposerHandleDismissesAndEditorRestoresKeyboard() {
+        app.launchEnvironment["REMUX_UI_TEST_INPUT_READY"] = "1"
+        app.launchArguments += ["-terminal.composer.keyboardDismissHintShown", "NO"]
+        launchSimulatorApp()
+        openConnectionSetup()
+        fillConnectionForm()
+        saveConnectionAndWaitForTerminal()
+        _ = waitForTerminalHomeButton()
+        waitForLiveTerminalInputReady(timeout: 10)
+
+        hideKeyboardIfPresent()
+        let composerToggle = app.buttons["terminal.composer.toggle"]
+        XCTAssertTrue(composerToggle.waitForExistence(timeout: 5))
+        composerToggle.tap()
+
+        let field = app.textViews["terminal.composer.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "composer keyboard before handle drag"))
+        guard let visibleContinuity = waitForKeyboardContinuity(owner: "composer") else {
+            return
+        }
+
+        let handle = app.descendants(matching: .any)["terminal.composer.keyboard-dismiss"]
+        XCTAssertTrue(handle.waitForExistence(timeout: 3))
+        attachScreenshot(named: "composer-keyboard-dismiss-hint")
+        let dragStart = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let dragEnd = dragStart.withOffset(CGVector(dx: 0, dy: 14))
+        dragStart.press(forDuration: 0.05, thenDragTo: dragEnd)
+
+        XCTAssertNotNil(waitForKeyboardPresence(false, label: "composer keyboard after handle drag"))
+        XCTAssertTrue(field.exists, "Dismissing the keyboard must keep the composer open.")
+        guard let hiddenContinuity = waitForKeyboardContinuity(owner: "none") else {
+            return
+        }
+        XCTAssertGreaterThan(hiddenContinuity.willHideCount, visibleContinuity.willHideCount)
+        attachScreenshot(named: "composer-keyboard-dismissed")
+
+        field.tap()
+        XCTAssertNotNil(waitForKeyboardPresence(true, label: "composer keyboard after editor retap"))
+        XCTAssertNotNil(waitForKeyboardContinuity(owner: "composer"))
+        XCTAssertTrue(handle.waitForExistence(timeout: 3))
     }
 
     func testComposerMultilineKeepsWidthAndKeyboardStable() {
@@ -382,7 +437,7 @@ final class RemuxAppUITests: XCTestCase {
             waitForSoftwareKeyboardOnScreen(timeout: 3),
             "Composer Send continuity must be exercised with the software keyboard visibly on screen."
         )
-        let compactTextWidth = composerField.frame.width
+        let initialTextWidth = composerField.frame.width
 
         let initialText = "Explain why this composer keeps its width"
         composerField.typeText(initialText)
@@ -394,7 +449,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertGreaterThan(
             composerWidthBeforeWrapping,
             terminal.frame.width * 0.55,
-            "The composer must fill the middle dock slot rather than shrink-wrap its content."
+            "The composer must fill the bottom chrome rather than shrink-wrap its content."
         )
         composerField.typeText(
             " and explain why the composer keeps the same width while its text wraps across multiple lines"
@@ -408,20 +463,25 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertGreaterThan(
             composerField.frame.width,
             composerBounds.frame.width * 0.88,
-            "Expanded text must use the composer width instead of staying between the controls."
+            "The editor must use the composer width instead of sitting between controls."
         )
-        XCTAssertGreaterThan(
+        XCTAssertEqual(
             composerField.frame.width,
-            compactTextWidth,
-            "The text region must widen when it moves above the control row."
+            initialTextWidth,
+            accuracy: 1,
+            "The editor must keep its full width as text wraps."
         )
 
         let attachmentButton = app.buttons["terminal.composer.attachments"]
+        let closeButton = app.buttons["terminal.composer.toggle"]
         let micButton = app.buttons["terminal.composer.mic"]
         let sendButton = app.buttons["terminal.composer.send"]
         XCTAssertLessThanOrEqual(composerField.frame.maxY, attachmentButton.frame.minY)
+        XCTAssertEqual(attachmentButton.frame.midY, closeButton.frame.midY, accuracy: 1)
         XCTAssertEqual(attachmentButton.frame.midY, micButton.frame.midY, accuracy: 1)
         XCTAssertEqual(micButton.frame.midY, sendButton.frame.midY, accuracy: 1)
+        XCTAssertLessThanOrEqual(attachmentButton.frame.maxX, closeButton.frame.minX)
+        XCTAssertLessThan(closeButton.frame.maxX, micButton.frame.minX)
         attachScreenshot(named: "composer-multiline-width-stable")
 
         let keyboard = app.keyboards.firstMatch
@@ -2338,17 +2398,26 @@ final class RemuxAppUITests: XCTestCase {
         _ expected: Bool,
         label: String,
         timeout: TimeInterval = 3,
-        pollInterval: TimeInterval = 0.01
+        pollInterval: TimeInterval = 0.01,
+        stableFor minimumStableDuration: TimeInterval = 0
     ) -> TimeInterval? {
         let start = Date()
         let deadline = start.addingTimeInterval(timeout)
         let keyboard = app.keyboards.firstMatch
+        var matchingSince: Date?
 
         repeat {
-            if keyboard.exists == expected {
-                let elapsed = Date().timeIntervalSince(start)
-                print("Remux UI perf keyboard.\(expected ? "visible" : "hidden") label=\"\(label)\" elapsed_ms=\(String(format: "%.3f", elapsed * 1000))")
-                return elapsed
+            if isSoftwareKeyboardOnScreen(keyboard) == expected {
+                let now = Date()
+                matchingSince = matchingSince ?? now
+                if let matchingSince,
+                   now.timeIntervalSince(matchingSince) >= minimumStableDuration {
+                    let elapsed = now.timeIntervalSince(start)
+                    print("Remux UI perf keyboard.\(expected ? "visible" : "hidden") label=\"\(label)\" elapsed_ms=\(String(format: "%.3f", elapsed * 1000))")
+                    return elapsed
+                }
+            } else {
+                matchingSince = nil
             }
             RunLoop.current.run(until: Date().addingTimeInterval(pollInterval))
         } while Date() < deadline
@@ -3650,19 +3719,19 @@ final class RemuxAppUITests: XCTestCase {
         let keyboard = app.keyboards.firstMatch
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            let frame = keyboard.frame
-            if keyboard.exists,
-               frame.height > 100,
-               frame.intersects(app.frame) {
+            if isSoftwareKeyboardOnScreen(keyboard) {
                 return true
             }
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         }
 
+        return isSoftwareKeyboardOnScreen(keyboard)
+    }
+
+    private func isSoftwareKeyboardOnScreen(_ keyboard: XCUIElement) -> Bool {
+        guard keyboard.exists else { return false }
         let frame = keyboard.frame
-        return keyboard.exists
-            && frame.height > 100
-            && frame.intersects(app.frame)
+        return frame.height > 100 && frame.intersects(app.frame)
     }
 
     private func waitForCopyMenuItem(timeout: TimeInterval) -> XCUIElement {
