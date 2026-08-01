@@ -70,7 +70,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     @State private var terminalInputController = GhosttyTerminalInputController()
     @State private var keyboardResponderHandoff = GhosttyKeyboardResponderHandoff()
     @State private var selectionSheet: GhosttySurfaceSelectionSheet?
-    @State private var bottomChromeHeight: CGFloat = 0
+    @State private var bottomChromeReservation = GhosttyBottomChromeReservation()
     @State private var softwareKeyboardOverlapHeight: CGFloat = 0
     @State private var lastSoftwareKeyboardOverlapHeight: CGFloat = 0
     @State private var terminalViewportCoordinator = GhosttyTerminalViewportCoordinator()
@@ -173,6 +173,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         isSelected && composer.isPresented
     }
 
+    private var isComposerChromeHeightTransient: Bool {
+        isActiveComposerPresented && composer.dictationController.phase.isActive
+    }
+
     private var composerAttachmentsBinding: Binding<[GhosttyPendingAttachment]> {
         Binding(
             get: { composer.attachments },
@@ -189,6 +193,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             let renderedKeyboardMode = inputCoordinator.keyboardMode
             let chrome = GhosttyPhoneChromeLayout(
                 screenSize: screenProxy.size
+            )
+            let bottomChromeFallbackHeight = GhosttyKeyboardChromeSizing.baselineHeight
+                + 4
+                + chrome.bottomPadding
+            let bottomChromeHeight = bottomChromeReservation.layoutHeight(
+                fallback: bottomChromeFallbackHeight
             )
             let screenProjection = model.terminalScreenPresentationProjection
             let readiness = screenProjection.readiness
@@ -406,12 +416,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 Color.clear
-                    .frame(height: GhosttyKeyboardChromeSizing.baselineHeight)
+                    .frame(height: bottomChromeHeight)
                     .overlay(alignment: .bottom) {
                         GhosttyKeyboardChrome(
                             keyboardMode: renderedKeyboardMode,
                             isEnabled: interactionProjection.isInputAvailable,
-                            isInteractionLocked: composerSubmissionState.isSending,
+                            isInteractionLocked: composer.isSubmitting,
                             isCompact: chrome.isCompact,
                             isControlArmed: terminalInputController.isControlArmed,
                             selectedWindowIndex: interactionProjection.selectedWindowIndex,
@@ -423,7 +433,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             onShowLibrary: onShowLibrary,
                             onShowWindows: showWindows,
                             onShowPanes: showPanes,
-                            onToggleComposer: toggleComposer,
+                            onOpenComposer: openComposer,
                             onToggleKeyboard: toggleKeyboardChrome,
                             onToggleControl: toggleControlModifier,
                             onShowShortcuts: showShortcutPalette,
@@ -431,27 +441,30 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         ) {
                             selectedComposerBar()
                         }
-                    }
-                    .padding(.horizontal, chrome.surfaceHorizontalPadding)
-                    .padding(.top, 4)
-                    .padding(.bottom, chrome.bottomPadding)
-                    .frame(maxWidth: .infinity, alignment: .bottom)
-                    .background {
-                        GeometryReader { chromeProxy in
-                            Color.clear.preference(
-                                key: GhosttyBottomChromeHeightPreferenceKey.self,
-                                value: chromeProxy.size.height
-                            )
+                        .padding(.horizontal, chrome.surfaceHorizontalPadding)
+                        .padding(.top, 4)
+                        .padding(.bottom, chrome.bottomPadding)
+                        .frame(maxWidth: .infinity, alignment: .bottom)
+                        .background {
+                            GeometryReader { chromeProxy in
+                                Color.clear.preference(
+                                    key: GhosttyRenderedBottomChromeHeightPreferenceKey.self,
+                                    value: chromeProxy.size.height
+                                )
+                            }
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .bottom)
             }
-            .onPreferenceChange(GhosttyBottomChromeHeightPreferenceKey.self) { newHeight in
-                let normalizedHeight = GhosttyViewportSizing.normalizedHeight(newHeight)
-                guard bottomChromeHeight != normalizedHeight else { return }
+            .onPreferenceChange(GhosttyRenderedBottomChromeHeightPreferenceKey.self) { renderedHeight in
+                let previousHeight = bottomChromeReservation.settledHeight
+                guard bottomChromeReservation.observe(
+                    renderedHeight: renderedHeight,
+                    isTransient: isComposerChromeHeightTransient
+                ) else { return }
                 GhosttyRuntimeTrace.tmuxViewport(
-                    "viewport.bottomChrome old=\(bottomChromeHeight.traceLabel) new=\(normalizedHeight.traceLabel) keyboardMode=\(inputCoordinator.keyboardMode.traceLabel) renderedMode=\(renderedKeyboardMode.traceLabel) softwareKeyboardVisible=\(inputCoordinator.isSoftwareKeyboardVisible) overlap=\(softwareKeyboardOverlapHeight.traceLabel)"
+                    "viewport.bottomChrome old=\(previousHeight.traceLabel) new=\(bottomChromeReservation.settledHeight.traceLabel) rendered=\(renderedHeight.traceLabel) keyboardMode=\(inputCoordinator.keyboardMode.traceLabel) renderedMode=\(renderedKeyboardMode.traceLabel) softwareKeyboardVisible=\(inputCoordinator.isSoftwareKeyboardVisible) overlap=\(softwareKeyboardOverlapHeight.traceLabel)"
                 )
-                bottomChromeHeight = normalizedHeight
             }
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) {
                 guard shouldHandleTerminalKeyboardNotification else { return }
@@ -659,10 +672,17 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 isTerminalInputAvailable: isTerminalInputAvailable,
                 wantsKeyboardFocus: inputCoordinator.keyboardMode == .system
                     && inputCoordinator.keyboardOwner == .composer,
+                isSoftwareKeyboardVisible: inputCoordinator.keyboardMode == .system
+                    && inputCoordinator.keyboardOwner == .composer
+                    && softwareKeyboardOverlapHeight > 0,
+                isKeyboardDismissalActive: terminalViewportCoordinator.isKeyboardTransitionActive
+                    && terminalViewportCoordinator.keyboardTransitionTarget == .hidden,
                 keyboardActivationToken: inputCoordinator.composerActivationToken,
                 keyboardResponderHandoff: keyboardResponderHandoff,
                 onKeyboardFocusRequest: handleComposerKeyboardFocusRequest,
                 onKeyboardResponderAttached: handleComposerKeyboardResponderAttached,
+                onDismissKeyboard: dismissComposerKeyboard,
+                onClose: closeComposer,
                 onChoosePhotos: openAttachmentPhotosPicker,
                 onChooseFiles: openAttachmentFilePicker,
                 onOpenAttachment: showPendingAttachmentPreview,
@@ -681,21 +701,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         model.terminalInteractionProjection.isInputAvailable
     }
 
-    private var composerSubmissionState: GhosttyComposeBarSubmissionState {
-        if composer.isSubmitting {
-            return .sending
-        }
-        return .composing(
-            canSend: isTerminalInputAvailable
-                && composer.hasContent
-                && composer.areAttachmentsReady
-        )
-    }
-
-    private var isAttachmentTransferInProgress: Bool {
-        composer.isSubmitting
-    }
-
     private var isTerminalViewportFrozen: Bool {
         terminalViewportCoordinator.isFrozen
     }
@@ -703,7 +708,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private var pendingAttachmentInteractionProjection: GhosttyPendingAttachmentInteractionProjection {
         GhosttyPendingAttachmentInteractionProjection(
             hasPreviewableAttachments: composer.attachments.contains(where: \.isPreviewable),
-            isTransferInProgress: isAttachmentTransferInProgress
+            isTransferInProgress: composer.isSubmitting
         )
     }
 
@@ -773,9 +778,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func toggleKeyboardChrome() {
-        let keyboardOwner: GhosttyKeyboardOwner =
-            isActiveComposerPresented ? .composer : .terminal
-        let isInputAvailable = isActiveComposerPresented || isTerminalInputAvailable
+        let isInputAvailable = isTerminalInputAvailable
         GhosttyRuntimeTrace.flowBegin(
             "terminal.input",
             event: "ui.tap.keyboardToggle",
@@ -801,7 +804,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 },
                 applyKeyboardToggle: {
                     inputCoordinator.toggleKeyboard(
-                        owner: keyboardOwner,
+                        owner: .terminal,
                         isOwnerAvailable: projection.isInputAvailable
                     )
                     return inputCoordinator.keyboardMode
@@ -811,17 +814,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
     }
 
-    private func toggleComposer() {
-        guard !composerSubmissionState.isSending else { return }
-
-        if isActiveComposerPresented {
-            closeComposer()
-        } else {
-            openComposer()
-        }
-    }
-
     private func openComposer() {
+        guard !composer.isSubmitting else { return }
         withAnimation(GhosttyKeyboardChromeAnimation.composerTransition) {
             composer.open()
         }
@@ -830,17 +824,18 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private func closeComposer() {
         if inputCoordinator.keyboardMode == .system,
            inputCoordinator.keyboardOwner == .composer {
-            guard isTerminalInputAvailable,
-                  keyboardResponderHandoff.transfer(to: .terminal) else {
-                GhosttyRuntimeTrace.perf(
-                    "composer.toggle close deferred terminalResponderUnavailable"
+            if isTerminalInputAvailable,
+               keyboardResponderHandoff.transfer(to: .terminal) {
+                inputCoordinator.transferKeyboardOwnerIfActive(
+                    to: .terminal,
+                    isOwnerAvailable: true
                 )
-                return
+            } else {
+                GhosttyRuntimeTrace.perf(
+                    "composer.toggle close fallback=dismissKeyboard terminalResponderUnavailable"
+                )
+                dismissComposerKeyboard()
             }
-            inputCoordinator.transferKeyboardOwnerIfActive(
-                to: .terminal,
-                isOwnerAvailable: true
-            )
         }
 
         withAnimation(GhosttyKeyboardChromeAnimation.composerTransition) {
@@ -883,6 +878,30 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         guard inputCoordinator.keyboardMode != .system
                 || inputCoordinator.keyboardOwner != .composer else { return }
         showComposerKeyboard()
+    }
+
+    private func dismissComposerKeyboard() {
+        guard isActiveComposerPresented,
+              inputCoordinator.keyboardMode == .system,
+              inputCoordinator.keyboardOwner == .composer else { return }
+
+        let projection = GhosttyKeyboardToggleProjection(
+            keyboardMode: inputCoordinator.keyboardMode,
+            isInputAvailable: true
+        )
+        performKeyboardChromeStateChange {
+            keyboardViewportTransitionCoordinator.performKeyboardToggleTransition(
+                projection: projection,
+                beginTransition: { request in
+                    _ = beginKeyboardViewportTransition(request)
+                },
+                applyKeyboardToggle: {
+                    inputCoordinator.dismissKeyboard()
+                    return inputCoordinator.keyboardMode
+                },
+                completeTransition: completeKeyboardViewportTransition
+            )
+        }
     }
 
     private func showComposerKeyboard() {
@@ -1341,7 +1360,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func showWindows() {
-        guard !isAttachmentTransferInProgress else { return }
+        guard !composer.isSubmitting else { return }
         guard let projection = model.windowSheetPresentationProjection() else { return }
         GhosttyRuntimeTrace.flowEventIfActive("tmux.newWindow", event: "ui.showWindows")
         applySelectionSheetPresentation(
@@ -1380,7 +1399,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func showPanes() {
-        guard !isAttachmentTransferInProgress else { return }
+        guard !composer.isSubmitting else { return }
         guard let projection = model.selectedPaneSheetPresentationProjection() else { return }
         GhosttyRuntimeTrace.flowEventIfActive("tmux.splitPane", event: "ui.showPanes")
 
@@ -2203,7 +2222,7 @@ private struct GhosttyKeyboardContinuityAccessibilityMarker: View {
 }
 #endif
 
-private struct GhosttyBottomChromeHeightPreferenceKey: PreferenceKey {
+private struct GhosttyRenderedBottomChromeHeightPreferenceKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {

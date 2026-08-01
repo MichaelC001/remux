@@ -3,17 +3,6 @@ import XCTest
 @testable import Remux
 
 final class GhosttyPhoneChromeLayoutTests: XCTestCase {
-    func testStandaloneControlDiameterMatchesDockBaseline() {
-        XCTAssertEqual(
-            GhosttyKeyboardChromeSizing.standaloneControlDiameter,
-            GhosttyKeyboardChromeSizing.baselineHeight
-        )
-        XCTAssertGreaterThanOrEqual(
-            GhosttyKeyboardChromeSizing.standaloneControlDiameter,
-            44
-        )
-    }
-
     func testNarrowPortraitUsesCompactChrome() {
         let layout = GhosttyPhoneChromeLayout(
             screenSize: CGSize(width: 390, height: 844)
@@ -108,6 +97,77 @@ final class GhosttyPhoneChromeLayoutTests: XCTestCase {
                 bottomSafeAreaHeight: 34
             ),
             274
+        )
+    }
+
+    func testBottomChromeReservationTracksSettledChromeHeight() {
+        var reservation = GhosttyBottomChromeReservation()
+
+        XCTAssertEqual(reservation.layoutHeight(fallback: 52), 52)
+        XCTAssertTrue(reservation.observe(renderedHeight: 91.2, isTransient: false))
+        XCTAssertEqual(reservation.settledHeight, 92)
+        XCTAssertEqual(reservation.layoutHeight(fallback: 52), 92)
+    }
+
+    func testBottomChromeReservationIgnoresTransientDictationHeight() {
+        var reservation = GhosttyBottomChromeReservation()
+        reservation.observe(renderedHeight: 124, isTransient: false)
+
+        XCTAssertFalse(reservation.observe(renderedHeight: 54, isTransient: true))
+        XCTAssertEqual(reservation.settledHeight, 124)
+    }
+
+    func testBottomChromeReservationAdoptsFinalComposerHeightAfterDictation() {
+        var reservation = GhosttyBottomChromeReservation()
+        reservation.observe(renderedHeight: 92, isTransient: false)
+        reservation.observe(renderedHeight: 54, isTransient: true)
+
+        XCTAssertTrue(reservation.observe(renderedHeight: 138, isTransient: false))
+        XCTAssertEqual(reservation.settledHeight, 138)
+    }
+
+    func testDictationMeterUsesMaximumWidthOnWideCenterLane() {
+        let count = GhosttyComposerDictationMeterSizing.visibleBarCount(
+            availableWidth: 300,
+            sampleCount: GhosttyComposerAudioLevelModel.historyCapacity
+        )
+
+        XCTAssertEqual(count, 49)
+    }
+
+    func testDictationMeterFollowsTargetWidthInPortraitCenterLane() {
+        let count = GhosttyComposerDictationMeterSizing.visibleBarCount(
+            availableWidth: 240,
+            sampleCount: GhosttyComposerAudioLevelModel.historyCapacity
+        )
+
+        XCTAssertEqual(count, 46)
+    }
+
+    func testDictationMeterAdaptsBarCountToCenterLane() {
+        let count = GhosttyComposerDictationMeterSizing.visibleBarCount(
+            availableWidth: 200,
+            sampleCount: GhosttyComposerAudioLevelModel.historyCapacity
+        )
+
+        XCTAssertEqual(count, 38)
+    }
+
+    func testDictationMeterPreservesControlBreathingRoomInCompactLane() {
+        let count = GhosttyComposerDictationMeterSizing.visibleBarCount(
+            availableWidth: 160,
+            sampleCount: GhosttyComposerAudioLevelModel.historyCapacity
+        )
+        XCTAssertEqual(count, 30)
+    }
+
+    func testDictationMeterNeverInventsMoreBarsThanHistoryContains() {
+        XCTAssertEqual(
+            GhosttyComposerDictationMeterSizing.visibleBarCount(
+                availableWidth: 240,
+                sampleCount: 12
+            ),
+            12
         )
     }
 }
