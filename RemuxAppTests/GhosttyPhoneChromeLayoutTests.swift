@@ -133,10 +133,6 @@ final class GhosttyPhoneChromeLayoutTests: XCTestCase {
         )
 
         XCTAssertEqual(count, 49)
-        XCTAssertEqual(
-            GhosttyComposerDictationMeterSizing.renderedWidth(barCount: count),
-            218.5
-        )
     }
 
     func testDictationMeterFollowsTargetWidthInPortraitCenterLane() {
@@ -146,10 +142,6 @@ final class GhosttyPhoneChromeLayoutTests: XCTestCase {
         )
 
         XCTAssertEqual(count, 46)
-        XCTAssertEqual(
-            GhosttyComposerDictationMeterSizing.renderedWidth(barCount: count),
-            205
-        )
     }
 
     func testDictationMeterAdaptsBarCountToCenterLane() {
@@ -159,10 +151,6 @@ final class GhosttyPhoneChromeLayoutTests: XCTestCase {
         )
 
         XCTAssertEqual(count, 38)
-        XCTAssertEqual(
-            GhosttyComposerDictationMeterSizing.renderedWidth(barCount: count),
-            169
-        )
     }
 
     func testDictationMeterPreservesControlBreathingRoomInCompactLane() {
@@ -170,13 +158,7 @@ final class GhosttyPhoneChromeLayoutTests: XCTestCase {
             availableWidth: 160,
             sampleCount: GhosttyComposerAudioLevelModel.historyCapacity
         )
-        let renderedWidth = GhosttyComposerDictationMeterSizing.renderedWidth(
-            barCount: count
-        )
-
         XCTAssertEqual(count, 30)
-        XCTAssertEqual(renderedWidth, 133)
-        XCTAssertGreaterThanOrEqual((160 - renderedWidth) / 2, 12)
     }
 
     func testDictationMeterNeverInventsMoreBarsThanHistoryContains() {

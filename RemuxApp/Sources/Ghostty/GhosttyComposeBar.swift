@@ -648,6 +648,9 @@ struct GhosttyComposerDictationMeterSizing {
     static let maximumWidth: CGFloat = 220
     static let targetWidthFraction: CGFloat = 0.86
     static let minimumSideInset: CGFloat = 12
+    static let maximumBarCount = Int(
+        (maximumWidth + barSpacing) / (barWidth + barSpacing)
+    )
 
     static func visibleBarCount(
         availableWidth: CGFloat,
@@ -665,12 +668,6 @@ struct GhosttyComposerDictationMeterSizing {
         )
         return min(sampleCount, fittingCount)
     }
-
-    static func renderedWidth(barCount: Int) -> CGFloat {
-        guard barCount > 0 else { return 0 }
-        return (CGFloat(barCount) * barWidth)
-            + (CGFloat(barCount - 1) * barSpacing)
-    }
 }
 
 private struct GhosttyComposerDictationMeter: View {
@@ -682,24 +679,22 @@ private struct GhosttyComposerDictationMeter: View {
                 availableWidth: geometry.size.width,
                 sampleCount: model.levels.count
             )
-            let levels = Array(model.levels.suffix(visibleBarCount))
+            let firstVisibleIndex = model.levels.count - visibleBarCount
 
             HStack(spacing: GhosttyComposerDictationMeterSizing.barSpacing) {
-                ForEach(levels.indices, id: \.self) { index in
+                ForEach(0..<visibleBarCount, id: \.self) { offset in
                     Capsule()
                         .fill(GhosttyPhoneChromePalette.chromeForeground.opacity(0.72))
                         .frame(
                             width: GhosttyComposerDictationMeterSizing.barWidth,
-                            height: max(4, 6 + (levels[index] * 24))
+                            height: max(
+                                4,
+                                6 + (model.levels[firstVisibleIndex + offset] * 24)
+                            )
                         )
                 }
             }
-            .frame(
-                width: GhosttyComposerDictationMeterSizing.renderedWidth(
-                    barCount: visibleBarCount
-                ),
-                height: geometry.size.height
-            )
+            .frame(height: geometry.size.height)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity)

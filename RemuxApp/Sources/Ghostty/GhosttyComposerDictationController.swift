@@ -28,7 +28,7 @@ enum GhosttyComposerDictationDraft {
 
 @MainActor
 final class GhosttyComposerAudioLevelModel: ObservableObject {
-    nonisolated static let historyCapacity = 49
+    nonisolated static let historyCapacity = GhosttyComposerDictationMeterSizing.maximumBarCount
 
     @Published private(set) var levels: [CGFloat]
 
