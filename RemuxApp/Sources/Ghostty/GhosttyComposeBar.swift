@@ -113,9 +113,13 @@ private struct GhosttyComposerInputLayout: Layout {
 
         var x = bounds.minX
         for (index, size) in metrics.compactSizes.enumerated() {
+            let centersDictationContent = isDictationActive && index == 1
             subviews[index].place(
-                at: CGPoint(x: x, y: bounds.maxY),
-                anchor: .bottomLeading,
+                at: CGPoint(
+                    x: x,
+                    y: centersDictationContent ? bounds.midY : bounds.maxY
+                ),
+                anchor: centersDictationContent ? .leading : .bottomLeading,
                 proposal: ProposedViewSize(size)
             )
             x += size.width + horizontalSpacing
