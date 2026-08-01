@@ -1795,13 +1795,14 @@ final class RemuxAppUITests: XCTestCase {
         ))
         fflush(stdout)
 
-        let back = app.buttons["terminal.preview.back"].firstMatch
-        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        let close = app.buttons["terminal.preview.close"].firstMatch
+        XCTAssertTrue(close.waitForExistence(timeout: 5))
+        XCTAssertEqual(close.label, "Close Preview")
         let previewCloseStarted = ProcessInfo.processInfo.systemUptime
-        back.tap()
+        close.tap()
         XCTAssertTrue(
-            waitForElementToDisappear(back, timeout: 5),
-            "Back should return directly to the retained terminal."
+            waitForElementToDisappear(close, timeout: 5),
+            "Close should return directly to the retained terminal."
         )
         print(String(
             format: "REMUX_PREVIEW_CLOSE_MS %.1f",
@@ -1833,15 +1834,15 @@ final class RemuxAppUITests: XCTestCase {
         print("REMUX_PREVIEW_RAPID_DISMISS_BEGIN")
         fflush(stdout)
         rapidPreview.tap()
-        let rapidBack = app.buttons["terminal.preview.back"].firstMatch
+        let rapidClose = app.buttons["terminal.preview.close"].firstMatch
         XCTAssertTrue(
-            rapidBack.waitForExistence(timeout: 2),
+            rapidClose.waitForExistence(timeout: 2),
             "Preview chrome should appear immediately while the file is loading."
         )
-        rapidBack.tap()
+        rapidClose.tap()
         XCTAssertTrue(
-            waitForElementToDisappear(rapidBack, timeout: 5),
-            "Immediate Back should return to the retained terminal."
+            waitForElementToDisappear(rapidClose, timeout: 5),
+            "Immediate Close should return to the retained terminal."
         )
         waitForLiveTerminalInputReady(timeout: 10)
         XCTAssertTrue(
@@ -1901,6 +1902,22 @@ final class RemuxAppUITests: XCTestCase {
                 ) != nil else {
                     return
                 }
+                if scenario.name == "static-html-relative-assets"
+                    || scenario.name == "live-localhost" {
+                    let firstLoad = app.staticTexts["Reload count 1"].firstMatch
+                    XCTAssertTrue(
+                        firstLoad.waitForExistence(timeout: 10),
+                        "\(scenario.token) should execute its first page load."
+                    )
+                    let refresh = app.buttons["terminal.preview.refresh"].firstMatch
+                    XCTAssertTrue(refresh.waitForExistence(timeout: 5))
+                    refresh.tap()
+                    XCTAssertTrue(
+                        app.staticTexts["Reload count 2"].firstMatch
+                            .waitForExistence(timeout: 10),
+                        "Refresh should reload \(scenario.token) in the existing web view."
+                    )
+                }
             } else {
                 XCTAssertTrue(
                     scenarioFailure.exists,
@@ -1909,10 +1926,10 @@ final class RemuxAppUITests: XCTestCase {
                 XCTAssertFalse(scenarioContent.exists)
             }
 
-            let scenarioBack = app.buttons["terminal.preview.back"].firstMatch
-            XCTAssertTrue(scenarioBack.waitForExistence(timeout: 5))
-            scenarioBack.tap()
-            XCTAssertTrue(waitForElementToDisappear(scenarioBack, timeout: 5))
+            let scenarioClose = app.buttons["terminal.preview.close"].firstMatch
+            XCTAssertTrue(scenarioClose.waitForExistence(timeout: 5))
+            scenarioClose.tap()
+            XCTAssertTrue(waitForElementToDisappear(scenarioClose, timeout: 5))
             waitForLiveTerminalInputReady(timeout: 10)
             XCTAssertTrue(waitForSoftwareKeyboardOnScreen(timeout: 10))
         }
