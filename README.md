@@ -2,7 +2,7 @@
 
 > A native iOS client for remote tmux workspaces.
 
-https://github.com/user-attachments/assets/53d7ffd2-c2ba-4661-955f-37e3b94f9859
+https://github.com/user-attachments/assets/e7482322-15f8-4f7d-aca4-83368fddd07c
 
 <p align="center">
   <a href="https://testflight.apple.com/join/fHqG1ruE">Join the beta on TestFlight</a>
