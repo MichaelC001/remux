@@ -247,7 +247,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             onSurfaceTap: handleSurfaceTap,
                             onPreviewSelection: onPreviewSelection,
                             onWindowSwipe: handleWindowSwipe,
-                            sendKeyEvent: sendTerminalKeyEvent,
+                            sendKeyEventToSurface: { event, surfaceID in
+                                model.sendKeyEvent(event, to: surfaceID).isAccepted
+                            },
                             onTrackpadFeedbackChange: { trackpadFeedback = $0 },
                             isMouseCaptured: { surfaceID in
                                 model.isMouseCaptured(for: surfaceID)

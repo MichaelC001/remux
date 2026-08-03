@@ -12,7 +12,7 @@ struct GhosttyCompositeViewportView: View {
     let onSurfaceTap: ((UUID, Bool) -> Void)?
     let onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)?
     let onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?
-    let sendKeyEvent: (GhosttySurfaceKeyEvent) -> Bool
+    let sendKeyEventToSurface: (GhosttySurfaceKeyEvent, UUID) -> Bool
     let onTrackpadFeedbackChange: (GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void
     let isMouseCaptured: (UUID) -> Bool
     let submitMouseButton: ((UUID, GhosttySurfaceMouseButtonEvent) -> GhosttyMouseInputSubmissionOutcome)?
@@ -28,7 +28,7 @@ struct GhosttyCompositeViewportView: View {
             onSurfaceTap: onSurfaceTap,
             onPreviewSelection: onPreviewSelection,
             onWindowSwipe: onWindowSwipe,
-            sendKeyEvent: sendKeyEvent,
+            sendKeyEventToSurface: sendKeyEventToSurface,
             onTrackpadFeedbackChange: onTrackpadFeedbackChange,
             isMouseCaptured: isMouseCaptured,
             submitMouseButton: submitMouseButton,
@@ -47,7 +47,7 @@ private struct GhosttyCompositeViewportRepresentable: UIViewRepresentable {
     let onSurfaceTap: ((UUID, Bool) -> Void)?
     let onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)?
     let onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?
-    let sendKeyEvent: (GhosttySurfaceKeyEvent) -> Bool
+    let sendKeyEventToSurface: (GhosttySurfaceKeyEvent, UUID) -> Bool
     let onTrackpadFeedbackChange: (GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void
     let isMouseCaptured: (UUID) -> Bool
     let submitMouseButton: ((UUID, GhosttySurfaceMouseButtonEvent) -> GhosttyMouseInputSubmissionOutcome)?
@@ -77,7 +77,7 @@ private struct GhosttyCompositeViewportRepresentable: UIViewRepresentable {
             onSurfaceTap: onSurfaceTap,
             onPreviewSelection: onPreviewSelection,
             onWindowSwipe: onWindowSwipe,
-            sendKeyEvent: sendKeyEvent,
+            sendKeyEventToSurface: sendKeyEventToSurface,
             onTrackpadFeedbackChange: onTrackpadFeedbackChange,
             isMouseCaptured: isMouseCaptured,
             submitMouseButton: submitMouseButton,
@@ -108,7 +108,7 @@ private final class GhosttyCompositeViewportContainerView: UIView,
     private var onSurfaceTap: ((UUID, Bool) -> Void)?
     private var onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)?
     private var onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?
-    private var sendKeyEvent: ((GhosttySurfaceKeyEvent) -> Bool)?
+    private var sendKeyEventToSurface: ((GhosttySurfaceKeyEvent, UUID) -> Bool)?
     private var onTrackpadFeedbackChange: ((GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void)?
     private var isMouseCaptured: (UUID) -> Bool = { _ in false }
     private var submitMouseButton: ((UUID, GhosttySurfaceMouseButtonEvent) -> GhosttyMouseInputSubmissionOutcome)?
@@ -224,7 +224,7 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         onSurfaceTap: ((UUID, Bool) -> Void)?,
         onPreviewSelection: ((UUID, TerminalPreviewCandidate) -> Void)?,
         onWindowSwipe: ((GhosttyRuntimeSelectionDirection) -> Void)?,
-        sendKeyEvent: @escaping (GhosttySurfaceKeyEvent) -> Bool,
+        sendKeyEventToSurface: @escaping (GhosttySurfaceKeyEvent, UUID) -> Bool,
         onTrackpadFeedbackChange: @escaping (GhosttyKeyboardCursorTrackpad.FeedbackState) -> Void,
         isMouseCaptured: @escaping (UUID) -> Bool,
         submitMouseButton: ((UUID, GhosttySurfaceMouseButtonEvent) -> GhosttyMouseInputSubmissionOutcome)?,
@@ -238,7 +238,7 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         self.onSurfaceTap = onSurfaceTap
         self.onPreviewSelection = onPreviewSelection
         self.onWindowSwipe = onWindowSwipe
-        self.sendKeyEvent = sendKeyEvent
+        self.sendKeyEventToSurface = sendKeyEventToSurface
         self.onTrackpadFeedbackChange = onTrackpadFeedbackChange
         self.isMouseCaptured = isMouseCaptured
         self.submitMouseButton = submitMouseButton
@@ -283,7 +283,7 @@ private final class GhosttyCompositeViewportContainerView: UIView,
         onSurfaceTap = nil
         onPreviewSelection = nil
         onWindowSwipe = nil
-        sendKeyEvent = nil
+        sendKeyEventToSurface = nil
         onTrackpadFeedbackChange = nil
         isMouseCaptured = { _ in false }
         submitMouseButton = nil
@@ -512,7 +512,7 @@ private final class GhosttyCompositeViewportContainerView: UIView,
             at: recognizer.location(in: surface.view),
             sendKeyEvent: { [weak self] event in
                 guard self?.exactLocalSelectionSurface() != nil else { return false }
-                return self?.sendKeyEvent?(event) == true
+                return self?.sendKeyEventToSurface?(event, surface.id) == true
             },
             onFeedbackChange: { [weak self] state in
                 self?.onTrackpadFeedbackChange?(state)
