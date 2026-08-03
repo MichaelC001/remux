@@ -146,7 +146,6 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     let isControlArmed: Bool
     let selectedWindowIndex: Int?
     let windowCount: Int
-    let selectedPaneIndex: Int?
     let paneCount: Int
     let isComposerPresented: Bool
     let onShowSessions: () -> Void
@@ -378,14 +377,14 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
         paneCount > 1 ? "switch or split" : "split or stack"
     }
 
-    private var paneAccessibilityLabel: String {
-        guard paneCount > 0 else { return "Panes" }
-        return "Pane \(displayIndex(selectedPaneIndex, count: paneCount)) of \(paneCount)"
-    }
-
     private var paneBadge: String? {
         guard paneCount > 1 else { return nil }
-        return "\(displayIndex(selectedPaneIndex, count: paneCount))"
+        return paneCount < 100 ? "\(paneCount)" : "99+"
+    }
+
+    private var paneAccessibilityLabel: String {
+        guard paneCount > 0 else { return "Panes" }
+        return "Panes, \(paneCount) \(paneCount == 1 ? "pane" : "panes")"
     }
 
     private func displayIndex(_ index: Int?, count: Int) -> Int {
