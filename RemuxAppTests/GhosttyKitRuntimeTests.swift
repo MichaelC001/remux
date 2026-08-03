@@ -127,6 +127,10 @@ final class GhosttyKitRuntimeTests: XCTestCase {
         )
         defer { fixture.close() }
         let layer = try fixture.createSurface()
+        // Embedded terminal surfaces intentionally have no internal padding.
+        // Move the cursor away from the sampled top-left background pixel so
+        // this test observes the configured/OSC background, not cursor paint.
+        try fixture.feed("\n")
         try await awaitPublication(
             on: layer,
             matchingBGRPixel: [0x2E, 0x1E, 0x1E]

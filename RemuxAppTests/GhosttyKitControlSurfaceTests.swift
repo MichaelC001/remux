@@ -129,48 +129,6 @@ final class GhosttyKitControlSurfaceTests: XCTestCase {
         )
     }
 
-    func testDisplayUpdateTrackerSuppressesUnchangedMetrics() {
-        var tracker = GhosttySurfaceDisplayUpdateTracker()
-        let size = CGSize(width: 390, height: 641)
-
-        XCTAssertEqual(
-            tracker.nextMetrics(size: size, scale: 3),
-            GhosttySurfaceDisplayMetrics(
-                contentScale: 3,
-                pixelWidth: 1170,
-                pixelHeight: 1923
-            )
-        )
-        XCTAssertNil(tracker.nextMetrics(size: size, scale: 3))
-    }
-
-    func testDisplayUpdateTrackerEmitsWhenRoundedPixelSizeChanges() {
-        var tracker = GhosttySurfaceDisplayUpdateTracker()
-
-        XCTAssertNotNil(tracker.nextMetrics(size: CGSize(width: 390, height: 641), scale: 3))
-        XCTAssertNil(tracker.nextMetrics(size: CGSize(width: 390, height: 641), scale: 3))
-        XCTAssertEqual(
-            tracker.nextMetrics(size: CGSize(width: 390, height: 640.5), scale: 3),
-            GhosttySurfaceDisplayMetrics(
-                contentScale: 3,
-                pixelWidth: 1170,
-                pixelHeight: 1922
-            )
-        )
-    }
-
-    func testDisplayUpdateTrackerResetAllowsSameMetricsAgain() {
-        var tracker = GhosttySurfaceDisplayUpdateTracker()
-        let size = CGSize(width: 390, height: 641)
-
-        XCTAssertNotNil(tracker.nextMetrics(size: size, scale: 3))
-        XCTAssertNil(tracker.nextMetrics(size: size, scale: 3))
-
-        tracker.reset()
-
-        XCTAssertNotNil(tracker.nextMetrics(size: size, scale: 3))
-    }
-
     func testSelectionSnapshotConvertsBackingPixelsWithoutSwappingEndpointRoles() {
         let snapshot = GhosttyLocalSelectionSnapshot(
             cValue: ghostty_terminal_surface_selection_snapshot_s(

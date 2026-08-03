@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 import GhosttyKit
 
-struct GhosttySurfaceDisplayMetrics: Equatable {
+struct GhosttySurfaceDisplayMetrics: Equatable, Sendable {
     let contentScale: Double
     let pixelWidth: UInt32
     let pixelHeight: UInt32
@@ -30,18 +30,58 @@ struct GhosttySurfaceDisplayMetrics: Equatable {
     }
 }
 
-struct GhosttySurfaceDisplayUpdateTracker {
-    private var lastMetrics: GhosttySurfaceDisplayMetrics?
+struct GhosttyTerminalCellDisplayMetrics: Equatable, Sendable {
+    let pixelWidth: UInt32
+    let pixelHeight: UInt32
+    let contentScale: Double
 
-    mutating func nextMetrics(size: CGSize, scale: CGFloat) -> GhosttySurfaceDisplayMetrics? {
-        let metrics = GhosttySurfaceDisplayMetrics(size: size, scale: scale)
-        guard metrics != lastMetrics else { return nil }
-        lastMetrics = metrics
-        return metrics
+    var pointWidth: CGFloat {
+        CGFloat(Double(pixelWidth) / contentScale)
     }
 
-    mutating func reset() {
-        lastMetrics = nil
+    var pointHeight: CGFloat {
+        CGFloat(Double(pixelHeight) / contentScale)
+    }
+}
+
+struct GhosttyTerminalViewportMeasurement: Equatable, Sendable {
+    let controlViewport: TmuxControlViewport
+    let displayMetrics: GhosttySurfaceDisplayMetrics
+    let cellMetrics: GhosttyTerminalCellDisplayMetrics
+
+    init?(
+        measuredSize: ghostty_surface_size_s,
+        displayMetrics: GhosttySurfaceDisplayMetrics
+    ) {
+        guard let controlViewport = TmuxControlViewport(ghosttySurfaceSize: measuredSize),
+              measuredSize.cell_width_px > 0,
+              measuredSize.cell_height_px > 0
+        else { return nil }
+        self.controlViewport = controlViewport
+        self.displayMetrics = displayMetrics
+        cellMetrics = GhosttyTerminalCellDisplayMetrics(
+            pixelWidth: measuredSize.cell_width_px,
+            pixelHeight: measuredSize.cell_height_px,
+            contentScale: displayMetrics.contentScale
+        )
+    }
+
+    func displayMetrics(columns: UInt32, rows: UInt32) -> GhosttySurfaceDisplayMetrics? {
+        let (pixelWidth, widthOverflow) = columns.multipliedReportingOverflow(
+            by: cellMetrics.pixelWidth
+        )
+        let (pixelHeight, heightOverflow) = rows.multipliedReportingOverflow(
+            by: cellMetrics.pixelHeight
+        )
+        guard columns > 0, rows > 0,
+              !widthOverflow, !heightOverflow,
+              pixelWidth > 0, pixelHeight > 0
+        else { return nil }
+        return GhosttySurfaceDisplayMetrics(
+            contentScale: displayMetrics.contentScale,
+            pixelWidth: pixelWidth,
+            pixelHeight: pixelHeight
+        )
     }
 }
 

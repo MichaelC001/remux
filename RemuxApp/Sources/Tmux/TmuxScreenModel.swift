@@ -58,6 +58,8 @@ final class TmuxScreenModel: ObservableObject {
     private var lastSubmittedClientSize: TmuxSessionController.ClientSize?
     private var lastStableClientSize: TmuxSessionController.ClientSize?
     private var viewportIsStable = true
+    private var lastViewportPointSize: CGSize?
+    private var lastViewportScale: CGFloat?
 
     private let initialClientSize: TmuxSessionController.ClientSize?
 
@@ -118,9 +120,6 @@ final class TmuxScreenModel: ObservableObject {
             session: session,
             initialViewportHandler: { [weak self] size, scale in
                 self?.prepareInitialViewport(size: size, scale: scale)
-            },
-            clientSizeHandler: { [weak self] size in
-                self?.submitClientSizeIfChanged(size)
             },
             viewportStabilityHandler: { [weak self] stable in
                 self?.setViewportStability(stable)
@@ -195,15 +194,26 @@ final class TmuxScreenModel: ObservableObject {
 
     private func prepareInitialViewport(size: CGSize, scale: CGFloat) {
         guard !stopped else { return }
-        session?.updateViewportMetrics(size: size, scale: scale)
-        guard initialViewport == nil else { return }
         guard let runtime else { return }
+        lastViewportPointSize = size
+        lastViewportScale = scale
 
         do {
-            guard let viewport = try runtime.measureTmuxViewport(size: size, scale: scale) else {
+            guard let measurement = try runtime.measureTmuxViewportLayout(
+                size: size,
+                scale: scale
+            ) else {
                 return
             }
-            connect(viewport: viewport)
+            session?.updateViewportMeasurement(measurement)
+            if initialViewport == nil {
+                connect(viewport: measurement.controlViewport)
+            } else {
+                _ = submitClientSizeIfChanged(TmuxSessionController.ClientSize(
+                    cols: UInt32(measurement.controlViewport.columns),
+                    rows: UInt32(measurement.controlViewport.rows)
+                ))
+            }
         } catch {
             startupFailure = String(describing: error)
             report(.disconnected(Self.initialViewportFailureReason))
@@ -231,6 +241,7 @@ final class TmuxScreenModel: ObservableObject {
     }
 
     func handleAppLifecyclePhase(_ phase: GhosttyAppLifecyclePhase) {
+        terminalScreenAdapter.handleAppLifecyclePhase(phase)
         // Presentation discontinuity handling lives in the renderer
         // (visibility-resume full damage); here we gate drawing.
         session?.setAppActive(phase == .active)
@@ -300,6 +311,9 @@ final class TmuxScreenModel: ObservableObject {
         currentTerminalSettings = settings
         session?.applyTerminalConfiguration(theme: settings.theme)
         terminalScreenAdapter.terminalConfigurationDidChange()
+        if let lastViewportPointSize, let lastViewportScale {
+            prepareInitialViewport(size: lastViewportPointSize, scale: lastViewportScale)
+        }
     }
 
     func stop() async {
@@ -307,6 +321,7 @@ final class TmuxScreenModel: ObservableObject {
         stopped = true
         stateObservation = nil
         transportFailureObservation = nil
+        terminalScreenAdapter.prepareForSessionShutdown()
         terminalScreenAdapter.invalidate()
         if let session {
             await session.shutdown()
