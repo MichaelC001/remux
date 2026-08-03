@@ -11,18 +11,16 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
                 windowID: 2,
                 activePaneID: 20,
                 preferredPaneID: 20,
-                zoomed: false,
-                hasSibling: true
+                zoomed: false
             ),
-            ["select-window -t @2", "resize-pane -Z -t %20"]
+            ["select-window -t @2"]
         )
         XCTAssertEqual(
             TmuxSessionController.crossWindowSelectionCommands(
                 windowID: 2,
                 activePaneID: 20,
                 preferredPaneID: 21,
-                zoomed: true,
-                hasSibling: true
+                zoomed: true
             ),
             ["select-window -t @2", "select-pane -Z -t %21"]
         )
@@ -31,8 +29,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
                 windowID: 2,
                 activePaneID: 20,
                 preferredPaneID: 20,
-                zoomed: true,
-                hasSibling: true
+                zoomed: true
             ),
             ["select-window -t @2"]
         )
@@ -41,10 +38,18 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
                 windowID: 2,
                 activePaneID: 20,
                 preferredPaneID: nil,
-                zoomed: false,
-                hasSibling: true
+                zoomed: false
             ),
             ["select-window -t @2"]
+        )
+        XCTAssertEqual(
+            TmuxSessionController.crossWindowSelectionCommands(
+                windowID: 2,
+                activePaneID: 20,
+                preferredPaneID: 21,
+                zoomed: false
+            ),
+            ["select-window -t @2", "select-pane -t %21"]
         )
     }
 
@@ -410,7 +415,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertTrue(harness.recorder.takeStrings().isEmpty)
     }
 
-    func testRepeatedCrossWindowUnzoomedSelectionDoesNotQueueSecondToggle() async throws {
+    func testRepeatedCrossWindowUnzoomedSelectionDoesNotQueueSecondSelection() async throws {
         let harness = try await readyController(
             listWindowsBody: Self.splitTargetWindow,
             expectedPaneCount: 3
@@ -420,30 +425,20 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         harness.controller.requestSelectWindow(windowID: 1, preferredPaneID: 1)
         harness.controller.requestSelectWindow(windowID: 1, preferredPaneID: 1)
         await drain(harness.controller)
-        assertPresentationWrite(
-            harness.recorder.takeStrings(),
-            command: "select-window -t @1 ; resize-pane -Z -t %1",
-            paneID: 1,
-        )
+        XCTAssertEqual(harness.recorder.takeStrings(), ["select-window -t @1\n"])
 
         harness.controller.pump(Data(
             ("%session-window-changed $42 @1\n"
-                + responseBlock(commandNumber: &nextCommandNumber)
-                + "%layout-change @1 9c1f,83x44,0,0{41x44,0,0,1,41x44,42,0,2} b7de,83x44,0,0,1 *Z\n"
-                + responseBlock(commandNumber: &nextCommandNumber)
-                + refreshResponseBlocks(
-                    paneID: 1,
-                    commandNumber: &nextCommandNumber
-                )).utf8
+                + responseBlock(commandNumber: &nextCommandNumber)).utf8
         ))
         await drain(harness.controller)
         XCTAssertTrue(
             harness.recorder.takeStrings().isEmpty,
-            "the repeated intent must re-evaluate as zero after the first group zooms"
+            "the repeated intent must re-evaluate as zero after the first selection"
         )
     }
 
-    func testDeferredZoomDoesNotToggleAfterWindowSelectionAlreadyZooms() async throws {
+    func testExplicitZoomRunsAfterUnzoomedWindowSelection() async throws {
         let harness = try await readyController(
             listWindowsBody: Self.splitTargetWindow,
             expectedPaneCount: 3
@@ -451,29 +446,111 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         var nextCommandNumber = harness.nextCommandNumber
 
         harness.controller.requestSelectWindow(windowID: 1, preferredPaneID: 1)
-        harness.controller.requestZoomPane(paneID: 1)
+        harness.controller.requestSetPaneZoomed(paneID: 1, zoomed: true)
         await drain(harness.controller)
-        assertPresentationWrite(
-            harness.recorder.takeStrings(),
-            command: "select-window -t @1 ; resize-pane -Z -t %1",
-            paneID: 1,
-        )
+        XCTAssertEqual(harness.recorder.takeStrings(), ["select-window -t @1\n"])
 
         harness.controller.pump(Data(
             ("%session-window-changed $42 @1\n"
-                + responseBlock(commandNumber: &nextCommandNumber)
-                + "%layout-change @1 9c1f,83x44,0,0{41x44,0,0,1,41x44,42,0,2} b7de,83x44,0,0,1 *Z\n"
-                + responseBlock(commandNumber: &nextCommandNumber)
-                + refreshResponseBlocks(
-                    paneID: 1,
-                    commandNumber: &nextCommandNumber
-                )).utf8
+                + responseBlock(commandNumber: &nextCommandNumber)).utf8
         ))
         await drain(harness.controller)
-        XCTAssertTrue(
-            harness.recorder.takeStrings().isEmpty,
-            "the deferred zoom must re-evaluate to a no-op after the selection group zooms"
+        assertPresentationWrite(
+            harness.recorder.takeStrings(),
+            command: "resize-pane -Z -t %1",
+            paneID: 1
         )
+    }
+
+    func testExplicitUnzoomTogglesAnAuthoritativelyZoomedWindow() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.twoPaneSameColumnZoomedWindow,
+            expectedPaneCount: 2
+        )
+
+        harness.controller.requestSetPaneZoomed(paneID: 0, zoomed: false)
+        await drain(harness.controller)
+
+        assertPresentationWrite(
+            harness.recorder.takeStrings(),
+            command: "resize-pane -Z -t %0",
+            paneID: 0
+        )
+    }
+
+    func testShutdownUnzoomDoesNotRefreshPaneThatWillBeReleased() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.twoPaneSameColumnZoomedWindow,
+            expectedPaneCount: 2
+        )
+
+        harness.controller.requestSetPaneZoomed(
+            paneID: 0,
+            zoomed: false,
+            refreshPaneAfterChange: false
+        )
+        await drain(harness.controller)
+
+        XCTAssertEqual(harness.recorder.takeStrings(), ["resize-pane -Z -t %0\n"])
+    }
+
+    func testWindowSelectionLeavesZoomedSourceWindowUntouched() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.zoomedSourceAndTargetWindow,
+            expectedPaneCount: 3
+        )
+
+        harness.controller.requestSelectWindow(
+            windowID: 1,
+            preferredPaneID: 2
+        )
+        await drain(harness.controller)
+
+        XCTAssertEqual(
+            harness.recorder.takeStrings(),
+            ["select-window -t @1\n"]
+        )
+    }
+
+    func testLifecycleCleanupBatchesEveryOwnedZoomedWindow() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.twoZoomedWindows,
+            expectedPaneCount: 4
+        )
+
+        harness.controller.requestSetWindowsUnzoomed(
+            windowIDs: [0, 1],
+            refreshPanesAfterChange: false
+        )
+        await drain(harness.controller)
+
+        XCTAssertEqual(
+            harness.recorder.takeStrings(),
+            ["resize-pane -Z -t @0 ; resize-pane -Z -t @1\n"]
+        )
+    }
+
+    func testBackgroundCleanupRefreshesEveryUnzoomedWindowInOneWrite() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.twoZoomedWindows,
+            expectedPaneCount: 4
+        )
+
+        harness.controller.requestSetWindowsUnzoomed(
+            windowIDs: [0, 1],
+            refreshPanesAfterChange: true
+        )
+        await drain(harness.controller)
+
+        let writes = harness.recorder.takeStrings()
+        XCTAssertEqual(writes.count, 1)
+        let write = try XCTUnwrap(writes.first)
+        XCTAssertTrue(write.hasPrefix(
+            "resize-pane -Z -t @0 ; resize-pane -Z -t @1\n"
+        ))
+        XCTAssertTrue(write.contains("display-message -p -t %0 "))
+        XCTAssertTrue(write.contains("display-message -p -t %2 "))
+        XCTAssertEqual(write.components(separatedBy: "capture-pane").count - 1, 8)
     }
 
     func testWindowNavigationCoalescesRollbackToLatestWindow() async throws {
@@ -496,7 +573,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertEqual(harness.recorder.takeStrings(), ["select-window -t @0\n"])
     }
 
-    func testColdSplitSelectionEnqueuesPresentationThenRefreshInOneWrite() async throws {
+    func testUnzoomedPaneSelectionUsesOnlySelectPane() async throws {
         let harness = try await readyController(
             listWindowsBody: Self.twoPaneUnzoomedWindow,
             expectedPaneCount: 2
@@ -505,14 +582,10 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         harness.controller.requestSelectPane(paneID: 2)
         await drain(harness.controller)
 
-        assertPresentationWrite(
-            harness.recorder.takeStrings(),
-            command: "resize-pane -Z -t %2",
-            paneID: 2,
-        )
+        XCTAssertEqual(harness.recorder.takeStrings(), ["select-pane -t %2\n"])
     }
 
-    func testRefreshCompletionReleasesReadinessWithoutSecondTerminalHandoff() async throws {
+    func testUnzoomedPaneSelectionDoesNotRehydrateOrReplaceTerminal() async throws {
         let lifecycle = ControllerLifecycleRecorder()
         let harness = try await readyController(
             listWindowsBody: Self.twoPaneUnzoomedWindow,
@@ -528,23 +601,15 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         harness.controller.requestSelectPane(paneID: 2)
         await drain(harness.controller)
         _ = harness.recorder.takeStrings()
-        try await waitUntil("refresh did not gate pane readiness") {
-            lifecycle.phaseChanges.contains { $0.paneID == 2 && $0.phase == .hydrating }
-        }
-
         harness.controller.pump(Data(
             ("%window-pane-changed @1 %2\n"
-                + responseBlock(commandNumber: &nextCommandNumber)
-                + refreshResponseBlocks(
-                    paneID: 2,
-                    commandNumber: &nextCommandNumber
-                )).utf8
+                + responseBlock(commandNumber: &nextCommandNumber)).utf8
         ))
         await drain(harness.controller)
-        try await waitUntil("refresh completion did not restore pane readiness") {
-            lifecycle.phaseChanges.contains { $0.paneID == 2 && $0.phase == .live }
-        }
 
+        XCTAssertFalse(
+            lifecycle.phaseChanges.contains { $0.paneID == 2 && $0.phase == .hydrating }
+        )
         XCTAssertEqual(lifecycle.terminalPaneIDs, initialTerminalPaneIDs)
     }
 
@@ -583,13 +648,11 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         )
     }
 
-    func testClientSizeRefreshesForRowOrColumnChangesInOneWrite() async throws {
+    func testClientSizePublishesOnlyDistinctViewportChanges() async throws {
         let harness = try await readyController(
             listWindowsBody: Self.onePaneWindow,
             expectedPaneCount: 1
         )
-        var nextCommandNumber = harness.nextCommandNumber
-
         harness.controller.setClientSize(cols: 83, rows: 44)
         await drain(harness.controller)
         XCTAssertTrue(
@@ -599,76 +662,25 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
 
         harness.controller.setClientSize(cols: 83, rows: 40)
         await drain(harness.controller)
-        var writes = harness.recorder.takeStrings()
-        XCTAssertEqual(writes.count, 1)
-        var write = try XCTUnwrap(writes.first)
-        XCTAssertTrue(write.hasPrefix("refresh-client -C 83x40\ndisplay-message"))
-        XCTAssertEqual(write.components(separatedBy: "capture-pane").count - 1, 4)
-        harness.controller.pump(Data(
-            (responseBlock(commandNumber: &nextCommandNumber)
-                + refreshResponseBlocks(
-                    paneID: 0,
-                    rows: 40,
-                    commandNumber: &nextCommandNumber
-                )).utf8
-        ))
-        await drain(harness.controller)
+        XCTAssertEqual(harness.recorder.takeStrings(), ["refresh-client -C 83x40\n"])
 
         harness.controller.setClientSize(cols: 100, rows: 40)
         await drain(harness.controller)
-        writes = harness.recorder.takeStrings()
-        XCTAssertEqual(writes.count, 1)
-        write = try XCTUnwrap(writes.first)
-        XCTAssertTrue(
-            write.hasPrefix("refresh-client -C 100x40\ndisplay-message -p -t %0 ")
-        )
-        XCTAssertEqual(write.components(separatedBy: "capture-pane").count - 1, 4)
+        XCTAssertEqual(harness.recorder.takeStrings(), ["refresh-client -C 100x40\n"])
     }
 
-    func testInFlightGridRefreshFollowsViewportRevertExactlyOnce() async throws {
+    func testClientSizeRevertPublishesWithoutPaneRefresh() async throws {
         let harness = try await readyController(
             listWindowsBody: Self.onePaneWindow,
             expectedPaneCount: 1
         )
-        var nextCommandNumber = harness.nextCommandNumber
-
         harness.controller.setClientSize(cols: 100, rows: 40)
-        await drain(harness.controller)
-        let outbound100 = try XCTUnwrap(harness.recorder.takeStrings().first)
-        XCTAssertTrue(outbound100.hasPrefix("refresh-client -C 100x40\ndisplay-message"))
-
         harness.controller.setClientSize(cols: 83, rows: 44)
         await drain(harness.controller)
-        XCTAssertEqual(harness.recorder.takeStrings(), ["refresh-client -C 83x44\n"])
-
-        harness.controller.pump(Data(
-            ("%layout-change @0 aa7d,100x40,0,0,0 aa7d,100x40,0,0,0 *\n"
-                + responseBlock(commandNumber: &nextCommandNumber)
-                + refreshResponseBlocks(
-                    paneID: 0,
-                    columns: 100,
-                    rows: 40,
-                    commandNumber: &nextCommandNumber
-                )
-                + responseBlock(commandNumber: &nextCommandNumber)).utf8
-        ))
-        await drain(harness.controller)
-
-        let followUpWrites = harness.recorder.takeStrings()
-        XCTAssertEqual(followUpWrites.count, 1)
-        let followUp = try XCTUnwrap(followUpWrites.first)
-        XCTAssertTrue(followUp.hasPrefix("display-message -p -t %0 "))
-        XCTAssertEqual(followUp.components(separatedBy: "capture-pane").count - 1, 4)
-
-        harness.controller.pump(Data(
-            ("%layout-change @0 b7dd,83x44,0,0,0 b7dd,83x44,0,0,0 *\n"
-                + refreshResponseBlocks(
-                    paneID: 0,
-                    columns: 83,
-                    commandNumber: &nextCommandNumber)).utf8
-        ))
-        await drain(harness.controller)
-        XCTAssertTrue(harness.recorder.takeStrings().isEmpty)
+        XCTAssertEqual(
+            harness.recorder.takeStrings(),
+            ["refresh-client -C 100x40\n", "refresh-client -C 83x44\n"]
+        )
     }
 
     func testNewWindowAndSplitCommandsDoNotGainRefreshWork() async throws {
@@ -685,9 +697,65 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await drain(harness.controller)
         XCTAssertEqual(harness.recorder.takeStrings(), ["new-window\n"])
 
+        harness.controller.requestSplit(paneID: 0, direction: .right, zoom: false)
+        await drain(harness.controller)
+        XCTAssertEqual(harness.recorder.takeStrings(), ["split-window -h -t %0\n"])
+
         harness.controller.requestSplit(paneID: 0, direction: .right, zoom: true)
         await drain(harness.controller)
         XCTAssertEqual(harness.recorder.takeStrings(), ["split-window -h -Z -t %0\n"])
+    }
+
+    func testZoomedInactivePaneCloseBatchesRezoomAndRefresh() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.threePaneZoomedWindow,
+            expectedPaneCount: 3
+        )
+
+        harness.controller.requestClosePane(paneID: 1)
+        await drain(harness.controller)
+
+        assertPresentationWrite(
+            harness.recorder.takeStrings(),
+            command: "kill-pane -t %1 ; resize-pane -Z -t @0",
+            paneID: 0
+        )
+    }
+
+    func testZoomedActivePaneCloseRefreshesTmuxSelectedSuccessor() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.threePaneZoomedWindow,
+            expectedPaneCount: 3
+        )
+
+        harness.controller.requestClosePane(paneID: 0)
+        await drain(harness.controller)
+        XCTAssertEqual(
+            harness.recorder.takeStrings(),
+            ["kill-pane -t %0 ; resize-pane -Z -t @0\n"]
+        )
+
+        let layout = "9c1f,83x44,0,0{41x44,0,0,1,41x44,42,0,2}"
+        harness.controller.pump(Data(
+            ("%window-pane-changed @0 %1\n"
+                + "%layout-change @0 \(layout) \(layout) *\n"
+                + "%layout-change @0 \(layout) b7de,83x44,0,0,1 *Z\n").utf8
+        ))
+        await drain(harness.controller)
+
+        assertPaneRefreshWrite(harness.recorder.takeStrings(), paneID: 1)
+    }
+
+    func testZoomedTwoPaneCloseLeavesSinglePaneUnzoomed() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.twoPaneSameColumnZoomedWindow,
+            expectedPaneCount: 2
+        )
+
+        harness.controller.requestClosePane(paneID: 0)
+        await drain(harness.controller)
+
+        XCTAssertEqual(harness.recorder.takeStrings(), ["kill-pane -t %0\n"])
     }
 
     func testNotReadyRefreshRetriesOnceAndDrainsAfterInitialPaneChanged() async throws {
@@ -696,7 +764,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             expectedPaneCount: 2
         )
 
-        harness.controller.requestZoomPane(paneID: 1)
+        harness.controller.requestSetPaneZoomed(paneID: 1, zoomed: true)
         await drain(harness.controller)
         XCTAssertEqual(
             harness.recorder.takeStrings(),
@@ -724,7 +792,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
             expectedPaneCount: 2
         )
 
-        harness.controller.requestZoomPane(paneID: 1)
+        harness.controller.requestSetPaneZoomed(paneID: 1, zoomed: true)
         await drain(harness.controller)
         XCTAssertEqual(harness.recorder.takeStrings(), ["resize-pane -Z -t %1\n"])
 
@@ -1026,6 +1094,34 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         )
     }
 
+    private func assertPaneRefreshWrite(
+        _ writes: [String],
+        paneID: TmuxPaneID,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertEqual(writes.count, 1, file: file, line: line)
+        guard let write = writes.first else { return }
+        XCTAssertTrue(
+            write.hasPrefix("display-message -p -t %\(paneID.rawValue) "),
+            "expected a targeted pane refresh: \(write)",
+            file: file,
+            line: line
+        )
+        XCTAssertEqual(
+            write.components(separatedBy: "capture-pane").count - 1,
+            4,
+            file: file,
+            line: line
+        )
+        XCTAssertEqual(
+            write.components(separatedBy: " ; ").count - 1,
+            4,
+            file: file,
+            line: line
+        )
+    }
+
     private func errorBlock(commandNumber: inout Int, body: String) -> String {
         defer { commandNumber += 1 }
         return "%begin \(commandNumber) \(commandNumber) 1\n"
@@ -1097,6 +1193,38 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         paneID: 1,
         layout: "b7de,83x44,0,0,1",
         visibleLayout: "b7de,83x44,0,0,1",
+        name: "window-1"
+    )
+
+    private static let zoomedSourceAndTargetWindow = windowRecord(
+        id: 0,
+        active: true,
+        paneID: 0,
+        layout: "607b,83x44,0,0[83x22,0,0,0,83x21,0,23,1]",
+        visibleLayout: "b7dd,83x44,0,0,0",
+        name: "window-0"
+    ) + windowRecord(
+        id: 1,
+        active: false,
+        paneID: 2,
+        layout: "b7df,83x44,0,0,2",
+        visibleLayout: "b7df,83x44,0,0,2",
+        name: "window-1"
+    )
+
+    private static let twoZoomedWindows = windowRecord(
+        id: 0,
+        active: true,
+        paneID: 0,
+        layout: "607b,83x44,0,0[83x22,0,0,0,83x21,0,23,1]",
+        visibleLayout: "b7dd,83x44,0,0,0",
+        name: "window-0"
+    ) + windowRecord(
+        id: 1,
+        active: false,
+        paneID: 2,
+        layout: "4084,83x44,0,0[83x22,0,0,2,83x21,0,23,3]",
+        visibleLayout: "b7df,83x44,0,0,2",
         name: "window-1"
     )
 
