@@ -27,6 +27,38 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         XCTAssertNil(registry.windowID(for: UUID()))
     }
 
+    func testPendingPaneFocusWinsUntilTmuxConfirmsIt() {
+        let activePaneIDs: Set<TmuxPaneID> = [10, 11]
+
+        XCTAssertEqual(
+            TmuxTerminalScreenAdapter.resolvedFocusedPaneID(
+                server: 10,
+                pending: 11,
+                activePaneIDs: activePaneIDs
+            ),
+            11
+        )
+        XCTAssertEqual(
+            TmuxTerminalScreenAdapter.resolvedFocusedPaneID(
+                server: 11,
+                pending: nil,
+                activePaneIDs: activePaneIDs
+            ),
+            11
+        )
+    }
+
+    func testPendingPaneFocusCannotEscapeTheActiveWindow() {
+        XCTAssertEqual(
+            TmuxTerminalScreenAdapter.resolvedFocusedPaneID(
+                server: 10,
+                pending: 99,
+                activePaneIDs: [10, 11]
+            ),
+            10
+        )
+    }
+
     private func makeSession(runtime: GhosttyKitRuntime) -> TmuxTerminalSession {
         TmuxTerminalSession(
             app: runtime.appHandleForTesting,
@@ -61,17 +93,128 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
 
     private func pane(
         id: TmuxPaneID,
-        windowID: TmuxWindowID
+        windowID: TmuxWindowID,
+        x: UInt32 = 0,
+        y: UInt32 = 0,
+        width: UInt32 = 80,
+        height: UInt32 = 24
     ) -> TmuxSessionController.PaneInfo {
         TmuxSessionController.PaneInfo(
             id: id,
             windowID: windowID,
-            x: 0,
-            y: 0,
-            width: 80,
-            height: 24,
+            x: x,
+            y: y,
+            width: width,
+            height: height,
             phase: .live
         )
+    }
+
+    func testNormalMultipaneViewportProjectsEveryTmuxPaneRectangle() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let session = makeSession(runtime: runtime)
+        let adapter = TmuxTerminalScreenAdapter()
+        adapter.activate(
+            session: session,
+            initialViewportHandler: { _, _ in },
+            viewportStabilityHandler: { _ in }
+        )
+
+        session.handleTopology(TmuxSessionController.TopologySnapshot(
+            sessionName: "split-test",
+            windows: [
+                TmuxSessionController.WindowInfo(
+                    id: 1,
+                    name: "split",
+                    active: true,
+                    zoomed: false,
+                    width: 80,
+                    height: 24,
+                    activePaneID: 11
+                )
+            ],
+            panes: [
+                pane(id: 10, windowID: 1, width: 39),
+                pane(id: 11, windowID: 1, x: 40, width: 40)
+            ],
+            activeWindowID: 1
+        ))
+
+        let viewport = adapter.terminalScreenPresentationProjection.viewport
+        XCTAssertEqual(viewport.windowGrid, .init(columns: 80, rows: 24))
+        XCTAssertFalse(viewport.isServerZoomed)
+        XCTAssertEqual(viewport.panes.count, 2)
+        XCTAssertEqual(
+            viewport.panes.map(\.normalFrame),
+            [
+                .init(x: 0, y: 0, columns: 39, rows: 24),
+                .init(x: 40, y: 0, columns: 40, rows: 24),
+            ]
+        )
+        XCTAssertEqual(viewport.panes.map(\.visibleFrame), viewport.panes.map(\.normalFrame))
+        XCTAssertEqual(viewport.panes.map(\.isFocused), [false, true])
+
+        await session.shutdown()
+    }
+
+    func testServerZoomProjectsOnlyActivePaneAcrossFullWindow() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let session = makeSession(runtime: runtime)
+        let adapter = TmuxTerminalScreenAdapter()
+        adapter.activate(
+            session: session,
+            initialViewportHandler: { _, _ in },
+            viewportStabilityHandler: { _ in }
+        )
+
+        session.handleTopology(TmuxSessionController.TopologySnapshot(
+            sessionName: "zoom-test",
+            windows: [
+                TmuxSessionController.WindowInfo(
+                    id: 1,
+                    name: "zoomed",
+                    active: true,
+                    zoomed: true,
+                    width: 80,
+                    height: 24,
+                    activePaneID: 11
+                )
+            ],
+            panes: [
+                pane(id: 10, windowID: 1, width: 39),
+                pane(id: 11, windowID: 1, x: 40, width: 40)
+            ],
+            activeWindowID: 1
+        ))
+
+        let viewport = adapter.terminalScreenPresentationProjection.viewport
+        XCTAssertTrue(viewport.isServerZoomed)
+        XCTAssertEqual(viewport.panes[0].visibleFrame, nil)
+        XCTAssertEqual(
+            viewport.panes[1].visibleFrame,
+            .init(x: 0, y: 0, columns: 80, rows: 24)
+        )
+        XCTAssertEqual(
+            viewport.panes[1].normalFrame,
+            .init(x: 40, y: 0, columns: 40, rows: 24)
+        )
+
+        let windowID = try XCTUnwrap(
+            adapter.windowSelectionSheetRenderProjection().selectedWindowID
+        )
+        let panePicker = adapter.paneSelectionSheetRenderProjection(topLevelID: windowID)
+        XCTAssertTrue(panePicker.isServerZoomed)
+        XCTAssertEqual(panePicker.windowGrid, .init(columns: 80, rows: 24))
+        XCTAssertEqual(
+            panePicker.panes.compactMap(\.frame),
+            [
+                .init(x: 0, y: 0, columns: 39, rows: 24),
+                .init(x: 40, y: 0, columns: 40, rows: 24),
+            ],
+            "the picker must keep canonical unzoomed geometry while the viewport is zoomed"
+        )
+
+        await session.shutdown()
     }
 
     func testWindowProjectionReflectsEmittedTopologyImmediately() async throws {
@@ -81,7 +224,6 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         adapter.activate(
             session: session,
             initialViewportHandler: { _, _ in },
-            clientSizeHandler: { _ in },
             viewportStabilityHandler: { _ in }
         )
 
@@ -131,7 +273,6 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         adapter.activate(
             session: session,
             initialViewportHandler: { _, _ in },
-            clientSizeHandler: { _ in },
             viewportStabilityHandler: { _ in }
         )
 
