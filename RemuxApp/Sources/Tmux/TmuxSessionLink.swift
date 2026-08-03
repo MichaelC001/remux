@@ -111,8 +111,6 @@ actor TmuxSessionLink {
     func stop() async {
         guard !stopped else { return }
         stopped = true
-        await controller.finishOutbound()
-        outboundContinuation.finish()
 
         let pendingReadTask = readTask
         let pendingWriteTask = writeTask
@@ -121,6 +119,8 @@ actor TmuxSessionLink {
 
         pendingReadTask?.cancel()
         _ = await pendingReadTask?.result
+        await controller.finishOutbound()
+        outboundContinuation.finish()
         await finishWriteTask(pendingWriteTask)
         await closeTransport(disposition: .reusable)
     }
