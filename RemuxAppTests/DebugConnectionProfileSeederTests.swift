@@ -148,6 +148,32 @@ private actor InMemoryConnectionProfileRepository: ConnectionProfileRepository {
         upsert(workspace, into: &workspaces)
     }
 
+    func reconcileDiscoveredWorkspaces(
+        for serverID: SavedServer.ID,
+        sessionNames: [String]
+    ) async throws -> ConnectionLibrarySnapshot {
+        guard servers.contains(where: { $0.id == serverID }) else {
+            throw ConnectionProfileRepositoryError.missingServer(serverID)
+        }
+        let existingNames = Set(
+            workspaces.lazy
+                .filter { $0.serverID == serverID }
+                .map(\.sessionName)
+        )
+        var addedNames = Set<String>()
+        for name in sessionNames where !name.isEmpty {
+            guard !existingNames.contains(name), addedNames.insert(name).inserted else { continue }
+            workspaces.append(
+                SavedWorkspace(
+                    serverID: serverID,
+                    sessionName: name,
+                    lastOpenedAt: .distantPast
+                )
+            )
+        }
+        return try await loadSnapshot()
+    }
+
     func deleteServer(id: SavedServer.ID) async throws {
         servers.removeAll { $0.id == id }
         workspaces.removeAll { $0.serverID == id }

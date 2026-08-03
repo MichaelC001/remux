@@ -45,6 +45,11 @@ struct RemuxAppDependencies: Sendable {
         _ trustedHostStore: TrustedHostStore,
         _ sshRootService: RemuxSSHRootService
     ) -> any GhosttyAttachmentTransferService
+    private let tmuxSessionDiscoverer: @Sendable (
+        _ target: TmuxConnectionTarget,
+        _ trustedHostStore: TrustedHostStore,
+        _ sshRootService: RemuxSSHRootService
+    ) async throws -> [String]
     private let debugConnectionSeeder: @Sendable (
         _ profileRepository: any ConnectionProfileRepository,
         _ credentialStore: any SSHCredentialStore
@@ -73,6 +78,11 @@ struct RemuxAppDependencies: Sendable {
             _ trustedHostStore: TrustedHostStore,
             _ sshRootService: RemuxSSHRootService
         ) -> any GhosttyAttachmentTransferService = RemuxAppDependencies.liveAttachmentTransferService,
+        tmuxSessionDiscoverer: @escaping @Sendable (
+            _ target: TmuxConnectionTarget,
+            _ trustedHostStore: TrustedHostStore,
+            _ sshRootService: RemuxSSHRootService
+        ) async throws -> [String] = RemuxAppDependencies.liveTmuxSessionDiscoverer,
         debugConnectionSeeder: @escaping @Sendable (
             _ profileRepository: any ConnectionProfileRepository,
             _ credentialStore: any SSHCredentialStore
@@ -88,6 +98,7 @@ struct RemuxAppDependencies: Sendable {
         self.transportFactory = transportFactory
         self.sshConnectionPrewarmer = sshConnectionPrewarmer
         self.attachmentTransferServiceFactory = attachmentTransferServiceFactory
+        self.tmuxSessionDiscoverer = tmuxSessionDiscoverer
         self.debugConnectionSeeder = debugConnectionSeeder
     }
 
@@ -167,6 +178,10 @@ struct RemuxAppDependencies: Sendable {
 
     func makeAttachmentTransferService(for target: TmuxConnectionTarget) -> any GhosttyAttachmentTransferService {
         attachmentTransferServiceFactory(target, trustedHostStore, sshRootService)
+    }
+
+    func discoverTmuxSessions(for target: TmuxConnectionTarget) async throws -> [String] {
+        try await tmuxSessionDiscoverer(target, trustedHostStore, sshRootService)
     }
 
     func closeIdleSSHConnections(forServerID serverID: SavedServer.ID) {
@@ -262,6 +277,44 @@ struct RemuxAppDependencies: Sendable {
             operationTimeout: RemuxConnectionTimeouts.sftpOperation
         )
         return GhosttyAttachmentSFTPClientProviderTransferService(provider: provider)
+    }
+
+    private static func liveTmuxSessionDiscoverer(
+        target: TmuxConnectionTarget,
+        trustedHostStore: TrustedHostStore,
+        sshRootService: RemuxSSHRootService
+    ) async throws -> [String] {
+        let trace = RemuxTransportStartupTrace(
+            flowID: "session.discovery.\(target.server.id.uuidString)"
+        )
+        let configuration = sshConfiguration(
+            for: target,
+            trustedHostStore: trustedHostStore,
+            traceFlowID: nil
+        )
+        guard let rootKey = configuration.sshRootKey else {
+            preconditionFailure("Tmux discovery requires an SSH root key")
+        }
+
+        let preparedRoot = await sshRootService.preparedRoot(
+            for: rootKey,
+            configuration: configuration.sshRootConfiguration,
+            trace: trace
+        )
+        do {
+            let sshRoot = try await preparedRoot.sshRoot()
+            let claimedRoot = try await preparedRoot.claim(sshRoot, trace: trace)
+            let sessions = try await TmuxSessionDiscovery.discover(
+                using: claimedRoot,
+                tmuxExecutable: configuration.tmuxExecutable,
+                trace: trace
+            )
+            await preparedRoot.cancelAndCleanup()
+            return sessions
+        } catch {
+            await preparedRoot.cancelAndCleanup()
+            throw error
+        }
     }
 
     private static func sshRootConfiguration(
@@ -455,6 +508,32 @@ private actor InMemoryConnectionProfileRepository: ConnectionProfileRepository {
     func saveProfile(server: SavedServer, workspace: SavedWorkspace) async throws {
         upsert(server, into: &servers)
         upsert(workspace, into: &workspaces)
+    }
+
+    func reconcileDiscoveredWorkspaces(
+        for serverID: SavedServer.ID,
+        sessionNames: [String]
+    ) async throws -> ConnectionLibrarySnapshot {
+        guard servers.contains(where: { $0.id == serverID }) else {
+            throw ConnectionProfileRepositoryError.missingServer(serverID)
+        }
+        let existingNames = Set(
+            workspaces.lazy
+                .filter { $0.serverID == serverID }
+                .map(\.sessionName)
+        )
+        var addedNames = Set<String>()
+        for name in sessionNames where !name.isEmpty {
+            guard !existingNames.contains(name), addedNames.insert(name).inserted else { continue }
+            workspaces.append(
+                SavedWorkspace(
+                    serverID: serverID,
+                    sessionName: name,
+                    lastOpenedAt: .distantPast
+                )
+            )
+        }
+        return try await loadSnapshot()
     }
 
     func deleteServer(id: SavedServer.ID) async throws {

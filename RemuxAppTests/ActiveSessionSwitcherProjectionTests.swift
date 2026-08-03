@@ -17,13 +17,57 @@ final class ActiveSessionSwitcherProjectionTests: XCTestCase {
 
         let items = ActiveSessionSwitcherProjection.items(
             sessions: [older, selected],
+            snapshot: ConnectionLibrarySnapshot(
+                servers: [older.target.server, selected.target.server],
+                workspaces: [older.target.workspace, selected.target.workspace]
+            ),
+            serverID: selected.target.server.id,
+            discoveredSessionNames: ["codex"],
             selectedSessionID: selected.id
         )
 
-        XCTAssertEqual(items.map(\.id), [selected.id, older.id])
-        XCTAssertEqual(items.map(\.sessionName), ["codex", "api"])
-        XCTAssertEqual(items.map(\.serverName), ["Mac Mini", "Production"])
-        XCTAssertEqual(items.map(\.isSelected), [true, false])
+        XCTAssertEqual(items.map(\.id), [selected.id])
+        XCTAssertEqual(items.map(\.sessionName), ["codex"])
+        XCTAssertEqual(items.map(\.serverName), ["Mac Mini"])
+        XCTAssertEqual(items.map(\.isSelected), [true])
+    }
+
+    func testItemsScopeToSelectedServerAndAddOnlyDiscoveredUnopenedSessions() {
+        let current = makeSession(
+            serverName: "Current",
+            sessionName: "attached",
+            lastOpenedAt: Date(timeIntervalSince1970: 200)
+        )
+        let other = makeSession(
+            serverName: "Other",
+            sessionName: "other",
+            lastOpenedAt: Date(timeIntervalSince1970: 300)
+        )
+        let stale = SavedWorkspace(
+            serverID: current.target.server.id,
+            sessionName: "stale",
+            lastOpenedAt: .distantPast
+        )
+        let available = SavedWorkspace(
+            serverID: current.target.server.id,
+            sessionName: "available",
+            lastOpenedAt: .distantPast
+        )
+
+        let items = ActiveSessionSwitcherProjection.items(
+            sessions: [other, current],
+            snapshot: ConnectionLibrarySnapshot(
+                servers: [current.target.server, other.target.server],
+                workspaces: [current.target.workspace, stale, available, other.target.workspace]
+            ),
+            serverID: current.target.server.id,
+            discoveredSessionNames: ["available", "attached", "available"],
+            selectedSessionID: current.id
+        )
+
+        XCTAssertEqual(items.map(\.sessionName), ["attached", "available"])
+        XCTAssertEqual(items.map(\.isActive), [true, false])
+        XCTAssertEqual(items.map(\.isDisconnectable), [true, false])
     }
 
     func testOrderedServersPlacesCurrentServerFirstThenSortsByName() {

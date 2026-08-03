@@ -32,6 +32,102 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(RemuxAppLifecycleProjection(scenePhase: .background).appLifecyclePhase, .background)
     }
 
+    func testRefreshTmuxSessionsReconcilesMissingWorkspacesAndConnectsDiscoveredSession() async throws {
+        let pair = makePasswordBackedServer()
+        let existing = SavedWorkspace(
+            serverID: pair.server.id,
+            sessionName: "main",
+            lastOpenedAt: Date(timeIntervalSince1970: 100)
+        )
+        let stale = SavedWorkspace(serverID: pair.server.id, sessionName: "stale")
+        let discoverer = RecordingTmuxSessionDiscoverer(results: [.success(["main", "ops", "ops"])])
+        let harness = makeHarness(
+            servers: [pair.server],
+            workspaces: [existing, stale],
+            identities: [pair.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
+        await harness.model.load()
+
+        harness.model.refreshTmuxSessions(for: pair.server.id)
+        let didLoadSessions = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: pair.server.id) == .loaded(["main", "ops", "ops"])
+        }
+        XCTAssertTrue(didLoadSessions)
+
+        XCTAssertEqual(harness.model.library.workspace(id: existing.id), existing)
+        XCTAssertEqual(harness.model.library.workspace(id: stale.id), stale)
+        let opened = try XCTUnwrap(harness.model.library.workspaces.first { $0.sessionName == "ops" })
+        XCTAssertEqual(opened.lastOpenedAt, .distantPast)
+        let discoveredServerIDs = await discoverer.targets().map(\.server.id)
+        XCTAssertEqual(discoveredServerIDs, [pair.server.id])
+
+        await harness.model.connect(to: opened.id)
+        XCTAssertEqual(harness.model.activeSessions.map(\.id), [opened.id])
+    }
+
+    func testRefreshTmuxSessionsKeepsFailureLocalAndCoalescesDuplicateRequests() async throws {
+        enum DiscoveryFailure: LocalizedError {
+            case unavailable
+
+            var errorDescription: String? { "tmux is unavailable" }
+        }
+
+        let pair = makePasswordBackedServer()
+        let discoverer = RecordingTmuxSessionDiscoverer(results: [.failure(DiscoveryFailure.unavailable)])
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
+        await harness.model.load()
+
+        harness.model.refreshTmuxSessions(for: pair.server.id)
+        harness.model.refreshTmuxSessions(for: pair.server.id)
+        let didFailLocally = await waitUntil {
+            if case .failed("tmux is unavailable") = harness.model.tmuxSessionDiscoveryState(for: pair.server.id) {
+                return true
+            }
+            return false
+        }
+        XCTAssertTrue(didFailLocally)
+
+        let discoveryCount = await discoverer.targets().count
+        XCTAssertEqual(discoveryCount, 1)
+        XCTAssertEqual(harness.model.state, .library)
+        XCTAssertTrue(harness.model.activeSessions.isEmpty)
+    }
+
+    func testDeletedServerRejectsStaleTmuxRefreshResult() async throws {
+        let pair = makePasswordBackedServer()
+        let discoverer = SuspendingTmuxSessionDiscoverer()
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                await discoverer.discover(target)
+            }
+        )
+        try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
+        await harness.model.load()
+
+        harness.model.refreshTmuxSessions(for: pair.server.id)
+        await discoverer.waitForCall()
+        await harness.model.deleteServer(pair.server.id)
+        await discoverer.resumeAll(with: ["late"])
+        try? await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertNil(harness.model.library.server(id: pair.server.id))
+        XCTAssertNil(harness.model.library.workspaces.first { $0.sessionName == "late" })
+        XCTAssertEqual(harness.model.tmuxSessionDiscoveryState(for: pair.server.id), .idle)
+    }
+
     func testConnectionSetupFormDisablesTextInputDuringAction() async {
         let view = NavigationStack {
             ConnectionSetupView(
@@ -3053,6 +3149,11 @@ final class RemuxRootModelTests: XCTestCase {
             TrustedHostStore,
             RemuxSSHRootService
         ) -> any GhosttyAttachmentTransferService)? = nil,
+        tmuxSessionDiscoverer: (@Sendable (
+            TmuxConnectionTarget,
+            TrustedHostStore,
+            RemuxSSHRootService
+        ) async throws -> [String])? = nil,
         publicKeyInstaller: SSHPublicKeyInstaller? = nil,
         terminalScreenModelFactory: RemuxRootModel.TerminalScreenModelFactory? = nil
     ) -> RemuxRootModelHarness {
@@ -3077,6 +3178,7 @@ final class RemuxRootModelTests: XCTestCase {
         let resolvedAttachmentTransferServiceFactory = attachmentTransferServiceFactory ?? { _, _, _ in
             FailingGhosttyAttachmentTransferService()
         }
+        let resolvedTmuxSessionDiscoverer = tmuxSessionDiscoverer ?? { _, _, _ in [] }
         let resolvedPublicKeyInstaller = publicKeyInstaller ?? makePublicKeyInstaller(
             recorder: RootModelPublicKeyInstallerRecorder(results: [])
         )
@@ -3091,6 +3193,7 @@ final class RemuxRootModelTests: XCTestCase {
             transportFactory: resolvedTransportFactory,
             sshConnectionPrewarmer: resolvedSSHConnectionPrewarmer,
             attachmentTransferServiceFactory: resolvedAttachmentTransferServiceFactory,
+            tmuxSessionDiscoverer: resolvedTmuxSessionDiscoverer,
             debugConnectionSeeder: { _, _ in false }
         )
 
@@ -3304,6 +3407,56 @@ private struct RemuxRootModelHarness {
 
 private enum RootModelSetupTestError: Error {
     case expectedSetup
+}
+
+private actor RecordingTmuxSessionDiscoverer {
+    private var results: [Result<[String], Error>]
+    private var recordedTargets: [TmuxConnectionTarget] = []
+
+    init(results: [Result<[String], Error>]) {
+        self.results = results
+    }
+
+    func discover(_ target: TmuxConnectionTarget) throws -> [String] {
+        recordedTargets.append(target)
+        return try results.removeFirst().get()
+    }
+
+    func targets() -> [TmuxConnectionTarget] {
+        recordedTargets
+    }
+}
+
+private actor SuspendingTmuxSessionDiscoverer {
+    private var continuations: [CheckedContinuation<[String], Never>] = []
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func discover(_ target: TmuxConnectionTarget) async -> [String] {
+        _ = target
+        let waiters = waiters
+        self.waiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+        return await withCheckedContinuation { continuation in
+            continuations.append(continuation)
+        }
+    }
+
+    func waitForCall() async {
+        guard continuations.isEmpty else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func resumeAll(with names: [String]) {
+        let continuations = continuations
+        self.continuations.removeAll()
+        for continuation in continuations {
+            continuation.resume(returning: names)
+        }
+    }
 }
 
 private actor RootModelPublicKeyInstallerRecorder {
@@ -3700,6 +3853,32 @@ private actor TestConnectionProfileRepository: ConnectionProfileRepository {
     func saveProfile(server: SavedServer, workspace: SavedWorkspace) async throws {
         upsert(server, into: &servers)
         upsert(workspace, into: &workspaces)
+    }
+
+    func reconcileDiscoveredWorkspaces(
+        for serverID: SavedServer.ID,
+        sessionNames: [String]
+    ) async throws -> ConnectionLibrarySnapshot {
+        guard servers.contains(where: { $0.id == serverID }) else {
+            throw ConnectionProfileRepositoryError.missingServer(serverID)
+        }
+        let existingNames = Set(
+            workspaces.lazy
+                .filter { $0.serverID == serverID }
+                .map(\.sessionName)
+        )
+        var addedNames = Set<String>()
+        for name in sessionNames where !name.isEmpty {
+            guard !existingNames.contains(name), addedNames.insert(name).inserted else { continue }
+            workspaces.append(
+                SavedWorkspace(
+                    serverID: serverID,
+                    sessionName: name,
+                    lastOpenedAt: .distantPast
+                )
+            )
+        }
+        return try await loadSnapshot()
     }
 
     func deleteServer(id: SavedServer.ID) async throws {

@@ -4,24 +4,61 @@ struct ActiveSessionSwitcherItem: Identifiable, Equatable {
     let id: SavedWorkspace.ID
     let sessionName: String
     let serverName: String
-    let runtimeState: TerminalRuntimeState
+    let runtimeState: TerminalRuntimeState?
+    let isActive: Bool
     let isSelected: Bool
+
+    var isDisconnectable: Bool {
+        isActive && runtimeState.map(TerminalRuntimeStateProjection.isRootVisibleConnected) == true
+    }
 }
 
 enum ActiveSessionSwitcherProjection {
     static func items(
         sessions: [ActiveTerminalSession],
+        snapshot: ConnectionLibrarySnapshot,
+        serverID: SavedServer.ID?,
+        discoveredSessionNames: [String],
         selectedSessionID: SavedWorkspace.ID?
     ) -> [ActiveSessionSwitcherItem] {
-        RemuxActiveSessionCollection.sortedForDisplay(sessions).map { session in
-            ActiveSessionSwitcherItem(
+        guard let serverID, let server = snapshot.server(id: serverID) else { return [] }
+        let activeSessions = RemuxActiveSessionCollection.sortedForDisplay(sessions)
+            .filter { $0.target.server.id == serverID }
+        var includedNames = Set<String>()
+        var items = activeSessions.compactMap { session -> ActiveSessionSwitcherItem? in
+            guard includedNames.insert(session.target.workspace.sessionName).inserted else { return nil }
+            return ActiveSessionSwitcherItem(
                 id: session.id,
                 sessionName: session.target.workspace.sessionName,
                 serverName: session.target.server.displayName,
                 runtimeState: session.runtimeState,
+                isActive: true,
                 isSelected: session.id == selectedSessionID
             )
         }
+
+        let workspacesByName = Dictionary(
+            snapshot.workspaces(for: serverID).map { ($0.sessionName, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let unopened = Set(discoveredSessionNames)
+            .subtracting(includedNames)
+            .compactMap { workspacesByName[$0] }
+            .sorted {
+                $0.sessionName.localizedStandardCompare($1.sessionName) == .orderedAscending
+            }
+            .map { workspace in
+                ActiveSessionSwitcherItem(
+                    id: workspace.id,
+                    sessionName: workspace.sessionName,
+                    serverName: server.displayName,
+                    runtimeState: nil,
+                    isActive: false,
+                    isSelected: false
+                )
+            }
+        items.append(contentsOf: unopened)
+        return items
     }
 
     static func orderedServers(
@@ -51,8 +88,11 @@ struct ActiveSessionSwitcherView: View {
     let servers: [SavedServer]
     let currentServerID: SavedServer.ID?
     let onSelectSession: (SavedWorkspace.ID) -> Void
+    let onOpenSession: (SavedWorkspace.ID) -> Void
     let onDisconnectSession: (SavedWorkspace.ID) -> Void
     let onCreateSession: (SavedServer.ID) -> Void
+    let onRefresh: () -> Void
+    let discoveryState: TmuxSessionDiscoveryState
 
     @State private var path: [Route] = []
 
@@ -80,10 +120,11 @@ struct ActiveSessionSwitcherView: View {
     private var sessionList: some View {
         TerminalSelectionSheetScaffold(
             title: "Sessions",
-            context: "\(sessions.count) active",
+            context: context,
             closeAccessibilityIdentifier: "terminal.sessions.close"
         ) {
             List {
+                discoveryPresentation
                 sessionRows
             }
             .listStyle(.plain)
@@ -91,12 +132,20 @@ struct ActiveSessionSwitcherView: View {
             .animation(.snappy, value: sessions.map(\.id))
             .accessibilityIdentifier("terminal.sessions.list")
         } actions: {
-            TerminalSelectionSheetActionButton(
-                title: "New Session…",
-                systemName: "plus",
-                accessibilityIdentifier: "terminal.sessions.new",
-                action: newSessionAction
-            )
+            HStack(spacing: 10) {
+                TerminalSelectionSheetActionButton(
+                    title: discoveryState.isLoading ? "Refreshing…" : "Refresh",
+                    systemName: "arrow.clockwise",
+                    accessibilityIdentifier: "terminal.sessions.refresh",
+                    action: discoveryState.isLoading ? nil : onRefresh
+                )
+                TerminalSelectionSheetActionButton(
+                    title: "New Session…",
+                    systemName: "plus",
+                    accessibilityIdentifier: "terminal.sessions.new",
+                    action: newSessionAction
+                )
+            }
         }
     }
 
@@ -107,10 +156,35 @@ struct ActiveSessionSwitcherView: View {
         }
     }
 
+    @ViewBuilder
     private func sessionRow(_ session: ActiveSessionSwitcherItem) -> some View {
+        if session.isDisconnectable {
+            sessionRowButton(session)
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button(role: .destructive) {
+                        Haptic.warning()
+                        onDisconnectSession(session.id)
+                    } label: {
+                        Label("Disconnect", systemImage: "bolt.slash")
+                    }
+                    .accessibilityIdentifier("terminal.sessions.disconnect")
+                }
+                .accessibilityAction(named: Text("Disconnect from Remux")) {
+                    onDisconnectSession(session.id)
+                }
+        } else {
+            sessionRowButton(session)
+        }
+    }
+
+    private func sessionRowButton(_ session: ActiveSessionSwitcherItem) -> some View {
         Button {
             Haptic.selection()
-            onSelectSession(session.id)
+            if session.isActive {
+                onSelectSession(session.id)
+            } else {
+                onOpenSession(session.id)
+            }
             dismiss()
         } label: {
             ActiveSessionSwitcherRow(
@@ -124,18 +198,6 @@ struct ActiveSessionSwitcherView: View {
         .listRowSeparator(.visible)
         .listRowSeparatorTint(TerminalSelectionSheetPalette.stroke)
         .listRowBackground(Color.clear)
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button(role: .destructive) {
-                Haptic.warning()
-                onDisconnectSession(session.id)
-            } label: {
-                Label("Disconnect", systemImage: "bolt.slash")
-            }
-            .accessibilityIdentifier("terminal.sessions.disconnect")
-        }
-        .accessibilityAction(named: Text("Disconnect from Remux")) {
-            onDisconnectSession(session.id)
-        }
     }
 
     private var newSessionAction: (() -> Void)? {
@@ -155,6 +217,45 @@ struct ActiveSessionSwitcherView: View {
     private func beginNewSession(_ serverID: SavedServer.ID) {
         dismiss()
         onCreateSession(serverID)
+    }
+
+    private var context: String {
+        switch discoveryState {
+        case .idle:
+            "Loading sessions…"
+        case .loading:
+            "Refreshing sessions…"
+        case .loaded:
+            "\(sessions.count) \(sessions.count == 1 ? "session" : "sessions")"
+        case .failed:
+            "Showing connected sessions"
+        }
+    }
+
+    @ViewBuilder
+    private var discoveryPresentation: some View {
+        switch discoveryState {
+        case .loading:
+            Label("Looking for tmux sessions…", systemImage: "arrow.clockwise")
+                .foregroundStyle(TerminalSelectionSheetPalette.secondary)
+                .listRowBackground(Color.clear)
+
+        case .failed(let message):
+            Label(message, systemImage: "exclamationmark.triangle")
+                .foregroundStyle(TerminalSelectionSheetPalette.secondary)
+                .listRowBackground(Color.clear)
+
+        case .loaded where sessions.isEmpty:
+            ContentUnavailableView(
+                "No tmux sessions",
+                systemImage: "terminal",
+                description: Text("Create a session or refresh to check again.")
+            )
+            .listRowBackground(Color.clear)
+
+        case .idle, .loaded:
+            EmptyView()
+        }
     }
 }
 
@@ -186,7 +287,11 @@ private struct ActiveSessionSwitcherRow: View {
                     Text("·")
                         .accessibilityHidden(true)
 
-                    TerminalRuntimeStateIndicator(state: session.runtimeState)
+                    if let runtimeState = session.runtimeState {
+                        TerminalRuntimeStateIndicator(state: runtimeState)
+                    } else {
+                        Text("Available")
+                    }
                 }
                 .font(.footnote)
                 .foregroundStyle(TerminalSelectionSheetPalette.secondary)
@@ -210,7 +315,9 @@ private struct ActiveSessionSwitcherRow: View {
     }
 
     private var accessibilityLabel: String {
-        let status = TerminalRuntimeStatusPresentation.projection(for: session.runtimeState).label
+        let status = session.runtimeState.map {
+            TerminalRuntimeStatusPresentation.projection(for: $0).label
+        } ?? "available"
         let current = session.isSelected ? ", current session" : ""
         return "\(session.sessionName), \(session.serverName), \(status)\(current)"
     }

@@ -115,14 +115,33 @@ private struct RemuxWorkspaceShell: View {
             ActiveSessionSwitcherView(
                 sessions: ActiveSessionSwitcherProjection.items(
                     sessions: model.activeSessions,
+                    snapshot: model.library,
+                    serverID: selectedActiveSession?.target.server.id,
+                    discoveredSessionNames: model.tmuxSessionDiscoveryState(
+                        for: selectedActiveSession?.target.server.id
+                    ).sessionNames,
                     selectedSessionID: selectedTerminalID
                 ),
                 servers: model.library.servers,
                 currentServerID: selectedActiveSession?.target.server.id,
                 onSelectSession: model.showActiveSession,
+                onOpenSession: { workspaceID in
+                    Task { await model.connect(to: workspaceID) }
+                },
                 onDisconnectSession: model.disconnectActiveSession,
-                onCreateSession: beginNewWorkspaceFromTerminal
+                onCreateSession: beginNewWorkspaceFromTerminal,
+                onRefresh: {
+                    guard let serverID = selectedActiveSession?.target.server.id else { return }
+                    model.refreshTmuxSessions(for: serverID)
+                },
+                discoveryState: model.tmuxSessionDiscoveryState(
+                    for: selectedActiveSession?.target.server.id
+                )
             )
+            .task(id: selectedActiveSession?.target.server.id) {
+                guard let serverID = selectedActiveSession?.target.server.id else { return }
+                model.refreshTmuxSessions(for: serverID)
+            }
             .terminalSelectionSheetPresentation(
                 colorScheme: model.terminalSettings.theme.terminalChromeColorScheme,
                 chromeStyle: model.terminalSettings.theme.terminalChromeStyle

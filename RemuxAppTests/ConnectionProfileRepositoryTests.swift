@@ -138,6 +138,32 @@ final class ConnectionProfileRepositoryTests: XCTestCase {
         }
     }
 
+    func testReconcileDiscoveredWorkspacesKeepsExistingIDsAndStaleWorkspaces() async throws {
+        let root = temporaryRoot()
+        let repository = FileBackedConnectionProfileRepository(rootURL: root)
+        let server = SavedServer(displayName: "Alpha", host: "alpha.example.test", username: "alice")
+        let existing = SavedWorkspace(
+            serverID: server.id,
+            sessionName: "main",
+            lastOpenedAt: Date(timeIntervalSince1970: 100)
+        )
+        let stale = SavedWorkspace(serverID: server.id, sessionName: "stale")
+        try await repository.saveProfile(server: server, workspace: existing)
+        try await repository.saveWorkspace(stale)
+
+        let snapshot = try await repository.reconcileDiscoveredWorkspaces(
+            for: server.id,
+            sessionNames: ["main", "ops", "ops"]
+        )
+
+        XCTAssertEqual(snapshot.workspace(id: existing.id), existing)
+        XCTAssertEqual(snapshot.workspace(id: stale.id), stale)
+        let ops = try XCTUnwrap(snapshot.workspaces.first { $0.sessionName == "ops" })
+        XCTAssertEqual(ops.serverID, server.id)
+        XCTAssertEqual(ops.lastOpenedAt, .distantPast)
+        XCTAssertEqual(snapshot.workspaces.filter { $0.sessionName == "ops" }.count, 1)
+    }
+
     func testFileBackedRepositoryPersistsIdentitiesSeparatelyFromServers() async throws {
         let root = temporaryRoot()
         let repository = FileBackedConnectionProfileRepository(rootURL: root)
