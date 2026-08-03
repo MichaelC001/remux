@@ -12,6 +12,20 @@ import UIKit
 /// sheet is open does not justify reissuing previews; we keep the originally
 /// requested image regardless.
 enum PanePreviewLayout {
+    struct PaneMapMetrics: Equatable {
+        let size: CGSize
+        let cellSize: CGSize
+
+        func frame(for pane: GhosttyTerminalGridRect) -> CGRect {
+            CGRect(
+                x: CGFloat(pane.x) * cellSize.width,
+                y: CGFloat(pane.y) * cellSize.height,
+                width: CGFloat(pane.columns) * cellSize.width,
+                height: CGFloat(pane.rows) * cellSize.height
+            )
+        }
+    }
+
     struct Metrics: Equatable {
         let columnCount: Int
         let tilePointSize: CGSize
@@ -117,6 +131,57 @@ enum PanePreviewLayout {
     @MainActor
     static func metricsForCurrentScreen(for paneCount: Int) -> Metrics {
         metrics(for: paneCount, availableWidth: currentSheetContentWidth())
+    }
+
+    static func paneMapMetrics(
+        windowGrid: GhosttyTerminalGridSize,
+        availableWidth: CGFloat,
+        maximumHeight: CGFloat
+    ) -> PaneMapMetrics? {
+        guard windowGrid.columns > 0, windowGrid.rows > 0,
+              availableWidth.isFinite, availableWidth > 0,
+              maximumHeight.isFinite, maximumHeight > 0
+        else { return nil }
+
+        let side = min(availableWidth, maximumHeight)
+        guard side.isFinite, side > 0 else { return nil }
+
+        return PaneMapMetrics(
+            size: CGSize(width: side, height: side),
+            cellSize: CGSize(
+                width: side / CGFloat(windowGrid.columns),
+                height: side / CGFloat(windowGrid.rows)
+            )
+        )
+    }
+
+    @MainActor
+    static func paneMapMetricsForCurrentScreen(
+        windowGrid: GhosttyTerminalGridSize
+    ) -> PaneMapMetrics? {
+        paneMapMetrics(
+            windowGrid: windowGrid,
+            availableWidth: currentSheetContentWidth(),
+            maximumHeight: currentPaneMapMaximumHeight()
+        )
+    }
+
+    @MainActor
+    static func currentPaneMapMaximumHeight() -> CGFloat {
+        UIScreen.main.bounds.height * 0.54
+    }
+
+    static func paneMapPhysicalPixelBudget(
+        availableWidth: CGFloat,
+        maximumHeight: CGFloat,
+        scale: CGFloat
+    ) -> (width: UInt32, height: UInt32) {
+        let safeScale = max(scale, 1)
+        let side = min(availableWidth, maximumHeight)
+        return (
+            clampUInt32((side * safeScale).rounded(.up)),
+            clampUInt32((side * safeScale).rounded(.up))
+        )
     }
 
     @MainActor

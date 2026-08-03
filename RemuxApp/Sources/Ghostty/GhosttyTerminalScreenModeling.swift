@@ -132,6 +132,9 @@ protocol GhosttyTmuxActionModeling: ObservableObject {
     ) -> GhosttyTmuxModelActionOutcome
 
     @discardableResult
+    func setFocusedTmuxPaneZoomed(_ zoomed: Bool) -> GhosttyTmuxModelActionOutcome
+
+    @discardableResult
     func closeTmuxPane(_ id: UUID) -> GhosttyTmuxModelActionOutcome
 
     @discardableResult

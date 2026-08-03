@@ -57,11 +57,20 @@ final class GhosttyPanePreviewSession: ObservableObject {
 
     enum PreviewSizing: Equatable {
         case paneGrid(availableWidth: CGFloat)
+        case paneMap(availableWidth: CGFloat, maximumHeight: CGFloat)
         case windowGrid(availableWidth: CGFloat)
 
         @MainActor
         static var paneGridForCurrentScreen: PreviewSizing {
             .paneGrid(availableWidth: PanePreviewLayout.currentSheetContentWidth())
+        }
+
+        @MainActor
+        static var paneMapForCurrentScreen: PreviewSizing {
+            .paneMap(
+                availableWidth: PanePreviewLayout.currentSheetContentWidth(),
+                maximumHeight: PanePreviewLayout.currentPaneMapMaximumHeight()
+            )
         }
 
         @MainActor
@@ -110,6 +119,7 @@ final class GhosttyPanePreviewSession: ObservableObject {
 
     func reconcile(leafIDs: [UUID]) {
         let next = Self.unique(leafIDs)
+        guard next != trackedLeafIDs else { return }
         let nextSet = Set(next)
         for removed in imagesByPaneID.keys where !nextSet.contains(removed) {
             imagesByPaneID.removeValue(forKey: removed)
@@ -188,6 +198,12 @@ final class GhosttyPanePreviewSession: ObservableObject {
             PanePreviewLayout.physicalPixelBudget(
                 paneCount: itemCount,
                 availableWidth: availableWidth,
+                scale: displayScale
+            )
+        case .paneMap(let availableWidth, let maximumHeight):
+            PanePreviewLayout.paneMapPhysicalPixelBudget(
+                availableWidth: availableWidth,
+                maximumHeight: maximumHeight,
                 scale: displayScale
             )
         case .windowGrid(let availableWidth):

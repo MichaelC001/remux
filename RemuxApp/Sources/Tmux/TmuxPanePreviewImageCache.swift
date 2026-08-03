@@ -1,11 +1,9 @@
 import CoreGraphics
 import Foundation
 
-/// Byte-bounded last-known pane thumbnails. Cold panes retain their first
-/// local pane-geometry render; visiting one replaces it with the pane's latest
-/// full-viewport image. The cache is deliberately a Remux concern: libghostty
-/// renders surfaces but does not know that this client presents one tmux pane
-/// per phone viewport.
+/// Byte-bounded last-captured pane thumbnails for selector-sheet previews.
+/// The cache is a Remux presentation concern; canonical terminal and renderer
+/// state remain owned by the tmux session.
 struct TmuxPanePreviewImageCache {
     struct Entry {
         let preview: GhosttyPanePreviewSession.RenderedPreview
