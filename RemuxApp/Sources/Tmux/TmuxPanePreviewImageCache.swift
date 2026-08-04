@@ -5,6 +5,11 @@ import Foundation
 /// The cache is a Remux presentation concern; canonical terminal and renderer
 /// state remain owned by the tmux session.
 struct TmuxPanePreviewImageCache {
+    struct Key: Hashable {
+        let paneID: TmuxPaneID
+        let framing: GhosttyPanePreviewSession.PreviewFraming
+    }
+
     struct Entry {
         let preview: GhosttyPanePreviewSession.RenderedPreview
         let byteCost: Int
@@ -12,7 +17,7 @@ struct TmuxPanePreviewImageCache {
     }
 
     let byteLimit: Int
-    private(set) var entries: [TmuxPaneID: Entry] = [:]
+    private(set) var entries: [Key: Entry] = [:]
     private(set) var totalByteCost = 0
     private var accessSequence: UInt64 = 0
 
@@ -22,58 +27,66 @@ struct TmuxPanePreviewImageCache {
     }
 
     mutating func preview(
-        for paneID: TmuxPaneID
+        for paneID: TmuxPaneID,
+        framing: GhosttyPanePreviewSession.PreviewFraming
     ) -> GhosttyPanePreviewSession.RenderedPreview? {
-        guard var entry = entries[paneID] else { return nil }
+        let key = Key(paneID: paneID, framing: framing)
+        guard var entry = entries[key] else { return nil }
         accessSequence &+= 1
         entry.lastAccess = accessSequence
-        entries[paneID] = entry
+        entries[key] = entry
         return entry.preview
     }
 
     @discardableResult
     mutating func store(
         _ preview: GhosttyPanePreviewSession.RenderedPreview,
-        for paneID: TmuxPaneID
-    ) -> [TmuxPaneID] {
+        for paneID: TmuxPaneID,
+        framing: GhosttyPanePreviewSession.PreviewFraming
+    ) -> [Key] {
         let image = preview.image
         let (byteCost, overflow) = image.bytesPerRow.multipliedReportingOverflow(by: image.height)
         guard !overflow, byteCost > 0, byteCost <= byteLimit else { return [] }
 
-        if let replaced = entries.removeValue(forKey: paneID) {
+        let key = Key(paneID: paneID, framing: framing)
+        if let replaced = entries.removeValue(forKey: key) {
             totalByteCost -= replaced.byteCost
         }
         accessSequence &+= 1
-        entries[paneID] = Entry(
+        entries[key] = Entry(
             preview: preview,
             byteCost: byteCost,
             lastAccess: accessSequence
         )
         totalByteCost += byteCost
 
-        var evictedPaneIDs: [TmuxPaneID] = []
+        var evictedKeys: [Key] = []
         while totalByteCost > byteLimit,
               let oldest = entries.min(by: { $0.value.lastAccess < $1.value.lastAccess }) {
             entries.removeValue(forKey: oldest.key)
             totalByteCost -= oldest.value.byteCost
-            evictedPaneIDs.append(oldest.key)
+            evictedKeys.append(oldest.key)
         }
-        return evictedPaneIDs
+        return evictedKeys
     }
 
     @discardableResult
-    mutating func retainOnly(_ paneIDs: Set<TmuxPaneID>) -> [TmuxPaneID] {
-        let removedPaneIDs = entries.keys.filter { !paneIDs.contains($0) }
-        for paneID in removedPaneIDs {
-            if let removed = entries.removeValue(forKey: paneID) {
+    mutating func retainOnly(_ paneIDs: Set<TmuxPaneID>) -> [Key] {
+        let removedKeys = entries.keys.filter { !paneIDs.contains($0.paneID) }
+        for key in removedKeys {
+            if let removed = entries.removeValue(forKey: key) {
                 totalByteCost -= removed.byteCost
             }
         }
-        return removedPaneIDs
+        return removedKeys
     }
 
-    mutating func remove(_ paneID: TmuxPaneID) {
-        guard let removed = entries.removeValue(forKey: paneID) else { return }
+    mutating func remove(
+        _ paneID: TmuxPaneID,
+        framing: GhosttyPanePreviewSession.PreviewFraming
+    ) {
+        let key = Key(paneID: paneID, framing: framing)
+        guard let removed = entries.removeValue(forKey: key) else { return }
         totalByteCost -= removed.byteCost
     }
 

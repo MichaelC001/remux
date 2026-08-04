@@ -6,6 +6,11 @@ import Foundation
 /// session; this type owns no handles, callbacks, retries, or render queue.
 @MainActor
 final class GhosttyPanePreviewSession: ObservableObject {
+    enum PreviewFraming: UInt8, Hashable, Sendable {
+        case wholePane
+        case cursorSnippet
+    }
+
     struct FullViewportProvenance: Equatable {
         let surfaceID: UUID
         let pixelWidth: UInt32
@@ -34,18 +39,18 @@ final class GhosttyPanePreviewSession: ObservableObject {
     }
 
     struct PreviewClient {
-        let capture: @MainActor (UUID, PixelBudget) async -> RenderedPreview?
+        let capture: @MainActor (UUID, PreviewFraming, PixelBudget) async -> RenderedPreview?
         let cancelCapture: @MainActor (UUID) -> Void
-        let cachedPreview: @MainActor (UUID) -> RenderedPreview?
+        let cachedPreview: @MainActor (UUID, PreviewFraming) -> RenderedPreview?
         let shouldRefreshCachedImage: @MainActor (UUID) -> Bool
-        let cacheRenderedPreview: @MainActor (UUID, RenderedPreview) -> Void
+        let cacheRenderedPreview: @MainActor (UUID, PreviewFraming, RenderedPreview) -> Void
 
         init(
-            capture: @escaping @MainActor (UUID, PixelBudget) async -> RenderedPreview?,
+            capture: @escaping @MainActor (UUID, PreviewFraming, PixelBudget) async -> RenderedPreview?,
             cancelCapture: @escaping @MainActor (UUID) -> Void = { _ in },
-            cachedPreview: @escaping @MainActor (UUID) -> RenderedPreview? = { _ in nil },
+            cachedPreview: @escaping @MainActor (UUID, PreviewFraming) -> RenderedPreview? = { _, _ in nil },
             shouldRefreshCachedImage: @escaping @MainActor (UUID) -> Bool = { _ in true },
-            cacheRenderedPreview: @escaping @MainActor (UUID, RenderedPreview) -> Void = { _, _ in }
+            cacheRenderedPreview: @escaping @MainActor (UUID, PreviewFraming, RenderedPreview) -> Void = { _, _, _ in }
         ) {
             self.capture = capture
             self.cancelCapture = cancelCapture
@@ -76,6 +81,15 @@ final class GhosttyPanePreviewSession: ObservableObject {
         @MainActor
         static var windowGridForCurrentScreen: PreviewSizing {
             .windowGrid(availableWidth: PanePreviewLayout.currentSheetContentWidth())
+        }
+
+        var framing: PreviewFraming {
+            switch self {
+            case .paneGrid, .paneMap:
+                .wholePane
+            case .windowGrid:
+                .cursorSnippet
+            }
         }
     }
 
@@ -155,13 +169,14 @@ final class GhosttyPanePreviewSession: ObservableObject {
                       trackedLeafIDs.contains(leafID)
                 else { return }
 
-                let cached = client.cachedPreview(leafID)
+                let framing = previewSizing.framing
+                let cached = client.cachedPreview(leafID, framing)
                 if let cached { imagesByPaneID[leafID] = .ready(cached) }
                 guard cached == nil || client.shouldRefreshCachedImage(leafID) else { continue }
                 if cached == nil { imagesByPaneID[leafID] = .pending }
 
                 activeCaptureLeafID = leafID
-                let preview = await client.capture(leafID, budget)
+                let preview = await client.capture(leafID, framing, budget)
                 if activeCaptureLeafID == leafID { activeCaptureLeafID = nil }
                 guard !Task.isCancelled,
                       !cancelled,
@@ -169,7 +184,7 @@ final class GhosttyPanePreviewSession: ObservableObject {
                       trackedLeafIDs.contains(leafID)
                 else { return }
                 if let preview {
-                    client.cacheRenderedPreview(leafID, preview)
+                    client.cacheRenderedPreview(leafID, framing, preview)
                     imagesByPaneID[leafID] = .ready(preview)
                 } else if cached == nil {
                     imagesByPaneID[leafID] = .failed
@@ -186,7 +201,7 @@ final class GhosttyPanePreviewSession: ObservableObject {
 
     private func seedCachedImages(for leafIDs: [UUID]) {
         for leafID in leafIDs where imagesByPaneID[leafID] == nil {
-            if let cached = client.cachedPreview(leafID) {
+            if let cached = client.cachedPreview(leafID, previewSizing.framing) {
                 imagesByPaneID[leafID] = .ready(cached)
             }
         }

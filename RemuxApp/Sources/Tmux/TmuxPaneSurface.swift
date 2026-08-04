@@ -620,15 +620,17 @@ final class TmuxPaneSurface {
     func capturePickerPreview(
         columns: UInt32,
         rows: UInt32,
+        framing: GhosttyPanePreviewSession.PreviewFraming,
         budget: GhosttyPanePreviewSession.PixelBudget
     ) async -> GhosttyPanePreviewSession.RenderedPreview? {
         guard lifecycle == .active,
               framePublicationWait == nil,
               presentationTask == nil,
               columns > 0, rows > 0,
-              let current = renderer?.control.currentSize(),
+              let renderer,
               let rendererLayer = GhosttyIOSurfaceFrame.rendererLayer(in: view.layer)
         else { return nil }
+        let current = renderer.control.currentSize()
 
         let source: GhosttyPanePreviewSession.PreviewSource
         if current.columns == columns, current.rows == rows {
@@ -675,7 +677,31 @@ final class TmuxPaneSurface {
             frame = published
         }
 
-        guard let image = await makePreviewImage(from: frame, budget: budget) else {
+        let sourceRect: CGRect? = switch framing {
+        case .wholePane:
+            nil
+        case .cursorSnippet:
+            renderer.control.cursorGeometry().flatMap { cursor in
+                let scale = CGFloat(canonicalViewportMetrics.contentScale)
+                let cursorInBackingPixels = CGRect(
+                    x: cursor.minX * scale,
+                    y: cursor.minY * scale,
+                    width: cursor.width * scale,
+                    height: cursor.height * scale
+                )
+                return frame.sourceRect(
+                    centeredOn: cursorInBackingPixels,
+                    maxWidth: budget.width,
+                    maxHeight: budget.height
+                )
+            }
+        }
+
+        guard let image = await makePreviewImage(
+            from: frame,
+            sourceRect: sourceRect,
+            budget: budget
+        ) else {
             return nil
         }
         return .init(image: image, source: source)
@@ -859,15 +885,24 @@ final class TmuxPaneSurface {
 
     private func makePreviewImage(
         from frame: GhosttyIOSurfaceFrame,
+        sourceRect: CGRect?,
         budget: GhosttyPanePreviewSession.PixelBudget
     ) async -> CGImage? {
         let paneID = paneID
         return await Task.detached(priority: .userInitiated) {
             do {
-                return try frame.image(
-                    maxWidth: budget.width,
-                    maxHeight: budget.height
-                )
+                if let sourceRect {
+                    return try frame.image(
+                        sourceRect: sourceRect,
+                        maxWidth: budget.width,
+                        maxHeight: budget.height
+                    )
+                } else {
+                    return try frame.image(
+                        maxWidth: budget.width,
+                        maxHeight: budget.height
+                    )
+                }
             } catch {
                 GhosttyRuntimeTrace.diagnostics(
                     "tmuxPane.previewRead failed pane=\(paneID) error=\(String(describing: error))"

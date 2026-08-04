@@ -510,7 +510,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
             leafIDs: leafIDs,
             previewSizing: previewSizing,
             client: GhosttyPanePreviewSession.PreviewClient(
-                capture: { [weak self] leafID, budget in
+                capture: { [weak self] leafID, framing, budget in
                     guard let self,
                           let session = self.session,
                           let paneID = self.identities.paneID(for: leafID),
@@ -525,6 +525,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                         paneID: paneID,
                         columns: pane.width,
                         rows: pane.height,
+                        framing: framing,
                         budget: captureBudget
                     )
                 },
@@ -534,58 +535,61 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                     else { return }
                     self.session?.cancelPickerPreview(paneID: paneID)
                 },
-                cachedPreview: { [weak self] leafID in
+                cachedPreview: { [weak self] leafID, framing in
                     guard let self,
                           let paneID = self.identities.paneID(for: leafID)
                     else { return nil }
-                    guard let preview = self.panePreviewCache.preview(for: paneID) else {
+                    guard let preview = self.panePreviewCache.preview(
+                        for: paneID,
+                        framing: framing
+                    ) else {
                         GhosttyRuntimeTrace.perf(
-                            "tmuxPane.preview.cache pane=\(paneID) result=miss"
+                            "tmuxPane.preview.cache pane=\(paneID) framing=\(Self.previewFramingLabel(framing)) result=miss"
                         )
                         return nil
                     }
                     guard self.previewIsCurrent(preview, for: paneID) else {
-                        self.panePreviewCache.remove(paneID)
+                        self.panePreviewCache.remove(paneID, framing: framing)
                         return nil
                     }
                     GhosttyRuntimeTrace.perf(
-                        "tmuxPane.preview.cache pane=\(paneID) result=hit source=\(Self.previewSourceLabel(preview.source)) bytes=\(preview.image.bytesPerRow * preview.image.height)"
+                        "tmuxPane.preview.cache pane=\(paneID) framing=\(Self.previewFramingLabel(framing)) result=hit source=\(Self.previewSourceLabel(preview.source)) bytes=\(preview.image.bytesPerRow * preview.image.height)"
                     )
                     return preview
                 },
                 shouldRefreshCachedImage: { [weak self] leafID in
                     guard let self,
-                          let paneID = self.identities.paneID(for: leafID),
-                          let topology = self.latestTopology,
-                          let activeWindowID = topology.activeWindowID,
-                          topology.panes.contains(where: {
-                              $0.id == paneID && $0.windowID == activeWindowID
-                          })
+                          let paneID = self.identities.paneID(for: leafID)
                     else { return false }
-                    return self.managedSurfacesByPaneID[paneID]?.rendererIsAvailable == true
+                    return self.session?.surfacesByPaneID[paneID] != nil
                 },
-                cacheRenderedPreview: { [weak self] leafID, preview in
+                cacheRenderedPreview: { [weak self] leafID, framing, preview in
                     guard let self,
                           self.session?.state == .ready,
                           let paneID = self.identities.paneID(for: leafID),
                           self.latestTopology?.panes.contains(where: { $0.id == paneID }) == true
                     else { return }
-                    let evictedPaneIDs = self.panePreviewCache.store(
+                    let evictedKeys = self.panePreviewCache.store(
                         preview,
-                        for: paneID
+                        for: paneID,
+                        framing: framing
                     )
-                    guard self.panePreviewCache.entries[paneID]?.preview.image === preview.image else {
+                    let key = TmuxPanePreviewImageCache.Key(
+                        paneID: paneID,
+                        framing: framing
+                    )
+                    guard self.panePreviewCache.entries[key]?.preview.image === preview.image else {
                         GhosttyRuntimeTrace.perf(
-                            "tmuxPane.preview.cache pane=\(paneID) result=reject-oversize bytes=\(preview.image.bytesPerRow * preview.image.height) limit=\(self.panePreviewCache.byteLimit)"
+                            "tmuxPane.preview.cache pane=\(paneID) framing=\(Self.previewFramingLabel(framing)) result=reject-oversize bytes=\(preview.image.bytesPerRow * preview.image.height) limit=\(self.panePreviewCache.byteLimit)"
                         )
                         return
                     }
                     GhosttyRuntimeTrace.perf(
-                        "tmuxPane.preview.cache pane=\(paneID) result=store source=\(Self.previewSourceLabel(preview.source)) bytes=\(preview.image.bytesPerRow * preview.image.height) total=\(self.panePreviewCache.totalByteCost)"
+                        "tmuxPane.preview.cache pane=\(paneID) framing=\(Self.previewFramingLabel(framing)) result=store source=\(Self.previewSourceLabel(preview.source)) bytes=\(preview.image.bytesPerRow * preview.image.height) total=\(self.panePreviewCache.totalByteCost)"
                     )
-                    if !evictedPaneIDs.isEmpty {
+                    if !evictedKeys.isEmpty {
                         GhosttyRuntimeTrace.perf(
-                            "tmuxPane.preview.cache result=evict panes=\(evictedPaneIDs) total=\(self.panePreviewCache.totalByteCost)"
+                            "tmuxPane.preview.cache result=evict entries=\(evictedKeys) total=\(self.panePreviewCache.totalByteCost)"
                         )
                     }
                 }
@@ -598,24 +602,22 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         for pane: TmuxSessionController.PaneInfo,
         sizing: GhosttyPanePreviewSession.PreviewSizing
     ) -> GhosttyPanePreviewSession.PixelBudget {
-        guard case .paneGrid = sizing else {
-            guard let window = latestTopology?.windows.first(where: {
-                $0.id == pane.windowID
-            }), window.width > 0, window.height > 0 else { return budget }
-            return .init(
-                width: Self.proportionalPreviewDimension(
-                    budget.width,
-                    part: pane.width,
-                    whole: window.width
-                ),
-                height: Self.proportionalPreviewDimension(
-                    budget.height,
-                    part: pane.height,
-                    whole: window.height
-                )
+        guard case .paneMap = sizing else { return budget }
+        guard let window = latestTopology?.windows.first(where: {
+            $0.id == pane.windowID
+        }), window.width > 0, window.height > 0 else { return budget }
+        return .init(
+            width: Self.proportionalPreviewDimension(
+                budget.width,
+                part: pane.width,
+                whole: window.width
+            ),
+            height: Self.proportionalPreviewDimension(
+                budget.height,
+                part: pane.height,
+                whole: window.height
             )
-        }
-        return budget
+        )
     }
 
     private static func proportionalPreviewDimension(
@@ -670,13 +672,22 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         }
     }
 
+    private static func previewFramingLabel(
+        _ framing: GhosttyPanePreviewSession.PreviewFraming
+    ) -> String {
+        switch framing {
+        case .wholePane: "whole-pane"
+        case .cursorSnippet: "cursor-snippet"
+        }
+    }
+
     private func reconcilePanePreviewCache(
         with topology: TmuxSessionController.TopologySnapshot
     ) {
-        let removedPaneIDs = panePreviewCache.retainOnly(Set(topology.panes.map(\.id)))
-        guard !removedPaneIDs.isEmpty else { return }
+        let removedKeys = panePreviewCache.retainOnly(Set(topology.panes.map(\.id)))
+        guard !removedKeys.isEmpty else { return }
         GhosttyRuntimeTrace.perf(
-            "tmuxPane.preview.cache result=topology-remove panes=\(removedPaneIDs) total=\(panePreviewCache.totalByteCost)"
+            "tmuxPane.preview.cache result=topology-remove entries=\(removedKeys) total=\(panePreviewCache.totalByteCost)"
         )
     }
 

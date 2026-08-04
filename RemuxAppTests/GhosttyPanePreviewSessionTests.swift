@@ -13,11 +13,11 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             leafIDs: [paneID],
             scale: 1,
             client: .init(
-                capture: { _, _ in
+                capture: { _, _, _ in
                     captureCount += 1
                     return nil
                 },
-                cachedPreview: { $0 == paneID ? cached : nil },
+                cachedPreview: { leafID, _ in leafID == paneID ? cached : nil },
                 shouldRefreshCachedImage: { _ in false }
             )
         )
@@ -40,9 +40,11 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             scale: 2,
             previewSizing: .paneGrid(availableWidth: 320),
             client: .init(
-                capture: { await harness.capture(paneID: $0, budget: $1) },
+                capture: {
+                    await harness.capture(paneID: $0, framing: $1, budget: $2)
+                },
                 cancelCapture: { harness.cancel(paneID: $0) },
-                cacheRenderedPreview: { paneID, _ in cachedPaneIDs.append(paneID) }
+                cacheRenderedPreview: { paneID, _, _ in cachedPaneIDs.append(paneID) }
             )
         )
 
@@ -83,6 +85,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             harness.requests.map(\.budget),
             Array(repeating: .init(width: expected.width, height: expected.height), count: 2)
         )
+        XCTAssertEqual(harness.requests.map(\.framing), [.wholePane, .wholePane])
     }
 
     func testFailedRefreshPreservesExistingCachedPreview() async throws {
@@ -93,9 +96,11 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             leafIDs: [paneID],
             scale: 1,
             client: .init(
-                capture: { await harness.capture(paneID: $0, budget: $1) },
+                capture: {
+                    await harness.capture(paneID: $0, framing: $1, budget: $2)
+                },
                 cancelCapture: { harness.cancel(paneID: $0) },
-                cachedPreview: { $0 == paneID ? cached : nil },
+                cachedPreview: { leafID, _ in leafID == paneID ? cached : nil },
                 shouldRefreshCachedImage: { _ in true }
             )
         )
@@ -117,7 +122,9 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             leafIDs: [paneID],
             scale: 1,
             client: .init(
-                capture: { await harness.capture(paneID: $0, budget: $1) },
+                capture: {
+                    await harness.capture(paneID: $0, framing: $1, budget: $2)
+                },
                 cancelCapture: { harness.cancel(paneID: $0) }
             )
         )
@@ -138,7 +145,9 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             leafIDs: [paneID],
             scale: 1,
             client: .init(
-                capture: { await harness.capture(paneID: $0, budget: $1) },
+                capture: {
+                    await harness.capture(paneID: $0, framing: $1, budget: $2)
+                },
                 cancelCapture: { harness.cancel(paneID: $0) }
             )
         )
@@ -163,7 +172,9 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             leafIDs: [removed],
             scale: 1,
             client: .init(
-                capture: { await harness.capture(paneID: $0, budget: $1) },
+                capture: {
+                    await harness.capture(paneID: $0, framing: $1, budget: $2)
+                },
                 cancelCapture: { harness.cancel(paneID: $0) }
             )
         )
@@ -200,7 +211,9 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
             leafIDs: [paneID, paneID, paneID],
             scale: 1,
             client: .init(
-                capture: { await harness.capture(paneID: $0, budget: $1) },
+                capture: {
+                    await harness.capture(paneID: $0, framing: $1, budget: $2)
+                },
                 cancelCapture: { harness.cancel(paneID: $0) }
             )
         )
@@ -208,6 +221,27 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         session.startRefreshing()
         try await waitUntil { harness.requests.count == 1 }
         XCTAssertEqual(harness.requests.map(\.paneID), [paneID])
+        harness.resolve(paneID: paneID, with: nil)
+    }
+
+    func testWindowGridRequestsCursorSnippetFraming() async throws {
+        let paneID = UUID()
+        let harness = CaptureHarness()
+        let session = GhosttyPanePreviewSession(
+            leafIDs: [paneID],
+            scale: 1,
+            previewSizing: .windowGrid(availableWidth: 320),
+            client: .init(
+                capture: {
+                    await harness.capture(paneID: $0, framing: $1, budget: $2)
+                }
+            )
+        )
+
+        session.startRefreshing()
+        try await waitUntil { harness.requests.count == 1 }
+
+        XCTAssertEqual(harness.requests.first?.framing, .cursorSnippet)
         harness.resolve(paneID: paneID, with: nil)
     }
 
@@ -281,6 +315,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
 private final class CaptureHarness {
     struct Request: Equatable {
         let paneID: UUID
+        let framing: GhosttyPanePreviewSession.PreviewFraming
         let budget: GhosttyPanePreviewSession.PixelBudget
     }
 
@@ -292,9 +327,10 @@ private final class CaptureHarness {
 
     func capture(
         paneID: UUID,
+        framing: GhosttyPanePreviewSession.PreviewFraming,
         budget: GhosttyPanePreviewSession.PixelBudget
     ) async -> GhosttyPanePreviewSession.RenderedPreview? {
-        requests.append(.init(paneID: paneID, budget: budget))
+        requests.append(.init(paneID: paneID, framing: framing, budget: budget))
         return await withCheckedContinuation { continuations[paneID] = $0 }
     }
 
