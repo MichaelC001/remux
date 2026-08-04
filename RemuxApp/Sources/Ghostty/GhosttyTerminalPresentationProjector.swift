@@ -667,10 +667,10 @@ enum GhosttyTerminalPresentationProjector {
             )
         }
 
-        let topLevelExists = snapshot.topLevels.contains { $0.id == topLevelID }
+        let topLevelIsSelected = snapshot.selectedTopLevelID == topLevelID
         return GhosttyPaneSelectionSheetTopologyProjection(
             topLevelID: topLevelID,
-            shouldDismissPaneSheet: !topLevelExists
+            shouldDismissPaneSheet: !topLevelIsSelected
         )
     }
 

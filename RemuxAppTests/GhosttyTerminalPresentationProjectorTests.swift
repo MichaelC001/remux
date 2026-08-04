@@ -494,6 +494,31 @@ final class GhosttyTerminalPresentationProjectorTests: XCTestCase {
         XCTAssertNotEqual(projection.viewport.focusedSurfaceID, paneID)
     }
 
+    func testPaneSheetDismissesWhenItsWindowIsNoLongerSelected() {
+        let firstWindowID = UUID()
+        let secondWindowID = UUID()
+        let snapshot = GhosttyRuntimeSurfaceTopologySnapshot(
+            topLevels: [
+                GhosttyTopLevelSurface(id: firstWindowID, leafIDs: []),
+                GhosttyTopLevelSurface(id: secondWindowID, leafIDs: []),
+            ],
+            selectedTopLevelID: secondWindowID
+        )
+
+        XCTAssertTrue(
+            GhosttyTerminalPresentationProjector.paneSelectionSheetTopologyProjection(
+                topLevelID: firstWindowID,
+                snapshot: snapshot
+            ).shouldDismissPaneSheet
+        )
+        XCTAssertFalse(
+            GhosttyTerminalPresentationProjector.paneSelectionSheetTopologyProjection(
+                topLevelID: secondWindowID,
+                snapshot: snapshot
+            ).shouldDismissPaneSheet
+        )
+    }
+
     func testWindowSelectionProjectionRemovesControlScalarsOnceAndPreservesUnicode() throws {
         let windowID = UUID()
         let paneID = UUID()
