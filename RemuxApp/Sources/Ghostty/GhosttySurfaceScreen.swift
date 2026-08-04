@@ -239,7 +239,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     )
 
                     ZStack(alignment: .topLeading) {
-                        GhosttySingleViewportView(
+                        GhosttyCompositeViewportView(
                             surfaceLookup: model.terminalManagedSurfaceLookup,
                             projection: screenProjection.viewport,
                             terminalTheme: presentation.terminalTheme,
@@ -247,7 +247,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             onSurfaceTap: handleSurfaceTap,
                             onPreviewSelection: onPreviewSelection,
                             onWindowSwipe: handleWindowSwipe,
-                            sendKeyEvent: sendTerminalKeyEvent,
+                            sendKeyEventToSurface: { event, surfaceID in
+                                model.sendKeyEvent(event, to: surfaceID).isAccepted
+                            },
                             onTrackpadFeedbackChange: { trackpadFeedback = $0 },
                             isMouseCaptured: { surfaceID in
                                 model.isMouseCaptured(for: surfaceID)
@@ -426,7 +428,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             isControlArmed: terminalInputController.isControlArmed,
                             selectedWindowIndex: interactionProjection.selectedWindowIndex,
                             windowCount: interactionProjection.windowCount,
-                            selectedPaneIndex: interactionProjection.selectedPaneIndex,
                             paneCount: interactionProjection.paneCount,
                             isComposerPresented: isActiveComposerPresented,
                             onShowSessions: onShowSessions,
@@ -733,7 +734,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
     }
 
-    private func handleSurfaceTap(_ surfaceID: UUID) {
+    private func handleSurfaceTap(
+        _ surfaceID: UUID,
+        shouldShowKeyboard: Bool
+    ) {
         GhosttyRuntimeTrace.flowBegin(
             "terminal.input",
             event: "ui.tap.surface",
@@ -742,14 +746,29 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 "workspaceID": presentation.workspaceID.uuidString,
             ]
         )
+        guard model.focusTmuxPane(surfaceID).isHandled else {
+            GhosttyRuntimeTrace.flowEndIfActive(
+                "terminal.input",
+                event: "ui.tap.surface.rejected",
+                fields: ["surface": ghosttyDiagnosticShortID(surfaceID)]
+            )
+            return
+        }
         let isInputAvailable = isTerminalInputAvailable
         if !isActiveComposerPresented {
-            showSystemKeyboard()
+            if shouldShowKeyboard {
+                showSystemKeyboard()
+            } else {
+                refocusSystemKeyboardIfActive()
+            }
         }
         GhosttyRuntimeTrace.flowEvent(
             "terminal.input",
             event: "ui.tap.surface.end",
-            fields: ["activated": "\(isInputAvailable)"]
+            fields: [
+                "activated": "\(isInputAvailable)",
+                "keyboard_requested": "\(shouldShowKeyboard)",
+            ]
         )
     }
 
@@ -1411,7 +1430,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 topLevelID: projection.topLevelID,
                 previews: model.makePanePreviewSession(
                     leafIDs: projection.previewLeafIDs,
-                    previewSizing: .paneGridForCurrentScreen
+                    previewSizing: .paneMapForCurrentScreen
                 )
             )
         )
@@ -2027,8 +2046,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             event: "ui.select.queued",
             fields: ["target_uuid": id.uuidString]
         )
-        dismissSelectionSheet()
-        refocusSystemKeyboardIfActive()
     }
 
     private func closeTmuxPaneFromSelectionSheet(_ id: UUID, topLevelID: UUID) {
@@ -2038,10 +2055,14 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
     }
 
+    private func setFocusedTmuxPaneZoomedFromSelectionSheet(_ zoomed: Bool) {
+        _ = model.setFocusedTmuxPaneZoomed(zoomed)
+    }
+
     private func selectionSheetHeight(
         for sheet: GhosttySurfaceSelectionSheet
     ) -> CGFloat {
-        let gridHeight: CGFloat
+        var gridHeight: CGFloat
         switch sheet {
         case .windows:
             gridHeight = PanePreviewLayout.gridIdealHeight(
@@ -2049,11 +2070,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 metrics: PanePreviewLayout.windowMetricsForCurrentScreen()
             )
         case .panes(let topLevelID, _):
-            let paneCount = model.paneSelectionSheetRenderProjection(topLevelID: topLevelID).panes.count
-            gridHeight = PanePreviewLayout.gridIdealHeight(
-                itemCount: paneCount,
-                metrics: PanePreviewLayout.metricsForCurrentScreen(for: paneCount)
-            )
+            let projection = model.paneSelectionSheetRenderProjection(topLevelID: topLevelID)
+            gridHeight = projection.windowGrid.flatMap {
+                PanePreviewLayout.paneMapMetricsForCurrentScreen(
+                    windowGrid: $0
+                )?.size.height
+            } ?? 160
         }
         return TerminalSelectionSheetLayout.sheetHeight(gridHeight: gridHeight)
     }
@@ -2066,6 +2088,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 session: session,
                 projection: model.windowSelectionSheetRenderProjection(),
                 sessionName: presentation.sessionName,
+                commandFailureMessage: selectionSheetCommandFailureMessage,
                 onCreateWindow: createTmuxWindowFromSelectionSheet,
                 onSelect: selectTmuxWindowFromSelectionSheet,
                 onRemoveWindow: closeTmuxWindowFromSelectionSheet
@@ -2075,6 +2098,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             GhosttyPaneSelectionSheet(
                 session: session,
                 projection: model.paneSelectionSheetRenderProjection(topLevelID: topLevelID),
+                commandFailureMessage: selectionSheetCommandFailureMessage,
                 onSplitPane: {
                     splitFocusedTmuxPaneFromSelectionSheet(
                         topLevelID: topLevelID,
@@ -2089,12 +2113,20 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                         event: "ui.tap.stackPane"
                     )
                 },
+                onSetZoomed: setFocusedTmuxPaneZoomedFromSelectionSheet,
                 onSelect: selectTmuxPaneFromSelectionSheet,
                 onRemovePane: { id in
                     closeTmuxPaneFromSelectionSheet(id, topLevelID: topLevelID)
                 }
             )
         }
+    }
+
+    private var selectionSheetCommandFailureMessage: String? {
+        guard case .commandFailure(let message) = model
+            .terminalScreenPresentationProjection.statusOverlay
+        else { return nil }
+        return message
     }
 }
 

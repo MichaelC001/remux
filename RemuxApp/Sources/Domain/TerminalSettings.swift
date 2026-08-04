@@ -109,6 +109,20 @@ enum TerminalTheme: String, CaseIterable, Codable, Identifiable, Sendable {
             0xEFF1F5
         }
     }
+
+    /// Neutral separator used by Remux's phone-sized composite. These colors
+    /// deliberately have more contrast than Ghostty's desktop split divider
+    /// because a one-pixel line otherwise disappears at mobile scale.
+    var terminalCompositeSeparatorHex: UInt32 {
+        switch self {
+        case .ghosttyDefault:
+            0x4F5259
+        case .remuxDark:
+            0x3E3F52
+        case .remuxLight:
+            0xD2D4DC
+        }
+    }
 }
 
 struct TerminalSettings: Equatable, Codable, Sendable {

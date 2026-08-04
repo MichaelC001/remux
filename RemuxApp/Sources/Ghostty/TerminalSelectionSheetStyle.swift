@@ -5,6 +5,8 @@ enum TerminalSelectionSheetPalette {
     static let row = Color(uiColor: .secondarySystemFill)
     static let stroke = Color.primary.opacity(0.12)
     static let controlFill = Color(uiColor: .secondarySystemFill)
+    static let controlPressedFill = Color.primary.opacity(0.08)
+    static let controlGroupGlassTint = Color.primary.opacity(0.035)
     static let primary = Color.primary.opacity(0.92)
     static let secondary = Color.secondary.opacity(0.78)
     static let tertiary = Color.secondary.opacity(0.56)
@@ -194,6 +196,38 @@ struct TerminalSelectionSheetActionButton: View {
 }
 
 extension View {
+    @ViewBuilder
+    func terminalSelectionSheetControlGroupSurface() -> some View {
+        let shape = Capsule()
+
+        if #available(iOS 26.0, *) {
+            self
+                .clipShape(shape)
+                .glassEffect(
+                    .regular
+                        .tint(TerminalSelectionSheetPalette.controlGroupGlassTint)
+                        .interactive(),
+                    in: shape
+                )
+                .overlay {
+                    shape.strokeBorder(
+                        TerminalSelectionSheetPalette.stroke,
+                        lineWidth: 0.75
+                    )
+                }
+        } else {
+            self
+                .background(TerminalSelectionSheetPalette.controlFill, in: shape)
+                .clipShape(shape)
+                .overlay {
+                    shape.strokeBorder(
+                        TerminalSelectionSheetPalette.stroke,
+                        lineWidth: 1
+                    )
+                }
+        }
+    }
+
     func terminalSelectionTileChrome(
         isSelected: Bool,
         chromeStyle: GhosttyTerminalChromeStyle

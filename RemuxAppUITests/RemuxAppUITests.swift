@@ -752,16 +752,12 @@ final class RemuxAppUITests: XCTestCase {
         waitForLiveTerminalReady(timeout: 90)
 
         openPanesSheet()
-        let firstPaneTile = app.buttons["terminal.pane.tile.1"]
-        XCTAssertTrue(firstPaneTile.waitForExistence(timeout: 10))
-        let secondPaneTile = app.buttons["terminal.pane.tile.2"]
-        XCTAssertTrue(secondPaneTile.waitForExistence(timeout: 10))
-        XCTAssertTrue(
-            secondPaneTile.label.hasPrefix("Pane 2 of 2"),
-            "The live agent TUI profiling fixture must contain exactly two panes; got \(secondPaneTile.label)."
-        )
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+        let paneTiles = panePickerTiles()
+        let firstPaneTile = paneTiles[0]
+        let secondPaneTile = paneTiles[1]
         assertPreviewTilesContainRenderedImages(
-            tileIdentifiers: ["terminal.pane.tile.1", "terminal.pane.tile.2"],
+            tiles: paneTiles,
             attachmentName: "agent-tui-pane-previews"
         )
         let firstPaneIsActive = firstPaneTile.label.hasSuffix(", active")
@@ -771,29 +767,25 @@ final class RemuxAppUITests: XCTestCase {
             secondPaneIsActive,
             "Exactly one profiling pane must be active."
         )
-        var targetIndex = firstPaneIsActive ? 2 : 1
+        var targetIndex = firstPaneIsActive ? 1 : 0
         dismissTopSheetIfPresent()
 
         for _ in 0..<switchCount {
             openPanesSheet()
-            tapPickerButton(
-                identifier: "terminal.pane.tile.\(targetIndex)",
-                fallbackLabel: "Pane \(targetIndex) of 2"
-            )
+            XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+            panePickerTiles()[targetIndex].tap()
             RunLoop.current.run(until: Date().addingTimeInterval(0.35))
-            targetIndex = targetIndex == 1 ? 2 : 1
+            targetIndex = targetIndex == 0 ? 1 : 0
         }
 
         // Both panes have now been presented at the real app viewport. The
         // inactive tile must come from its last full-viewport live capture,
         // not the cold split-geometry fallback.
         openPanesSheet()
-        assertPreviewTileUsesFullViewportWidth(
-            tileIdentifier: "terminal.pane.tile.1"
-        )
-        assertPreviewTileUsesFullViewportWidth(
-            tileIdentifier: "terminal.pane.tile.2"
-        )
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+        for tile in panePickerTiles() {
+            assertPreviewTileUsesFullViewportWidth(tile: tile)
+        }
         dismissTopSheetIfPresent()
 
         XCTAssertFalse(app.staticTexts["terminal.status.failed"].exists)
@@ -807,12 +799,10 @@ final class RemuxAppUITests: XCTestCase {
         openFirstSavedSession()
         waitForLiveTerminalReady(timeout: 90)
 
-        for paneIndex in 1...2 {
+        for paneIndex in 0..<2 {
             openPanesSheet()
-            tapPickerButton(
-                identifier: "terminal.pane.tile.\(paneIndex)",
-                fallbackLabel: "Pane \(paneIndex) of 2"
-            )
+            XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+            panePickerTiles()[paneIndex].tap()
             waitForLiveTerminalReady(timeout: 30)
         }
 
@@ -831,8 +821,10 @@ final class RemuxAppUITests: XCTestCase {
         activeSession.tap()
         waitForLiveTerminalReady(timeout: 30)
         openPanesSheet()
-        assertPreviewTileUsesFullViewportWidth(tileIdentifier: "terminal.pane.tile.1")
-        assertPreviewTileUsesFullViewportWidth(tileIdentifier: "terminal.pane.tile.2")
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+        for tile in panePickerTiles() {
+            assertPreviewTileUsesFullViewportWidth(tile: tile)
+        }
     }
 
     /// Deliberately synthetic scrollback/throughput stress. This proves lossless
@@ -911,10 +903,9 @@ final class RemuxAppUITests: XCTestCase {
         )
 
         openPanesSheet()
-        XCTAssertTrue(app.buttons["terminal.pane.tile.1"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["terminal.pane.tile.2"].waitForExistence(timeout: 10))
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
         assertPreviewTilesContainRenderedImages(
-            tileIdentifiers: ["terminal.pane.tile.1", "terminal.pane.tile.2"],
+            tiles: panePickerTiles(),
             attachmentName: "pane-previews"
         )
         dismissTopSheetIfPresent()
@@ -931,7 +922,10 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(app.buttons["terminal.window.tile.1"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["terminal.window.tile.2"].waitForExistence(timeout: 10))
         assertPreviewTilesContainRenderedImages(
-            tileIdentifiers: ["terminal.window.tile.1", "terminal.window.tile.2"],
+            tiles: [
+                app.buttons["terminal.window.tile.1"],
+                app.buttons["terminal.window.tile.2"],
+            ],
             attachmentName: "window-previews"
         )
     }
@@ -1164,26 +1158,26 @@ final class RemuxAppUITests: XCTestCase {
         waitForLiveTerminalReady(timeout: 30)
 
         openPanesSheet()
-        XCTAssertTrue(app.buttons["terminal.pane.tile.1"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["terminal.pane.tile.2"].waitForExistence(timeout: 10))
-        tapPickerButton(identifier: "terminal.pane.tile.1", fallbackLabel: "Pane 1 of 2")
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+        panePickerTiles()[0].tap()
         waitForLiveTerminalReady(timeout: 30)
 
         openPanesSheet()
-        tapPickerButton(identifier: "terminal.pane.tile.2", fallbackLabel: "Pane 2 of 2")
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+        panePickerTiles()[1].tap()
         waitForLiveTerminalReady(timeout: 30)
 
         openPanesSheet()
-        removePickerItem(
-            tileIdentifier: "terminal.pane.tile.2",
-            actionIdentifier: "terminal.pane.remove.2",
-            actionLabel: "Remove Pane 2",
-            confirmIdentifier: "terminal.pane.remove.confirm.2",
-            confirmLabel: "Remove Pane 2"
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+        let removedPaneIdentifier = panePickerTiles()[1].identifier
+        removePanePickerItem(app.buttons[removedPaneIdentifier])
+        XCTAssertTrue(
+            waitForElementToDisappear(app.buttons[removedPaneIdentifier], timeout: 10),
+            "The requested pane should disappear from the picker."
         )
         XCTAssertTrue(
-            waitForElementToDisappear(app.buttons["terminal.pane.tile.2"], timeout: 10),
-            "Pane 2 should disappear after removal."
+            waitForPanePickerTileCount(1, timeout: 10),
+            "The removed pane should disappear from the picker."
         )
         dismissTopSheetIfPresent()
         waitForLiveTerminalReady(timeout: 30)
@@ -1398,24 +1392,15 @@ final class RemuxAppUITests: XCTestCase {
         waitForLiveTerminalReady(timeout: 90)
 
         openPanesSheet()
-        XCTAssertTrue(app.buttons["terminal.pane.tile.1"].waitForExistence(timeout: 10))
-        XCTAssertFalse(
-            app.buttons["terminal.pane.tile.2"].waitForExistence(timeout: 1),
-            "A fresh generated live session should start with one pane."
-        )
+        XCTAssertTrue(waitForPanePickerTileCount(1, timeout: 10))
 
         tapPickerButton(identifier: "terminal.pane.stack", fallbackLabel: "Stack")
         waitForLiveTerminalReady(timeout: 30)
 
         openPanesSheet()
-        XCTAssertTrue(app.buttons["terminal.pane.tile.1"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["terminal.pane.tile.2"].waitForExistence(timeout: 10))
-        XCTAssertFalse(
-            app.buttons["terminal.pane.tile.3"].waitForExistence(timeout: 2),
-            "Stack should create exactly one additional pane."
-        )
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
 
-        tapPickerButton(identifier: "terminal.pane.tile.2", fallbackLabel: "Pane 2 of 2")
+        panePickerTiles()[1].tap()
         waitForLiveTerminalReady(timeout: 30)
         sendTerminalCommand("printf '\(marker)\\n'")
         hideKeyboardIfPresent()
@@ -1565,14 +1550,10 @@ final class RemuxAppUITests: XCTestCase {
         waitForLiveTerminalReady(timeout: 30)
 
         openPanesSheet()
-        let pane4 = waitForHittablePickerButton(
-            identifier: "terminal.pane.tile.4",
-            fallbackLabel: "Pane 4 of 4",
-            timeout: 20
-        )
-        XCTAssertNotNil(pane4, "Pane 4 in Window 10 should be reachable in the mixed dense topology.")
+        XCTAssertTrue(waitForPanePickerTileCount(4, timeout: 20))
+        let pane4 = panePickerTiles()[3]
 
-        pane4?.tap()
+        pane4.tap()
         waitForLiveTerminalReady(timeout: 30)
         sendTerminalCommand("printf '\(marker)\\n'")
         hideKeyboardIfPresent()
@@ -1604,9 +1585,8 @@ final class RemuxAppUITests: XCTestCase {
         waitForLiveTerminalReady(timeout: 30)
 
         openPanesSheet()
-        XCTAssertTrue(app.buttons["terminal.pane.tile.1"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["terminal.pane.tile.2"].waitForExistence(timeout: 10))
-        tapPickerButton(identifier: "terminal.pane.tile.1", fallbackLabel: "Pane 1 of 2")
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+        panePickerTiles()[0].tap()
         waitForLiveTerminalReady(timeout: 30)
 
         sendTerminalCommand("echo REMUX_FOREGROUND_BEFORE")
@@ -1615,23 +1595,22 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["terminal.status.failed"].exists)
 
         openPanesSheet()
-        XCTAssertTrue(app.buttons["terminal.pane.tile.1"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["terminal.pane.tile.2"].waitForExistence(timeout: 10))
-        tapPickerButton(identifier: "terminal.pane.tile.2", fallbackLabel: "Pane 2 of 2")
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+        panePickerTiles()[1].tap()
         waitForLiveTerminalReady(timeout: 30)
         sendTerminalCommand("echo REMUX_FOREGROUND_AFTER")
 
         openPanesSheet()
-        removePickerItem(
-            tileIdentifier: "terminal.pane.tile.2",
-            actionIdentifier: "terminal.pane.remove.2",
-            actionLabel: "Remove Pane 2",
-            confirmIdentifier: "terminal.pane.remove.confirm.2",
-            confirmLabel: "Remove Pane 2"
+        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
+        let removedPaneIdentifier = panePickerTiles()[1].identifier
+        removePanePickerItem(app.buttons[removedPaneIdentifier])
+        XCTAssertTrue(
+            waitForElementToDisappear(app.buttons[removedPaneIdentifier], timeout: 10),
+            "The requested pane should disappear after foreground restoration."
         )
         XCTAssertTrue(
-            waitForElementToDisappear(app.buttons["terminal.pane.tile.2"], timeout: 10),
-            "Pane 2 should disappear after post-foreground removal."
+            waitForPanePickerTileCount(1, timeout: 10),
+            "The removed pane should disappear after foreground restoration."
         )
         dismissTopSheetIfPresent()
         waitForLiveTerminalReady(timeout: 30)
@@ -3032,7 +3011,7 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func assertPreviewTilesContainRenderedImages(
-        tileIdentifiers: [String],
+        tiles: [XCUIElement],
         attachmentName: String,
         minDistinctColors: Int = 8,
         minNonBackgroundPixels: Int = 2_500,
@@ -3040,7 +3019,7 @@ final class RemuxAppUITests: XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        let tiles = tileIdentifiers.map { app.buttons[$0] }
+        let tileIdentifiers = tiles.map { $0.identifier }
         for (identifier, tile) in zip(tileIdentifiers, tiles) {
             XCTAssertTrue(
                 tile.waitForExistence(timeout: 5),
@@ -3178,11 +3157,11 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func assertPreviewTileUsesFullViewportWidth(
-        tileIdentifier: String,
+        tile: XCUIElement,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        let tile = app.buttons[tileIdentifier]
+        let tileIdentifier = tile.identifier
         XCTAssertTrue(
             tile.waitForExistence(timeout: 5),
             "Missing preview tile \(tileIdentifier)",
@@ -3715,6 +3694,39 @@ final class RemuxAppUITests: XCTestCase {
 
     private func elementWithIdentifier(_ identifier: String) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+    }
+
+    private func panePickerTiles() -> [XCUIElement] {
+        app.buttons
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal.pane.tile."))
+            .allElementsBoundByIndex
+    }
+
+    private func waitForPanePickerTileCount(
+        _ expectedCount: Int,
+        timeout: TimeInterval
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if panePickerTiles().count == expectedCount {
+                return true
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return panePickerTiles().count == expectedCount
+    }
+
+    private func removePanePickerItem(_ tile: XCUIElement) {
+        let tilePrefix = "terminal.pane.tile."
+        XCTAssertTrue(tile.identifier.hasPrefix(tilePrefix))
+        let paneIdentifier = String(tile.identifier.dropFirst(tilePrefix.count))
+        XCTAssertFalse(paneIdentifier.isEmpty)
+
+        tile.press(forDuration: 1.0)
+        tapPickerButton(
+            identifier: "terminal.pane.remove.\(paneIdentifier)",
+            fallbackLabel: "Remove Pane"
+        )
     }
 
     private func removePickerItem(
