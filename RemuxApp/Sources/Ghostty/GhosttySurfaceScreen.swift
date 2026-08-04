@@ -2088,6 +2088,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 session: session,
                 projection: model.windowSelectionSheetRenderProjection(),
                 sessionName: presentation.sessionName,
+                commandFailureMessage: selectionSheetCommandFailureMessage,
                 onCreateWindow: createTmuxWindowFromSelectionSheet,
                 onSelect: selectTmuxWindowFromSelectionSheet,
                 onRemoveWindow: closeTmuxWindowFromSelectionSheet
@@ -2097,6 +2098,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             GhosttyPaneSelectionSheet(
                 session: session,
                 projection: model.paneSelectionSheetRenderProjection(topLevelID: topLevelID),
+                commandFailureMessage: selectionSheetCommandFailureMessage,
                 onSplitPane: {
                     splitFocusedTmuxPaneFromSelectionSheet(
                         topLevelID: topLevelID,
@@ -2118,6 +2120,13 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 }
             )
         }
+    }
+
+    private var selectionSheetCommandFailureMessage: String? {
+        guard case .commandFailure(let message) = model
+            .terminalScreenPresentationProjection.statusOverlay
+        else { return nil }
+        return message
     }
 }
 
