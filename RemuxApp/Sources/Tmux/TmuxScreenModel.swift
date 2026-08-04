@@ -241,7 +241,6 @@ final class TmuxScreenModel: ObservableObject {
     }
 
     func handleAppLifecyclePhase(_ phase: GhosttyAppLifecyclePhase) {
-        terminalScreenAdapter.handleAppLifecyclePhase(phase)
         // Presentation discontinuity handling lives in the renderer
         // (visibility-resume full damage); here we gate drawing.
         session?.setAppActive(phase == .active)

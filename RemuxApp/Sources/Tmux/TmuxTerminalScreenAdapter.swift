@@ -907,16 +907,11 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         return .queued
     }
 
-    func handleAppLifecyclePhase(_ phase: GhosttyAppLifecyclePhase) {
-        guard phase == .background else { return }
-        attemptOwnedZoomCleanup(refreshPaneAfterChange: true)
-    }
-
     func prepareForSessionShutdown() {
-        attemptOwnedZoomCleanup(refreshPaneAfterChange: false)
+        attemptOwnedZoomCleanup()
     }
 
-    private func attemptOwnedZoomCleanup(refreshPaneAfterChange: Bool) {
+    private func attemptOwnedZoomCleanup() {
         var cleanupWindowIDs = ownedZoomWindowIDs
         if let pendingZoomOwnershipWindowID {
             cleanupWindowIDs.insert(pendingZoomOwnershipWindowID)
@@ -924,7 +919,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         guard !cleanupWindowIDs.isEmpty else { return }
         controller?.requestSetWindowsUnzoomed(
             windowIDs: cleanupWindowIDs.sorted { $0.rawValue < $1.rawValue },
-            refreshPanesAfterChange: refreshPaneAfterChange
+            refreshPanesAfterChange: false
         )
     }
 
