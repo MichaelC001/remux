@@ -390,7 +390,6 @@ final class TmuxTerminalSession: ObservableObject {
         paneID: TmuxPaneID,
         columns: UInt32,
         rows: UInt32,
-        framing: GhosttyPanePreviewSession.PreviewFraming,
         budget: GhosttyPanePreviewSession.PixelBudget
     ) async -> GhosttyPanePreviewSession.RenderedPreview? {
         guard !isShutDown,
@@ -402,7 +401,6 @@ final class TmuxTerminalSession: ObservableObject {
         return await surface.capturePickerPreview(
             columns: columns,
             rows: rows,
-            framing: framing,
             budget: budget
         )
     }

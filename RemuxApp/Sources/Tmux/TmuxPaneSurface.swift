@@ -620,7 +620,6 @@ final class TmuxPaneSurface {
     func capturePickerPreview(
         columns: UInt32,
         rows: UInt32,
-        framing: GhosttyPanePreviewSession.PreviewFraming,
         budget: GhosttyPanePreviewSession.PixelBudget
     ) async -> GhosttyPanePreviewSession.RenderedPreview? {
         guard lifecycle == .active,
@@ -677,24 +676,19 @@ final class TmuxPaneSurface {
             frame = published
         }
 
-        let sourceRect: CGRect? = switch framing {
-        case .wholePane:
-            nil
-        case .cursorSnippet:
-            renderer.control.cursorGeometry().flatMap { cursor in
-                let scale = CGFloat(canonicalViewportMetrics.contentScale)
-                let cursorInBackingPixels = CGRect(
-                    x: cursor.minX * scale,
-                    y: cursor.minY * scale,
-                    width: cursor.width * scale,
-                    height: cursor.height * scale
-                )
-                return frame.sourceRect(
-                    centeredOn: cursorInBackingPixels,
-                    maxWidth: budget.width,
-                    maxHeight: budget.height
-                )
-            }
+        let sourceRect = renderer.control.cursorGeometry().flatMap { cursor in
+            let scale = CGFloat(canonicalViewportMetrics.contentScale)
+            let cursorInBackingPixels = CGRect(
+                x: cursor.minX * scale,
+                y: cursor.minY * scale,
+                width: cursor.width * scale,
+                height: cursor.height * scale
+            )
+            return frame.sourceRect(
+                centeredOn: cursorInBackingPixels,
+                maxWidth: budget.width,
+                maxHeight: budget.height
+            )
         }
 
         guard let image = await makePreviewImage(
