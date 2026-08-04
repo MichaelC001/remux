@@ -159,6 +159,19 @@ struct GhosttySurfaceInteractionState: Equatable {
     }
 }
 
+private func ghosttyTerminalCellFrame(
+    _ value: ghostty_terminal_surface_cell_geometry_s,
+    scaleFactor: Double
+) -> CGRect? {
+    guard value.visible else { return nil }
+    return CGRect(
+        x: CGFloat(value.x_px / scaleFactor),
+        y: CGFloat(value.y_px / scaleFactor),
+        width: CGFloat(Double(value.width_px) / scaleFactor),
+        height: CGFloat(Double(value.height_px) / scaleFactor)
+    )
+}
+
 struct GhosttyLocalSelectionSnapshot: Equatable {
     static let inactive = GhosttyLocalSelectionSnapshot(
         cValue: ghostty_terminal_surface_selection_snapshot_s(),
@@ -170,22 +183,9 @@ struct GhosttyLocalSelectionSnapshot: Equatable {
     let isActive: Bool
 
     init(cValue: ghostty_terminal_surface_selection_snapshot_s, scaleFactor: Double) {
-        start = Self.rect(cValue.start, scaleFactor: scaleFactor)
-        end = Self.rect(cValue.end, scaleFactor: scaleFactor)
+        start = ghosttyTerminalCellFrame(cValue.start, scaleFactor: scaleFactor)
+        end = ghosttyTerminalCellFrame(cValue.end, scaleFactor: scaleFactor)
         isActive = cValue.active
-    }
-
-    private static func rect(
-        _ value: ghostty_terminal_surface_selection_rect_s,
-        scaleFactor: Double
-    ) -> CGRect? {
-        guard value.visible else { return nil }
-        return CGRect(
-            x: CGFloat(value.x_px / scaleFactor),
-            y: CGFloat(value.y_px / scaleFactor),
-            width: CGFloat(Double(value.width_px) / scaleFactor),
-            height: CGFloat(Double(value.height_px) / scaleFactor)
-        )
     }
 }
 
@@ -346,6 +346,14 @@ final class GhosttyKitControlSurface {
         var snapshot = ghostty_terminal_surface_selection_snapshot_s()
         let result = ghostty_terminal_surface_selection_snapshot(handle, &snapshot)
         return selectionOutcome(result, snapshot: snapshot, retryCommittedWake: false)
+    }
+
+    func cursorGeometry() -> CGRect? {
+        guard !invalidated else { return nil }
+        var geometry = ghostty_terminal_surface_cell_geometry_s()
+        let result = ghostty_terminal_surface_cursor_geometry(handle, &geometry)
+        guard report(result) else { return nil }
+        return ghosttyTerminalCellFrame(geometry, scaleFactor: scaleFactor)
     }
 
     func selectWord(at point: CGPoint) -> GhosttyLocalSelectionOutcome {
