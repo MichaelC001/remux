@@ -10,6 +10,7 @@ enum GhosttyRuntimeTrace {
         ProcessInfo.processInfo.environment["REMUX_TRACE_GHOSTTY_DIAGNOSTICS"] == "1"
     static let perfEnabled = ProcessInfo.processInfo.environment["REMUX_TRACE_PERF"] == "1"
     static let tmuxViewportEnabled = ProcessInfo.processInfo.environment["REMUX_TRACE_TMUX_VIEWPORT"] == "1"
+    static let deletionEnabled = ProcessInfo.processInfo.environment["REMUX_TRACE_DELETIONS"] == "1"
 
     private static let latencyProbeStore = GhosttyLatencyProbeStore()
     private static let latencyMarkerAccumulator = GhosttyLatencyMarkerAccumulator()
@@ -72,6 +73,20 @@ enum GhosttyRuntimeTrace {
     static func tmuxViewport(_ message: @autoclosure () -> String) {
         guard tmuxViewportEnabled else { return }
         NSLog("Remux tmuxViewport t=%llu %@", nowNanos(), message())
+    }
+
+    static func deletion(
+        _ event: String,
+        fields: @autoclosure () -> [String: String] = [:]
+    ) {
+        guard deletionEnabled else { return }
+        let encodedFields = formatTraceFields(fields())
+        NSLog(
+            "Remux deletion t=%llu event=%@ %@",
+            nowNanos(),
+            event,
+            encodedFields
+        )
     }
 
     static func viewportDescription(_ viewport: TmuxControlViewport) -> String {
