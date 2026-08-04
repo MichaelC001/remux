@@ -407,25 +407,6 @@ final class TmuxSessionController: @unchecked Sendable {
             handleClientFailure(consumeResult)
             return 0
         }
-        if GhosttyRuntimeTrace.deletionEnabled {
-            let outbound = String(decoding: owned, as: UTF8.self)
-            let deletionKind: String? = if outbound.contains("kill-pane") {
-                "pane"
-            } else if outbound.contains("kill-window") {
-                "window"
-            } else {
-                nil
-            }
-            if let deletionKind {
-                GhosttyRuntimeTrace.deletion(
-                    "writer.outbound",
-                    fields: [
-                        "bytes": "\(owned.count)",
-                        "kind": deletionKind,
-                    ]
-                )
-            }
-        }
         outboundSink(owned)
         return owned.count
     }
@@ -495,31 +476,11 @@ final class TmuxSessionController: @unchecked Sendable {
             panes: accumulator.panes,
             activeWindowID: accumulator.windows.first(where: \.active)?.id
         )
-        let previousWindowIDs = GhosttyRuntimeTrace.deletionEnabled
-            ? Set(topology?.windows.map(\.id) ?? [])
-            : []
         let previousPaneIDs = Set(topology?.panes.map(\.id) ?? [])
         let nextPaneIDs = Set(snapshot.panes.map(\.id))
         let removed = previousPaneIDs.subtracting(nextPaneIDs).sorted()
         topology = snapshot
         topologyRevision &+= 1
-        if GhosttyRuntimeTrace.deletionEnabled {
-            let nextWindowIDs = Set(snapshot.windows.map(\.id))
-            let removedWindows = previousWindowIDs.subtracting(nextWindowIDs).sorted()
-            if !removed.isEmpty || !removedWindows.isEmpty {
-                GhosttyRuntimeTrace.deletion(
-                    "writer.topology.removal",
-                    fields: [
-                        "panes": snapshot.panes.map {
-                            "\($0.id):\($0.x),\($0.y),\($0.width)x\($0.height)"
-                        }.joined(separator: ";"),
-                        "removed_panes": removed.map { "\($0)" }.joined(separator: ","),
-                        "removed_windows": removedWindows.map { "\($0)" }.joined(separator: ","),
-                        "topology_revision": "\(topologyRevision)",
-                    ]
-                )
-            }
-        }
         clearSatisfiedMutationBarrier()
 
         for paneID in removed {
@@ -631,15 +592,6 @@ final class TmuxSessionController: @unchecked Sendable {
         topologyRevisionAtSubmission: UInt64
     ) {
         preconditionOnWriterQueue()
-        traceDeletionAdmission(
-            request,
-            event: "writer.command.completed",
-            fields: [
-                "status": "\(completion.status)",
-                "token": "\(completion.token)",
-                "topology_revision": "\(topologyRevision)",
-            ]
-        )
         switch completion.status {
         case GHOSTTY_TMUX_COMMAND_SUCCESS:
             if requestMutatesTopology(request) {
@@ -854,18 +806,10 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     func requestClosePane(paneID: TmuxPaneID) {
-        GhosttyRuntimeTrace.deletion(
-            "controller.pane.scheduled",
-            fields: ["pane": "\(paneID)"]
-        )
         queue.async { [self] in enqueuePaneClosure(paneID) }
     }
 
     func requestCloseWindow(windowID: TmuxWindowID) {
-        GhosttyRuntimeTrace.deletion(
-            "controller.window.scheduled",
-            fields: ["window": "\(windowID)"]
-        )
         queue.async { [self] in enqueueWindowClosure(windowID) }
     }
 
@@ -1056,15 +1000,7 @@ final class TmuxSessionController: @unchecked Sendable {
 
     private func enqueuePaneClosure(_ paneID: TmuxPaneID) {
         preconditionOnWriterQueue()
-        GhosttyRuntimeTrace.deletion(
-            "writer.pane.received",
-            fields: ["pane": "\(paneID)"]
-        )
         guard !awaitingTopologyMutationSettlement else {
-            GhosttyRuntimeTrace.deletion(
-                "writer.pane.rejected_pending_topology",
-                fields: ["pane": "\(paneID)"]
-            )
             reportRequestFailure(.closePane)
             return
         }
@@ -1072,10 +1008,6 @@ final class TmuxSessionController: @unchecked Sendable {
               let pane = topology.panes.first(where: { $0.id == paneID }),
               let window = topology.windows.first(where: { $0.id == pane.windowID })
         else {
-            GhosttyRuntimeTrace.deletion(
-                "writer.pane.rejected_missing_topology",
-                fields: ["pane": "\(paneID)"]
-            )
             reportRequestFailure(.closePane)
             return
         }
@@ -1113,20 +1045,9 @@ final class TmuxSessionController: @unchecked Sendable {
 
     private func enqueueWindowClosure(_ windowID: TmuxWindowID) {
         preconditionOnWriterQueue()
-        GhosttyRuntimeTrace.deletion(
-            "writer.window.received",
-            fields: ["window": "\(windowID)"]
-        )
         guard !awaitingTopologyMutationSettlement,
               topology?.windows.contains(where: { $0.id == windowID }) == true
         else {
-            GhosttyRuntimeTrace.deletion(
-                "writer.window.rejected",
-                fields: [
-                    "pending_topology": "\(awaitingTopologyMutationSettlement)",
-                    "window": "\(windowID)",
-                ]
-            )
             reportRequestFailure(.closeWindow)
             return
         }
@@ -1361,31 +1282,17 @@ final class TmuxSessionController: @unchecked Sendable {
     private func admitCommandOnWriter(command: String, request: Request) -> Bool {
         preconditionOnWriterQueue()
         guard let client, outboundSink != nil, !shuttingDown else {
-            traceDeletionAdmission(request, event: "writer.command.unavailable")
             reportRequestFailure(request)
             return false
         }
         let (result, token) = enqueueCommandTokenOnWriter(command, client: client)
         guard result == GHOSTTY_TMUX_RESULT_OK else {
-            traceDeletionAdmission(
-                request,
-                event: "writer.command.rejected",
-                fields: ["result": "\(result)"]
-            )
             reportImmediateFailure(result, request: request)
             return false
         }
         requestsByToken[token] = .action(
             request,
             topologyRevisionAtSubmission: topologyRevision
-        )
-        traceDeletionAdmission(
-            request,
-            event: "writer.command.admitted",
-            fields: [
-                "token": "\(token)",
-                "topology_revision": "\(topologyRevision)",
-            ]
         )
         return true
     }
@@ -1476,7 +1383,6 @@ final class TmuxSessionController: @unchecked Sendable {
     private func admitCommandGroupOnWriter(commands: [String], request: Request) -> Bool {
         preconditionOnWriterQueue()
         guard let client, outboundSink != nil, !shuttingDown else {
-            traceDeletionAdmission(request, event: "writer.group.unavailable")
             reportRequestFailure(request)
             return false
         }
@@ -1495,11 +1401,6 @@ final class TmuxSessionController: @unchecked Sendable {
             }
         }
         guard result == GHOSTTY_TMUX_RESULT_OK else {
-            traceDeletionAdmission(
-                request,
-                event: "writer.group.rejected",
-                fields: ["result": "\(result)"]
-            )
             reportImmediateFailure(result, request: request)
             return false
         }
@@ -1509,26 +1410,7 @@ final class TmuxSessionController: @unchecked Sendable {
                 topologyRevisionAtSubmission: topologyRevision
             )
         }
-        traceDeletionAdmission(
-            request,
-            event: "writer.group.admitted",
-            fields: [
-                "tokens": tokens.map(String.init).joined(separator: ","),
-                "topology_revision": "\(topologyRevision)",
-            ]
-        )
         return true
-    }
-
-    private func traceDeletionAdmission(
-        _ request: Request,
-        event: String,
-        fields: [String: String] = [:]
-    ) {
-        guard request == .closePane || request == .closeWindow else { return }
-        var fields = fields
-        fields["kind"] = request == .closePane ? "pane" : "window"
-        GhosttyRuntimeTrace.deletion(event, fields: fields)
     }
 
     private func withBorrowedCommandBytes<Result>(

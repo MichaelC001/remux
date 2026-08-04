@@ -409,12 +409,6 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     // MARK: Command failures
 
     private func presentCommandFailure(for request: TmuxSessionController.Request) {
-        if request == .closePane || request == .closeWindow {
-            GhosttyRuntimeTrace.deletion(
-                "adapter.failure.presented",
-                fields: ["kind": request == .closePane ? "pane" : "window"]
-            )
-        }
         commandFailureToken &+= 1
         let message = "tmux: \(Self.failureLabel(for: request)) failed"
         commandFailureMessage = message
@@ -972,19 +966,8 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
 
     func closeTmuxPane(_ id: UUID) -> GhosttyTmuxModelActionOutcome {
         guard let paneID = identities.paneID(for: id), let controller else {
-            GhosttyRuntimeTrace.deletion(
-                "adapter.pane.resolve_failed",
-                fields: ["surface_uuid": id.uuidString]
-            )
             return .missingTarget(.pane(id))
         }
-        GhosttyRuntimeTrace.deletion(
-            "adapter.pane.resolved",
-            fields: [
-                "pane": "\(paneID)",
-                "surface_uuid": id.uuidString,
-            ]
-        )
         if let topology = latestTopology,
            let pane = topology.panes.first(where: { $0.id == paneID }),
            let window = topology.windows.first(where: { $0.id == pane.windowID }),
@@ -999,19 +982,8 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
 
     func closeTmuxWindow(_ id: UUID) -> GhosttyTmuxModelActionOutcome {
         guard let windowID = identities.windowID(for: id), let controller else {
-            GhosttyRuntimeTrace.deletion(
-                "adapter.window.resolve_failed",
-                fields: ["surface_uuid": id.uuidString]
-            )
             return .missingTarget(.window(id))
         }
-        GhosttyRuntimeTrace.deletion(
-            "adapter.window.resolved",
-            fields: [
-                "surface_uuid": id.uuidString,
-                "window": "\(windowID)",
-            ]
-        )
         controller.requestCloseWindow(windowID: windowID)
         return .queued
     }

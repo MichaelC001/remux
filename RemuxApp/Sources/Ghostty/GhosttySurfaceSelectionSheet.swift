@@ -80,10 +80,6 @@ struct GhosttyWindowSelectionSheet: View {
             presenting: pendingRemoval
         ) { request in
             Button("Remove Window \(request.displayIndex)", role: .destructive) {
-                GhosttyRuntimeTrace.deletion(
-                    "ui.window.confirm",
-                    fields: ["surface_uuid": request.id.uuidString]
-                )
                 onRemoveWindow(request.id)
                 pendingRemoval = nil
             }
@@ -147,13 +143,6 @@ struct GhosttyWindowSelectionSheet: View {
                         LongPressGesture(minimumDuration: 0.42, maximumDistance: 18)
                             .onEnded { _ in
                                 Haptic.warning()
-                                GhosttyRuntimeTrace.deletion(
-                                    "ui.window.long_press",
-                                    fields: [
-                                        "surface_uuid": window.id.uuidString,
-                                        "selected": "\(window.isSelected)",
-                                    ]
-                                )
                                 pendingContextAction = request
                             }
                     )
@@ -195,12 +184,6 @@ struct GhosttyWindowSelectionSheet: View {
     }
 
     private func confirmPendingContextAction() {
-        if let pendingContextAction {
-            GhosttyRuntimeTrace.deletion(
-                "ui.window.trash_tap",
-                fields: ["surface_uuid": pendingContextAction.id.uuidString]
-            )
-        }
         pendingRemoval = pendingContextAction
         pendingContextAction = nil
     }
@@ -291,10 +274,6 @@ struct GhosttyPaneSelectionSheet: View {
             presenting: pendingRemoval
         ) { request in
             Button("Remove Pane", role: .destructive) {
-                GhosttyRuntimeTrace.deletion(
-                    "ui.pane.confirm",
-                    fields: ["surface_uuid": request.id.uuidString]
-                )
                 onRemovePane(request.id)
                 pendingRemoval = nil
                 pendingContextAction = nil
@@ -346,13 +325,6 @@ struct GhosttyPaneSelectionSheet: View {
                                 LongPressGesture(minimumDuration: 0.42, maximumDistance: 18)
                                     .onEnded { _ in
                                         Haptic.warning()
-                                        GhosttyRuntimeTrace.deletion(
-                                            "ui.pane.long_press",
-                                            fields: [
-                                                "surface_uuid": pane.id.uuidString,
-                                                "selected": "\(pane.isSelected)",
-                                            ]
-                                        )
                                         pendingContextAction = request
                                     }
                             )
@@ -420,13 +392,6 @@ struct GhosttyPaneSelectionSheet: View {
     }
 
     private func performRemoval(_ request: GhosttyPaneRemovalRequest) {
-        GhosttyRuntimeTrace.deletion(
-            "ui.pane.trash_tap",
-            fields: [
-                "only_pane": "\(request.isOnlyPane)",
-                "surface_uuid": request.id.uuidString,
-            ]
-        )
         if request.isOnlyPane {
             pendingRemoval = request
         } else {
