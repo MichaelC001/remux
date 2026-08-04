@@ -56,14 +56,8 @@ final class GhosttyPanePreviewSession: ObservableObject {
     }
 
     enum PreviewSizing: Equatable {
-        case paneGrid(availableWidth: CGFloat)
         case paneMap(availableWidth: CGFloat, maximumHeight: CGFloat)
         case windowGrid(availableWidth: CGFloat)
-
-        @MainActor
-        static var paneGridForCurrentScreen: PreviewSizing {
-            .paneGrid(availableWidth: PanePreviewLayout.currentSheetContentWidth())
-        }
 
         @MainActor
         static var paneMapForCurrentScreen: PreviewSizing {
@@ -101,11 +95,11 @@ final class GhosttyPanePreviewSession: ObservableObject {
     init(
         leafIDs: [UUID],
         scale: CGFloat = PanePreviewLayout.currentScale(),
-        previewSizing: PreviewSizing? = nil,
+        previewSizing: PreviewSizing,
         client: PreviewClient
     ) {
         displayScale = scale
-        self.previewSizing = previewSizing ?? .paneGridForCurrentScreen
+        self.previewSizing = previewSizing
         self.client = client
         trackedLeafIDs = Self.unique(leafIDs)
         seedCachedImages(for: trackedLeafIDs)
@@ -143,7 +137,7 @@ final class GhosttyPanePreviewSession: ObservableObject {
         generation &+= 1
         let currentGeneration = generation
         let leafIDs = trackedLeafIDs
-        let budget = pixelBudget(itemCount: max(leafIDs.count, 1))
+        let budget = pixelBudget()
         cancelActiveCapture()
         refreshTask?.cancel()
         refreshTask = Task { @MainActor [weak self] in
@@ -192,14 +186,8 @@ final class GhosttyPanePreviewSession: ObservableObject {
         }
     }
 
-    private func pixelBudget(itemCount: Int) -> PixelBudget {
+    private func pixelBudget() -> PixelBudget {
         let dimensions: (width: UInt32, height: UInt32) = switch previewSizing {
-        case .paneGrid(let availableWidth):
-            PanePreviewLayout.physicalPixelBudget(
-                paneCount: itemCount,
-                availableWidth: availableWidth,
-                scale: displayScale
-            )
         case .paneMap(let availableWidth, let maximumHeight):
             PanePreviewLayout.paneMapPhysicalPixelBudget(
                 availableWidth: availableWidth,

@@ -511,19 +511,13 @@ private struct GhosttyRenderedPreviewSurface: View {
     var body: some View {
         Image(decorative: preview.image, scale: PanePreviewLayout.currentScale())
             .resizable()
-            .aspectRatio(contentMode: contentMode)
+            .aspectRatio(contentMode: .fill)
             .frame(width: size.width, height: size.height)
             .background(Color.black.opacity(0.30))
             .clipped()
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 
-    private var contentMode: ContentMode {
-        switch preview.source {
-        case .fullViewport: .fill
-        case .paneGeometry: .fit
-        }
-    }
 }
 
 private struct GhosttyWindowSelectionTile: View {
