@@ -1169,7 +1169,12 @@ final class RemuxAppUITests: XCTestCase {
 
         openPanesSheet()
         XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
-        removePanePickerItem(panePickerTiles()[1])
+        let removedPaneIdentifier = panePickerTiles()[1].identifier
+        removePanePickerItem(app.buttons[removedPaneIdentifier])
+        XCTAssertTrue(
+            waitForElementToDisappear(app.buttons[removedPaneIdentifier], timeout: 10),
+            "The requested pane should disappear from the picker."
+        )
         XCTAssertTrue(
             waitForPanePickerTileCount(1, timeout: 10),
             "The removed pane should disappear from the picker."
@@ -1597,7 +1602,12 @@ final class RemuxAppUITests: XCTestCase {
 
         openPanesSheet()
         XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
-        removePanePickerItem(panePickerTiles()[1])
+        let removedPaneIdentifier = panePickerTiles()[1].identifier
+        removePanePickerItem(app.buttons[removedPaneIdentifier])
+        XCTAssertTrue(
+            waitForElementToDisappear(app.buttons[removedPaneIdentifier], timeout: 10),
+            "The requested pane should disappear after foreground restoration."
+        )
         XCTAssertTrue(
             waitForPanePickerTileCount(1, timeout: 10),
             "The removed pane should disappear after foreground restoration."

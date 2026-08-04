@@ -321,6 +321,7 @@ struct GhosttyPaneSelectionSheet: View {
                                 )
                             }
                             .buttonStyle(.plain)
+                            .accessibilityIdentifier("terminal.pane.tile.\(pane.id.uuidString)")
                             .highPriorityGesture(
                                 LongPressGesture(minimumDuration: 0.42, maximumDistance: 18)
                                     .onEnded { _ in
@@ -344,7 +345,6 @@ struct GhosttyPaneSelectionSheet: View {
                         .frame(width: frame.width, height: frame.height)
                         .offset(x: frame.minX, y: frame.minY)
                         .animation(.spring(response: 0.24, dampingFraction: 0.82), value: pendingContextAction?.id)
-                        .accessibilityIdentifier("terminal.pane.tile.\(pane.id.uuidString)")
                         .accessibilityAction(named: Text("Remove Pane")) {
                             Haptic.warning()
                             pendingContextAction = request

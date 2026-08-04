@@ -86,8 +86,9 @@ final class TmuxSessionLinkWriteFailureTests: XCTestCase {
         await link.stop()
 
         let outbound = await transport.sentData()
+        let expected = Data("new-window\n".utf8)
         XCTAssertTrue(
-            outbound.contains { String(decoding: $0, as: UTF8.self).contains("new-window\n") }
+            outbound.contains { $0.range(of: expected) != nil }
         )
         await withCheckedContinuation { continuation in
             controller.shutdown { continuation.resume() }

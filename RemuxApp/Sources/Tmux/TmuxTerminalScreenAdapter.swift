@@ -72,7 +72,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
             .store(in: &subscriptions)
         session.$topology
             .sink { [weak self] topology in
-                guard let self else { return }
+                guard let self, let session = self.session else { return }
                 self.latestTopology = topology
                 if let topology {
                     self.reconcileZoomOwnership(with: topology)
