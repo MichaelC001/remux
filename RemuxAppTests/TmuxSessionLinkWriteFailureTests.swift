@@ -67,11 +67,21 @@ final class TmuxSessionLinkWriteFailureTests: XCTestCase {
 
     func testExplicitStopSendsControllerWorkQueuedBeforeTeardown() async throws {
         let runtime = try GhosttyKitRuntime()
+        let stateRecorder = SessionStateRecorder()
         let transport = LinkTestTransport(failWrites: false)
-        let controller = TmuxSessionController(callbacks: .init())
+        let controller = TmuxSessionController(
+            callbacks: TmuxSessionController.Callbacks(
+                onState: { state in
+                    stateRecorder.append(state)
+                }
+            )
+        )
         let link = TmuxSessionLink(controller: controller, transport: transport)
 
         try await link.start(viewport: .default)
+        try await waitUntil("controller did not process the initial tmux response") {
+            stateRecorder.contains(.syncing)
+        }
         controller.requestNewWindow()
         await link.stop()
 
