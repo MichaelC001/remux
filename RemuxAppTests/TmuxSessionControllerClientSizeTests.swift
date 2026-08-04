@@ -758,6 +758,79 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertEqual(harness.recorder.takeStrings(), ["kill-pane -t %0\n"])
     }
 
+    func testNormalPaneCloseWaitsForExpandedTopologyBeforeAnotherClose() async throws {
+        let topologyRecorder = ControllerTopologyRecorder()
+        let harness = try await readyController(
+            listWindowsBody: Self.twoPaneUnzoomedWindow,
+            expectedPaneCount: 2,
+            callbacks: .init(onTopology: { topologyRecorder.append($0) })
+        )
+        topologyRecorder.clear()
+        var nextCommandNumber = harness.nextCommandNumber
+
+        harness.controller.requestClosePane(paneID: 1)
+        await drain(harness.controller)
+        XCTAssertEqual(harness.recorder.takeStrings(), ["kill-pane -t %1\n"])
+
+        harness.controller.pump(Data(responseBlock(commandNumber: &nextCommandNumber).utf8))
+        await drain(harness.controller)
+        harness.controller.requestClosePane(paneID: 2)
+        await drain(harness.controller)
+        XCTAssertTrue(
+            harness.recorder.takeStrings().isEmpty,
+            "another close must wait for authoritative topology after a successful mutation"
+        )
+
+        let expandedLayout = "b7df,83x44,0,0,2"
+        harness.controller.pump(Data(
+            "%layout-change @1 \(expandedLayout) \(expandedLayout) *\n".utf8
+        ))
+        await drain(harness.controller)
+
+        let topology = try XCTUnwrap(topologyRecorder.latest)
+        let pane = try XCTUnwrap(topology.panes.first)
+        XCTAssertEqual(topology.panes.count, 1)
+        XCTAssertEqual(pane.id, 2)
+        XCTAssertEqual(pane.x, 0)
+        XCTAssertEqual(pane.y, 0)
+        XCTAssertEqual(pane.width, 83)
+        XCTAssertEqual(pane.height, 44)
+
+        harness.controller.requestClosePane(paneID: 2)
+        await drain(harness.controller)
+        XCTAssertEqual(harness.recorder.takeStrings(), ["kill-pane -t %2\n"])
+    }
+
+    func testWindowCloseWaitsForAuthoritativeRemovalBeforeAnotherClose() async throws {
+        let topologyRecorder = ControllerTopologyRecorder()
+        let harness = try await readyController(
+            listWindowsBody: Self.twoSinglePaneWindows,
+            expectedPaneCount: 2,
+            callbacks: .init(onTopology: { topologyRecorder.append($0) })
+        )
+        topologyRecorder.clear()
+        var nextCommandNumber = harness.nextCommandNumber
+
+        harness.controller.requestCloseWindow(windowID: 1)
+        await drain(harness.controller)
+        XCTAssertEqual(harness.recorder.takeStrings(), ["kill-window -t @1\n"])
+
+        harness.controller.pump(Data(responseBlock(commandNumber: &nextCommandNumber).utf8))
+        await drain(harness.controller)
+        harness.controller.requestCloseWindow(windowID: 0)
+        await drain(harness.controller)
+        XCTAssertTrue(harness.recorder.takeStrings().isEmpty)
+
+        harness.controller.pump(Data("%unlinked-window-close @1\n".utf8))
+        await drain(harness.controller)
+        let topology = try XCTUnwrap(topologyRecorder.latest)
+        XCTAssertEqual(topology.windows.map(\.id), [0])
+
+        harness.controller.requestCloseWindow(windowID: 0)
+        await drain(harness.controller)
+        XCTAssertEqual(harness.recorder.takeStrings(), ["kill-window -t @0\n"])
+    }
+
     func testNotReadyRefreshRetriesOnceAndDrainsAfterInitialPaneChanged() async throws {
         let harness = try await hydratingController(
             listWindowsBody: Self.twoPaneUnzoomedWindow,
@@ -1327,5 +1400,22 @@ private final class ControllerLifecycleRecorder: @unchecked Sendable {
 
     var phaseChanges: [PhaseChange] {
         lock.withLock { phases }
+    }
+}
+
+private final class ControllerTopologyRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var snapshots: [TmuxSessionController.TopologySnapshot] = []
+
+    func append(_ snapshot: TmuxSessionController.TopologySnapshot) {
+        lock.withLock { snapshots.append(snapshot) }
+    }
+
+    func clear() {
+        lock.withLock { snapshots.removeAll() }
+    }
+
+    var latest: TmuxSessionController.TopologySnapshot? {
+        lock.withLock { snapshots.last }
     }
 }
