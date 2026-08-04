@@ -676,20 +676,37 @@ final class TmuxPaneSurface {
             frame = published
         }
 
-        let sourceRect = renderer.control.cursorGeometry().flatMap { cursor in
+        // Crop twice the displayed width and height, then downsample into the
+        // existing display-sized cache budget.
+        let cropWidth = UInt32(clamping: UInt64(budget.width) * 2)
+        let cropHeight = UInt32(clamping: UInt64(budget.height) * 2)
+        let viewportAnchor = CGRect(
+            x: 0,
+            y: 0,
+            width: CGFloat(frame.width),
+            height: CGFloat(frame.height)
+        )
+        let cropAnchor: CGRect
+        if let cursor = renderer.control.cursorGeometry() {
             let scale = CGFloat(canonicalViewportMetrics.contentScale)
-            let cursorInBackingPixels = CGRect(
+            cropAnchor = CGRect(
                 x: cursor.minX * scale,
                 y: cursor.minY * scale,
                 width: cursor.width * scale,
                 height: cursor.height * scale
             )
-            return frame.sourceRect(
-                centeredOn: cursorInBackingPixels,
-                maxWidth: budget.width,
-                maxHeight: budget.height
-            )
+        } else {
+            cropAnchor = viewportAnchor
         }
+        guard let sourceRect = frame.sourceRect(
+            centeredOn: cropAnchor,
+            maxWidth: cropWidth,
+            maxHeight: cropHeight
+        ) ?? frame.sourceRect(
+            centeredOn: viewportAnchor,
+            maxWidth: cropWidth,
+            maxHeight: cropHeight
+        ) else { return nil }
 
         guard let image = await makePreviewImage(
             from: frame,
