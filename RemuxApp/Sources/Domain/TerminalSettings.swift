@@ -139,20 +139,27 @@ struct TerminalSettings: Equatable, Codable, Sendable {
     /// Defaults to `false` when absent from persisted settings.
     var allowInsecureRSAHostKeys: Bool
 
+    /// The zoom state applied to multipane windows when a Remux session starts
+    /// or this global preference changes.
+    var zoomMultipaneWindowsByDefault: Bool
+
     init(
         fontSize: Float32?,
         theme: TerminalTheme,
-        allowInsecureRSAHostKeys: Bool = false
+        allowInsecureRSAHostKeys: Bool = false,
+        zoomMultipaneWindowsByDefault: Bool = false
     ) {
         self.fontSize = Self.normalizedFontSize(fontSize)
         self.theme = theme
         self.allowInsecureRSAHostKeys = allowInsecureRSAHostKeys
+        self.zoomMultipaneWindowsByDefault = zoomMultipaneWindowsByDefault
     }
 
     private enum CodingKeys: String, CodingKey {
         case fontSize
         case theme
         case allowInsecureRSAHostKeys
+        case zoomMultipaneWindowsByDefault
     }
 
     // Custom decoding keeps older persisted settings (written before these keys
@@ -162,7 +169,11 @@ struct TerminalSettings: Equatable, Codable, Sendable {
         self.init(
             fontSize: try container.decodeIfPresent(Float32.self, forKey: .fontSize),
             theme: try container.decodeIfPresent(TerminalTheme.self, forKey: .theme) ?? .ghosttyDefault,
-            allowInsecureRSAHostKeys: try container.decodeIfPresent(Bool.self, forKey: .allowInsecureRSAHostKeys) ?? false
+            allowInsecureRSAHostKeys: try container.decodeIfPresent(Bool.self, forKey: .allowInsecureRSAHostKeys) ?? false,
+            zoomMultipaneWindowsByDefault: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .zoomMultipaneWindowsByDefault
+            ) ?? decoder.userInfo[.terminalSettingsDefaultMultipaneZoom] as? Bool ?? false
         )
     }
 
@@ -196,4 +207,10 @@ struct TerminalSettings: Equatable, Codable, Sendable {
 
         return String(format: "%.2f", value)
     }
+}
+
+extension CodingUserInfoKey {
+    static let terminalSettingsDefaultMultipaneZoom = CodingUserInfoKey(
+        rawValue: "terminalSettingsDefaultMultipaneZoom"
+    )!
 }
