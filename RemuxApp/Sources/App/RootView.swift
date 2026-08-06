@@ -1293,9 +1293,8 @@ private struct TerminalSettingsView: View {
                 Text("Windows & Panes")
             } footer: {
                 Text(
-                    "Automatically zooms the active pane while letting you override "
-                        + "individual windows from Panes. Remux cleans up these zooms "
-                        + "when it closes normally."
+                    "Applies to all windows. Override any window from Panes. Remux normally "
+                        + "clears its zooms when closing; otherwise, use prefix + z."
                 )
             }
             .libraryHomeListRowSurface()
