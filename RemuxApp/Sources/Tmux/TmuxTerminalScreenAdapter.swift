@@ -23,13 +23,19 @@ struct TmuxMultipaneZoomDefaultPolicy {
     ) -> [TmuxWindowID] {
         var targets: [TmuxWindowID] = []
 
-        for window in topology.windows where !resolvedWindowIDs.contains(window.id) {
+        for window in topology.windows {
             var paneCount = 0
             for pane in topology.panes where pane.windowID == window.id {
                 paneCount += 1
                 if paneCount == 2 { break }
             }
-            guard paneCount == 2, window.activePaneID != nil else { continue }
+            guard paneCount == 2 else {
+                resolvedWindowIDs.remove(window.id)
+                continue
+            }
+            guard !resolvedWindowIDs.contains(window.id),
+                  window.activePaneID != nil
+            else { continue }
 
             resolvedWindowIDs.insert(window.id)
             if window.zoomed != isEnabled {
@@ -934,10 +940,28 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         else {
             return .missingTarget(.focusedPane)
         }
+        let hasSibling = topology.panes.contains {
+            $0.windowID == window.id && $0.id != pane.id
+        }
+        let appliesDefaultZoom = !hasSibling
+            && !window.zoomed
+            && multipaneZoomDefault.isEnabled
+        let onZoomCreated: (@Sendable () -> Void)?
+        if appliesDefaultZoom {
+            let windowID = window.id
+            onZoomCreated = { [weak self] in
+                DispatchQueue.main.async {
+                    self?.pendingZoomOwnershipWindowIDs.insert(windowID)
+                }
+            }
+        } else {
+            onZoomCreated = nil
+        }
         controller.requestSplit(
             paneID: activeManagedPaneID,
             direction: TmuxSessionController.SplitDirection(actionDirection: direction),
-            zoom: window.zoomed
+            zoom: window.zoomed || appliesDefaultZoom,
+            onZoomCreated: onZoomCreated
         )
         return .queued
     }

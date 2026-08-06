@@ -195,7 +195,11 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     private enum OutstandingRequest {
-        case action(Request, topologyRevisionAtSubmission: UInt64)
+        case action(
+            Request,
+            topologyRevisionAtSubmission: UInt64,
+            onSuccess: (@Sendable () -> Void)?
+        )
         case paneCurrentDirectory(
             @Sendable (Result<String, PaneCurrentDirectoryError>) -> Void
         )
@@ -543,11 +547,12 @@ final class TmuxSessionController: @unchecked Sendable {
         case .paneCurrentDirectory(let completionHandler):
             completionHandler(paneCurrentDirectoryResult(for: completion))
             return
-        case .action(let request, let topologyRevisionAtSubmission):
+        case .action(let request, let topologyRevisionAtSubmission, let onSuccess):
             handleActionCompletion(
                 completion,
                 request: request,
-                topologyRevisionAtSubmission: topologyRevisionAtSubmission
+                topologyRevisionAtSubmission: topologyRevisionAtSubmission,
+                onSuccess: onSuccess
             )
         }
     }
@@ -555,7 +560,8 @@ final class TmuxSessionController: @unchecked Sendable {
     private func handleActionCompletion(
         _ completion: ghostty_tmux_command_completion_s,
         request: Request,
-        topologyRevisionAtSubmission: UInt64
+        topologyRevisionAtSubmission: UInt64,
+        onSuccess: (@Sendable () -> Void)?
     ) {
         preconditionOnWriterQueue()
         switch completion.status {
@@ -566,6 +572,7 @@ final class TmuxSessionController: @unchecked Sendable {
                     topologyRevisionAtSubmission
                 )
             }
+            onSuccess?()
         case GHOSTTY_TMUX_COMMAND_SKIPPED:
             break
         case GHOSTTY_TMUX_COMMAND_ERROR_BLOCK:
@@ -748,7 +755,12 @@ final class TmuxSessionController: @unchecked Sendable {
         enqueue(command: "new-window", request: .newWindow)
     }
 
-    func requestSplit(paneID: TmuxPaneID, direction: SplitDirection, zoom: Bool) {
+    func requestSplit(
+        paneID: TmuxPaneID,
+        direction: SplitDirection,
+        zoom: Bool,
+        onZoomCreated: (@Sendable () -> Void)? = nil
+    ) {
         let flags = switch direction {
         case .left: "-h -b"
         case .right: "-h"
@@ -758,7 +770,8 @@ final class TmuxSessionController: @unchecked Sendable {
         let zoomFlag = zoom ? " -Z" : ""
         enqueue(
             command: "split-window \(flags)\(zoomFlag) -t %\(paneID.rawValue)",
-            request: .splitPane
+            request: .splitPane,
+            onSuccess: onZoomCreated
         )
     }
 
@@ -1108,7 +1121,7 @@ final class TmuxSessionController: @unchecked Sendable {
 
     private var hasOutstandingTopologyMutation: Bool {
         requestsByToken.values.contains {
-            guard case .action(let request, _) = $0 else { return false }
+            guard case .action(let request, _, _) = $0 else { return false }
             return requestMutatesTopology(request)
         }
     }
@@ -1146,16 +1159,29 @@ final class TmuxSessionController: @unchecked Sendable {
         ]
     }
 
-    private func enqueue(command: String, request: Request) {
+    private func enqueue(
+        command: String,
+        request: Request,
+        onSuccess: (@Sendable () -> Void)? = nil
+    ) {
         queue.async { [self] in
-            enqueueOnWriter(command: command, request: request)
+            enqueueOnWriter(
+                command: command,
+                request: request,
+                onSuccess: onSuccess
+            )
         }
     }
 
-    private func enqueueOnWriter(command: String, request: Request) {
+    private func enqueueOnWriter(
+        command: String,
+        request: Request,
+        onSuccess: (@Sendable () -> Void)?
+    ) {
         submitCommandOnWriter(
             command: command,
             request: request,
+            onSuccess: onSuccess,
             drainOutbound: true
         )
     }
@@ -1163,13 +1189,22 @@ final class TmuxSessionController: @unchecked Sendable {
     private func submitCommandOnWriter(
         command: String,
         request: Request,
+        onSuccess: (@Sendable () -> Void)? = nil,
         drainOutbound: Bool
     ) {
-        guard admitCommandOnWriter(command: command, request: request) else { return }
+        guard admitCommandOnWriter(
+            command: command,
+            request: request,
+            onSuccess: onSuccess
+        ) else { return }
         if drainOutbound { _ = self.drainOutbound() }
     }
 
-    private func admitCommandOnWriter(command: String, request: Request) -> Bool {
+    private func admitCommandOnWriter(
+        command: String,
+        request: Request,
+        onSuccess: (@Sendable () -> Void)? = nil
+    ) -> Bool {
         preconditionOnWriterQueue()
         guard let client, outboundSink != nil, !shuttingDown else {
             reportRequestFailure(request)
@@ -1182,7 +1217,8 @@ final class TmuxSessionController: @unchecked Sendable {
         }
         requestsByToken[token] = .action(
             request,
-            topologyRevisionAtSubmission: topologyRevision
+            topologyRevisionAtSubmission: topologyRevision,
+            onSuccess: onSuccess
         )
         return true
     }
@@ -1283,7 +1319,8 @@ final class TmuxSessionController: @unchecked Sendable {
         for token in tokens {
             requestsByToken[token] = .action(
                 request,
-                topologyRevisionAtSubmission: topologyRevision
+                topologyRevisionAtSubmission: topologyRevision,
+                onSuccess: nil
             )
         }
         return true

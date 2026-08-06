@@ -198,6 +198,41 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         )
     }
 
+    func testMultipaneZoomDefaultReappliesAfterReturningToOnePane() {
+        var policy = TmuxMultipaneZoomDefaultPolicy(isEnabled: true)
+
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(in: topology(zoomed: false, paneCount: 2)),
+            [1]
+        )
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(in: topology(zoomed: false, paneCount: 1)),
+            []
+        )
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(in: topology(zoomed: false, paneCount: 2)),
+            [1]
+        )
+    }
+
+    func testReturningToOnePaneEndsThePerWindowChoice() {
+        var policy = TmuxMultipaneZoomDefaultPolicy(isEnabled: true)
+        policy.recordWindowChoice(1)
+
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(in: topology(zoomed: false, paneCount: 2)),
+            []
+        )
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(in: topology(zoomed: false, paneCount: 1)),
+            []
+        )
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(in: topology(zoomed: false, paneCount: 2)),
+            [1]
+        )
+    }
+
     func testMultipaneZoomDefaultWaitsForAnAuthoritativeActivePane() {
         var policy = TmuxMultipaneZoomDefaultPolicy(isEnabled: true)
 

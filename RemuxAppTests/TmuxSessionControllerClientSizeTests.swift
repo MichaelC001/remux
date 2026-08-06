@@ -712,6 +712,29 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertEqual(harness.recorder.takeStrings(), ["split-window -h -Z -t %0\n"])
     }
 
+    func testZoomingSplitReportsOwnershipAfterTmuxAcceptsIt() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1
+        )
+        var nextCommandNumber = harness.nextCommandNumber
+        let zoomCreated = expectation(description: "zooming split accepted")
+
+        harness.controller.requestSplit(
+            paneID: 0,
+            direction: .right,
+            zoom: true,
+            onZoomCreated: { zoomCreated.fulfill() }
+        )
+        await drain(harness.controller)
+        XCTAssertEqual(harness.recorder.takeStrings(), ["split-window -h -Z -t %0\n"])
+
+        harness.controller.pump(Data(responseBlock(
+            commandNumber: &nextCommandNumber
+        ).utf8))
+        await fulfillment(of: [zoomCreated], timeout: 1)
+    }
+
     func testZoomedInactivePaneCloseBatchesDeleteAndRezoom() async throws {
         let harness = try await readyController(
             listWindowsBody: Self.threePaneZoomedWindow,
