@@ -118,6 +118,7 @@ final class TmuxScreenModel: ObservableObject {
         self.session = session
         terminalScreenAdapter.activate(
             session: session,
+            zoomMultipaneWindowsByDefault: currentTerminalSettings.zoomMultipaneWindowsByDefault,
             initialViewportHandler: { [weak self] size, scale in
                 self?.prepareInitialViewport(size: size, scale: scale)
             },
@@ -302,6 +303,9 @@ final class TmuxScreenModel: ObservableObject {
     /// before each retained pane surface re-snapshots it in place.
     func applyTerminalSettings(_ settings: TerminalSettings) throws {
         guard settings != currentTerminalSettings else { return }
+        terminalScreenAdapter.setZoomMultipaneWindowsByDefault(
+            settings.zoomMultipaneWindowsByDefault
+        )
         guard !settings.hasSameTerminalAppearance(as: currentTerminalSettings) else {
             currentTerminalSettings = settings
             return

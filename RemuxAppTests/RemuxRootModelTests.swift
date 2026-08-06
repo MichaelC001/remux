@@ -2998,7 +2998,11 @@ final class RemuxRootModelTests: XCTestCase {
         let originalSession = try XCTUnwrap(harness.model.activeSessions.first)
         let originalKey = TerminalRuntimeAttemptKey(session: originalSession)
         let originalModel = try XCTUnwrap(factory.createdModels[originalKey])
-        let updated = TerminalSettings(fontSize: nil, theme: .remuxLight)
+        let updated = TerminalSettings(
+            fontSize: nil,
+            theme: .remuxLight,
+            zoomMultipaneWindowsByDefault: true
+        )
 
         await harness.model.updateTerminalSettings { settings in
             settings = updated
