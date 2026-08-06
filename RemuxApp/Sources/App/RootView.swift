@@ -1293,8 +1293,8 @@ private struct TerminalSettingsView: View {
                 Text("Windows & Panes")
             } footer: {
                 Text(
-                    "Applies to all windows. Override any window from Panes. Remux normally "
-                        + "clears its zooms when closing; otherwise, use prefix + z."
+                    "You can override this per window from Panes. Remux normally clears zooms "
+                        + "it applied when closing. If one remains on the server, use prefix + z."
                 )
             }
             .libraryHomeListRowSurface()
