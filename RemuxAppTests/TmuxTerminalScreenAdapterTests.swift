@@ -176,6 +176,29 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         )
     }
 
+    func testGlobalResetForwardsLatestIntentAgainstStaleMatchingTopology() {
+        var policy = TmuxMultipaneZoomDefaultPolicy()
+        let staleUnzoomedTopology = topology(zoomed: false, paneCount: 2)
+
+        XCTAssertTrue(policy.setEnabled(true))
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(
+                in: staleUnzoomedTopology,
+                includingMatchingWindows: true
+            ),
+            [1]
+        )
+
+        XCTAssertTrue(policy.setEnabled(false))
+        XCTAssertEqual(
+            policy.windowIDsNeedingChange(
+                in: staleUnzoomedTopology,
+                includingMatchingWindows: true
+            ),
+            [1]
+        )
+    }
+
     func testGlobalChangeDoesNotSubmitAnAlreadyMatchingWindow() {
         var policy = TmuxMultipaneZoomDefaultPolicy()
         let topology = topology(zoomed: true, paneCount: 2)

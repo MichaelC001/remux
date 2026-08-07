@@ -19,7 +19,8 @@ struct TmuxMultipaneZoomDefaultPolicy {
     }
 
     mutating func windowIDsNeedingChange(
-        in topology: TmuxSessionController.TopologySnapshot
+        in topology: TmuxSessionController.TopologySnapshot,
+        includingMatchingWindows: Bool = false
     ) -> [TmuxWindowID] {
         var targets: [TmuxWindowID] = []
 
@@ -38,7 +39,7 @@ struct TmuxMultipaneZoomDefaultPolicy {
             else { continue }
 
             resolvedWindowIDs.insert(window.id)
-            if window.zoomed != isEnabled {
+            if includingMatchingWindows || window.zoomed != isEnabled {
                 targets.append(window.id)
             }
         }
@@ -990,13 +991,20 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
 
     func setZoomMultipaneWindowsByDefault(_ enabled: Bool) {
         guard multipaneZoomDefault.setEnabled(enabled), let latestTopology else { return }
-        applyMultipaneZoomDefaultIfNeeded(to: latestTopology)
+        applyMultipaneZoomDefaultIfNeeded(
+            to: latestTopology,
+            includingMatchingWindows: true
+        )
     }
 
     private func applyMultipaneZoomDefaultIfNeeded(
-        to topology: TmuxSessionController.TopologySnapshot
+        to topology: TmuxSessionController.TopologySnapshot,
+        includingMatchingWindows: Bool = false
     ) {
-        let windowIDs = multipaneZoomDefault.windowIDsNeedingChange(in: topology)
+        let windowIDs = multipaneZoomDefault.windowIDsNeedingChange(
+            in: topology,
+            includingMatchingWindows: includingMatchingWindows
+        )
         guard !windowIDs.isEmpty else { return }
         controller?.requestSetWindowsZoomed(
             windowIDs: windowIDs,
