@@ -571,6 +571,16 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Catppuccin Mocha"].waitForExistence(timeout: 2))
     }
 
+    func testFreshPhoneInstallShowsMultipaneZoomDefaultEnabled() {
+        launchSimulatorApp()
+        XCTAssertTrue(app.buttons["library.settings"].waitForExistence(timeout: 5))
+        app.buttons["library.settings"].tap()
+
+        let zoom = app.switches["settings.zoom-multipane-windows-by-default"]
+        XCTAssertTrue(zoom.waitForExistence(timeout: 2))
+        XCTAssertEqual(zoom.value as? String, "1")
+    }
+
     func testPrivateKeyAuthenticationFlowShowsActionsUntilKeySelected() {
         app.launchEnvironment["REMUX_UI_TEST_PUBLIC_KEY_INSTALL_OUTCOME"] = "passwordRequired"
         launchSimulatorApp()

@@ -73,11 +73,6 @@ final class TmuxTerminalSession: ObservableObject {
             onPaneTerminal: { terminal in
                 MainActor.assumeIsolated { relay.target?.handlePaneTerminal(terminal) }
             },
-            onPanePhaseChanged: { paneID, phase in
-                MainActor.assumeIsolated {
-                    relay.target?.handlePanePhaseChanged(paneID, phase: phase)
-                }
-            },
             onActivePaneChanged: { paneID in
                 MainActor.assumeIsolated { relay.target?.handleActivePaneChanged(paneID) }
             },
@@ -238,19 +233,6 @@ final class TmuxTerminalSession: ObservableObject {
 
     private func markPaneLiveAfterTerminalHandoff(_ paneID: TmuxPaneID) {
         livePaneIDs.insert(paneID)
-    }
-
-    private func handlePanePhaseChanged(
-        _ paneID: TmuxPaneID,
-        phase: TmuxSessionController.PaneInfo.Phase
-    ) {
-        switch phase {
-        case .hydrating:
-            livePaneIDs.remove(paneID)
-        case .live:
-            livePaneIDs.insert(paneID)
-        }
-        reconcilePresentationActivity()
     }
 
     private func handleActivePaneChanged(_ paneID: TmuxPaneID) {

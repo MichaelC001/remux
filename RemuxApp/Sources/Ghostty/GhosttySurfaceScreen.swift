@@ -2046,6 +2046,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             event: "ui.select.queued",
             fields: ["target_uuid": id.uuidString]
         )
+        dismissSelectionSheet()
+        refocusSystemKeyboardIfActive()
     }
 
     private func closeTmuxPaneFromSelectionSheet(_ id: UUID, topLevelID: UUID) {

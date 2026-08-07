@@ -1,6 +1,7 @@
 @preconcurrency import Citadel
 import Foundation
 import NIOCore
+import UIKit
 
 enum RemuxConnectionTimeouts {
     static let terminalSSHConnect: TimeAmount = .seconds(10)
@@ -90,6 +91,7 @@ struct RemuxAppDependencies: Sendable {
         self.debugConnectionSeeder = debugConnectionSeeder
     }
 
+    @MainActor
     static func launch() -> Result<RemuxAppDependencies, Error> {
         Result {
 #if DEBUG || REMUX_LIVE_UI_TESTING
@@ -101,6 +103,7 @@ struct RemuxAppDependencies: Sendable {
         }
     }
 
+    @MainActor
     static func live() throws -> RemuxAppDependencies {
 #if DEBUG || REMUX_LIVE_UI_TESTING
         let environment = ProcessInfo.processInfo.environment
@@ -125,7 +128,10 @@ struct RemuxAppDependencies: Sendable {
         let trustedHostStore = TrustedHostStore(rootURL: root)
         return RemuxAppDependencies(
             profileRepository: FileBackedConnectionProfileRepository(rootURL: root),
-            settingsRepository: FileBackedTerminalSettingsRepository(rootURL: root),
+            settingsRepository: FileBackedTerminalSettingsRepository(
+                rootURL: root,
+                defaultZoomMultipaneWindows: deviceDefaultZoomMultipaneWindows
+            ),
             shortcutRepository: FileBackedShortcutRepository(rootURL: root),
             credentialStore: credentialStore,
             trustedHostStore: trustedHostStore,
@@ -310,6 +316,7 @@ struct RemuxAppDependencies: Sendable {
         }
     }
 
+    @MainActor
     static func uiTesting() throws -> RemuxAppDependencies {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("RemuxUITesting", isDirectory: true)
@@ -323,7 +330,13 @@ struct RemuxAppDependencies: Sendable {
 
         return RemuxAppDependencies(
             profileRepository: InMemoryConnectionProfileRepository(),
-            settingsRepository: InMemoryTerminalSettingsRepository(),
+            settingsRepository: InMemoryTerminalSettingsRepository(
+                settings: {
+                    var settings = TerminalSettings.default
+                    settings.zoomMultipaneWindowsByDefault = deviceDefaultZoomMultipaneWindows
+                    return settings
+                }()
+            ),
             shortcutRepository: InMemoryShortcutRepository(),
             credentialStore: InMemorySSHCredentialStore(),
             trustedHostStore: trustedHostStore,
@@ -341,6 +354,11 @@ struct RemuxAppDependencies: Sendable {
             sshConnectionPrewarmer: { _, _, _ in
             }
         )
+    }
+
+    @MainActor
+    private static var deviceDefaultZoomMultipaneWindows: Bool {
+        UIDevice.current.userInterfaceIdiom == .phone
     }
 
     private static func uiTestingTransportChunks() -> [Data] {
@@ -462,7 +480,11 @@ private actor InMemoryConnectionProfileRepository: ConnectionProfileRepository {
 }
 
 private actor InMemoryTerminalSettingsRepository: TerminalSettingsRepository {
-    private var settings = TerminalSettings.default
+    private var settings: TerminalSettings
+
+    init(settings: TerminalSettings = .default) {
+        self.settings = settings
+    }
 
     func loadSettings() async throws -> TerminalSettings {
         settings
