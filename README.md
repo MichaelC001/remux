@@ -2,6 +2,12 @@
 
 > A native iOS client for remote tmux workspaces.
 
+<p align="center">
+  <a href="https://trendshift.io/repositories/91075?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-91075" target="_blank" rel="noopener noreferrer">
+    <img src="https://trendshift.io/api/badge/repositories/91075" alt="h3nock/remux | Trendshift" width="250" height="55" />
+  </a>
+</p>
+
 https://github.com/user-attachments/assets/e7482322-15f8-4f7d-aca4-83368fddd07c
 
 <p align="center">
