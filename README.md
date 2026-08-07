@@ -29,6 +29,8 @@ terminal, and uploads photos and files, with markup for images.
 - **Shortcut palette**: Run saved commands with a tap. Starter sets cover
   shell, Claude Code, and Codex, and you can add your own commands and
   groups.
+- **Voice dictation**: Dictate text in the composer using on-device speech
+  recognition.
 - **Attachments**: Upload photos and files to the server, with markup for
   images. The remote path is typed at the prompt.
 - **File preview**: Long-press a path in terminal output to preview it:
