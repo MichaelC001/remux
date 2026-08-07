@@ -331,11 +331,11 @@ struct RemuxAppDependencies: Sendable {
         return RemuxAppDependencies(
             profileRepository: InMemoryConnectionProfileRepository(),
             settingsRepository: InMemoryTerminalSettingsRepository(
-                settings: TerminalSettings(
-                    fontSize: nil,
-                    theme: .ghosttyDefault,
-                    zoomMultipaneWindowsByDefault: deviceDefaultZoomMultipaneWindows
-                )
+                settings: {
+                    var settings = TerminalSettings.default
+                    settings.zoomMultipaneWindowsByDefault = deviceDefaultZoomMultipaneWindows
+                    return settings
+                }()
             ),
             shortcutRepository: InMemoryShortcutRepository(),
             credentialStore: InMemorySSHCredentialStore(),

@@ -13,11 +13,9 @@ actor FileBackedTerminalSettingsRepository: TerminalSettingsRepository {
         rootURL: URL,
         defaultZoomMultipaneWindows: Bool = false
     ) {
-        defaultSettings = TerminalSettings(
-            fontSize: nil,
-            theme: .ghosttyDefault,
-            zoomMultipaneWindowsByDefault: defaultZoomMultipaneWindows
-        )
+        var defaultSettings = TerminalSettings.default
+        defaultSettings.zoomMultipaneWindowsByDefault = defaultZoomMultipaneWindows
+        self.defaultSettings = defaultSettings
         let decoder = JSONDecoder()
         decoder.userInfo[.terminalSettingsDefaultMultipaneZoom] = defaultZoomMultipaneWindows
         self.store = JSONFileStore(

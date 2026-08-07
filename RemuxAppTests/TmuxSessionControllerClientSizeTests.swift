@@ -151,8 +151,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await drain(harness.controller)
         assertCommandWrite(
             harness.recorder.takeStrings(),
-            command: "select-pane -Z -t %1",
-            paneID: 1,
+            command: "select-pane -Z -t %1"
         )
 
         harness.controller.pump(Data(
@@ -162,8 +161,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await drain(harness.controller)
         assertCommandWrite(
             harness.recorder.takeStrings(),
-            command: "select-pane -Z -t %2",
-            paneID: 2,
+            command: "select-pane -Z -t %2"
         )
 
         harness.controller.pump(Data(
@@ -178,8 +176,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await drain(harness.controller)
         assertCommandWrite(
             harness.recorder.takeStrings(),
-            command: "select-pane -Z -t %1",
-            paneID: 1,
+            command: "select-pane -Z -t %1"
         )
 
         harness.controller.pump(Data(
@@ -189,8 +186,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await drain(harness.controller)
         assertCommandWrite(
             harness.recorder.takeStrings(),
-            command: "select-pane -Z -t %2",
-            paneID: 2,
+            command: "select-pane -Z -t %2"
         )
     }
 
@@ -206,8 +202,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await drain(harness.controller)
         assertCommandWrite(
             harness.recorder.takeStrings(),
-            command: "select-pane -Z -t %1",
-            paneID: 1,
+            command: "select-pane -Z -t %1"
         )
 
         harness.controller.pump(Data(
@@ -225,8 +220,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await drain(harness.controller)
         assertCommandWrite(
             harness.recorder.takeStrings(),
-            command: "select-pane -Z -t %0",
-            paneID: 0,
+            command: "select-pane -Z -t %0"
         )
 
         harness.controller.pump(Data(
@@ -248,8 +242,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await drain(harness.controller)
         assertCommandWrite(
             harness.recorder.takeStrings(),
-            command: "select-pane -Z -t %1",
-            paneID: 1,
+            command: "select-pane -Z -t %1"
         )
 
         harness.controller.pump(Data("%window-pane-changed @0 %1\n".utf8))
@@ -267,8 +260,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await drain(harness.controller)
         assertCommandWrite(
             harness.recorder.takeStrings(),
-            command: "select-pane -Z -t %2",
-            paneID: 2,
+            command: "select-pane -Z -t %2"
         )
     }
 
@@ -283,8 +275,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await drain(harness.controller)
         assertCommandWrite(
             harness.recorder.takeStrings(),
-            command: "select-pane -Z -t %1",
-            paneID: 1,
+            command: "select-pane -Z -t %1"
         )
 
         harness.controller.pump(Data(
@@ -304,8 +295,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await drain(harness.controller)
         assertCommandWrite(
             harness.recorder.takeStrings(),
-            command: "select-pane -Z -t %2",
-            paneID: 2,
+            command: "select-pane -Z -t %2"
         )
     }
 
@@ -321,8 +311,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await drain(harness.controller)
         assertCommandWrite(
             harness.recorder.takeStrings(),
-            command: "select-pane -Z -t %1",
-            paneID: 1,
+            command: "select-pane -Z -t %1"
         )
 
         harness.controller.pump(Data(
@@ -331,8 +320,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await drain(harness.controller)
         assertCommandWrite(
             harness.recorder.takeStrings(),
-            command: "select-pane -Z -t %2",
-            paneID: 2,
+            command: "select-pane -Z -t %2"
         )
     }
 
@@ -348,8 +336,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await drain(harness.controller)
         assertCommandWrite(
             harness.recorder.takeStrings(),
-            command: "select-pane -Z -t %1",
-            paneID: 1,
+            command: "select-pane -Z -t %1"
         )
 
         harness.controller.pump(Data(
@@ -412,8 +399,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await drain(harness.controller)
         assertCommandWrite(
             harness.recorder.takeStrings(),
-            command: "resize-pane -Z -t %1",
-            paneID: 1
+            command: "resize-pane -Z -t %1"
         )
     }
 
@@ -428,21 +414,8 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
 
         assertCommandWrite(
             harness.recorder.takeStrings(),
-            command: "resize-pane -Z -t %0",
-            paneID: 0
+            command: "resize-pane -Z -t %0"
         )
-    }
-
-    func testShutdownUnzoomSendsOnlyTheTmuxMutation() async throws {
-        let harness = try await readyController(
-            listWindowsBody: Self.twoPaneSameColumnZoomedWindow,
-            expectedPaneCount: 2
-        )
-
-        harness.controller.requestSetPaneZoomed(paneID: 0, zoomed: false)
-        await drain(harness.controller)
-
-        XCTAssertEqual(harness.recorder.takeStrings(), ["resize-pane -Z -t %0\n"])
     }
 
     func testWindowSelectionLeavesZoomedSourceWindowUntouched() async throws {
@@ -635,8 +608,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
 
         assertCommandWrite(
             harness.recorder.takeStrings(),
-            command: "select-pane -Z -t %1",
-            paneID: 1,
+            command: "select-pane -Z -t %1"
         )
 
         harness.controller.pump(Data(
@@ -649,8 +621,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await drain(harness.controller)
         assertCommandWrite(
             harness.recorder.takeStrings(),
-            command: "select-pane -Z -t %0",
-            paneID: 0,
+            command: "select-pane -Z -t %0"
         )
     }
 
@@ -746,8 +717,7 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
 
         assertCommandWrite(
             harness.recorder.takeStrings(),
-            command: "kill-pane -t %1 ; resize-pane -Z -t @0",
-            paneID: 0
+            command: "kill-pane -t %1 ; resize-pane -Z -t @0"
         )
     }
 
@@ -1121,7 +1091,6 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
     private func assertCommandWrite(
         _ writes: [String],
         command: String,
-        paneID _: TmuxPaneID,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
