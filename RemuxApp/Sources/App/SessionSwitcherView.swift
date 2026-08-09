@@ -167,6 +167,16 @@ struct SessionSwitcherView: View {
                     SessionSwitcherSectionHeader(title: "Active")
                 }
 
+                if !projection.recentSessions.isEmpty {
+                    Section {
+                        ForEach(projection.recentSessions) { session in
+                            recentSessionRow(session)
+                        }
+                    } header: {
+                        SessionSwitcherSectionHeader(title: "Recent")
+                    }
+                }
+
                 discoverySection
 
                 if !projection.availableSessions.isEmpty {
@@ -176,16 +186,6 @@ struct SessionSwitcherView: View {
                         }
                     } header: {
                         SessionSwitcherSectionHeader(title: "Available")
-                    }
-                }
-
-                if !projection.recentSessions.isEmpty {
-                    Section {
-                        ForEach(projection.recentSessions) { session in
-                            recentSessionRow(session)
-                        }
-                    } header: {
-                        SessionSwitcherSectionHeader(title: "Recent")
                     }
                 }
             }
