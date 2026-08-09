@@ -122,6 +122,11 @@ enum TmuxSessionDiscoveryState: Equatable {
 
 @MainActor
 final class RemuxRootModel: ObservableObject {
+    private struct TmuxSessionRefresh {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+
     private static let libraryPrewarmServerLimit = 3
 
     private struct EditServerTrustSnapshot {
@@ -234,8 +239,7 @@ final class RemuxRootModel: ObservableObject {
     private var currentSetupID: UUID?
     private var activeSetupAction: SetupAction?
     private var editServerTrustSnapshot: EditServerTrustSnapshot?
-    private var tmuxSessionRefreshTasks: [SavedServer.ID: Task<Void, Never>] = [:]
-    private var tmuxSessionRefreshIDs: [SavedServer.ID: UUID] = [:]
+    private var tmuxSessionRefreshes: [SavedServer.ID: TmuxSessionRefresh] = [:]
 
     init(
         dependencies: RemuxAppDependencies,
@@ -261,8 +265,8 @@ final class RemuxRootModel: ObservableObject {
 
     deinit {
         MainActor.assumeIsolated {
-            for task in tmuxSessionRefreshTasks.values {
-                task.cancel()
+            for refresh in tmuxSessionRefreshes.values {
+                refresh.task.cancel()
             }
             stopAllTerminalScreenModels()
         }
@@ -1025,21 +1029,21 @@ final class RemuxRootModel: ObservableObject {
     /// completed result must still match the server profile it started with;
     /// editing or deleting that server makes the result stale.
     func refreshTmuxSessions(for serverID: SavedServer.ID) {
-        guard tmuxSessionRefreshTasks[serverID] == nil,
+        guard tmuxSessionRefreshes[serverID] == nil,
               let server = library.server(id: serverID) else {
             return
         }
 
         let refreshID = UUID()
-        tmuxSessionRefreshIDs[serverID] = refreshID
         tmuxSessionDiscoveryStates[serverID] = .loading
-        tmuxSessionRefreshTasks[serverID] = Task { [weak self] in
+        let task = Task { [weak self] in
             guard let self else { return }
             await self.performTmuxSessionRefresh(
                 for: server,
                 refreshID: refreshID
             )
         }
+        tmuxSessionRefreshes[serverID] = TmuxSessionRefresh(id: refreshID, task: task)
     }
 
     func showActiveSession(_ id: SavedWorkspace.ID) {
@@ -1536,7 +1540,7 @@ final class RemuxRootModel: ObservableObject {
         _ server: SavedServer,
         refreshID: UUID
     ) -> Bool {
-        tmuxSessionRefreshIDs[server.id] == refreshID
+        tmuxSessionRefreshes[server.id]?.id == refreshID
             && library.server(id: server.id) == server
     }
 
@@ -1544,14 +1548,12 @@ final class RemuxRootModel: ObservableObject {
         for serverID: SavedServer.ID,
         refreshID: UUID
     ) {
-        guard tmuxSessionRefreshIDs[serverID] == refreshID else { return }
-        tmuxSessionRefreshIDs.removeValue(forKey: serverID)
-        tmuxSessionRefreshTasks.removeValue(forKey: serverID)
+        guard tmuxSessionRefreshes[serverID]?.id == refreshID else { return }
+        tmuxSessionRefreshes.removeValue(forKey: serverID)
     }
 
     private func invalidateTmuxSessionRefresh(for serverID: SavedServer.ID) {
-        tmuxSessionRefreshTasks.removeValue(forKey: serverID)?.cancel()
-        tmuxSessionRefreshIDs.removeValue(forKey: serverID)
+        tmuxSessionRefreshes.removeValue(forKey: serverID)?.task.cancel()
         tmuxSessionDiscoveryStates.removeValue(forKey: serverID)
     }
 
