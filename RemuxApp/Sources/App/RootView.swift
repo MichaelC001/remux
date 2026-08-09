@@ -112,11 +112,11 @@ private struct RemuxWorkspaceShell: View {
             }
         }
         .sheet(isPresented: $isSessionSwitcherPresented) {
-            ActiveSessionSwitcherView(
-                sessions: ActiveSessionSwitcherProjection.items(
-                    sessions: model.activeSessions,
+            SessionSwitcherView(
+                projection: SessionSwitcherProjection(
                     snapshot: model.library,
-                    serverID: selectedActiveSession?.target.server.id,
+                    activeSessions: model.activeSessions,
+                    currentServerID: selectedActiveSession?.target.server.id,
                     discoveredSessionNames: model.tmuxSessionDiscoveryState(
                         for: selectedActiveSession?.target.server.id
                     ).sessionNames,
@@ -124,8 +124,9 @@ private struct RemuxWorkspaceShell: View {
                 ),
                 servers: model.library.servers,
                 currentServerID: selectedActiveSession?.target.server.id,
-                onSelectSession: model.showActiveSession,
-                onOpenSession: { workspaceID in
+                onSelectActiveSession: model.showActiveSession,
+                onResumeSession: { workspaceID in
+                    traceSessionOpenTap(workspaceID)
                     Task { await model.connect(to: workspaceID) }
                 },
                 onDisconnectSession: model.disconnectActiveSession,
@@ -142,7 +143,7 @@ private struct RemuxWorkspaceShell: View {
                 guard let serverID = selectedActiveSession?.target.server.id else { return }
                 model.refreshTmuxSessions(for: serverID)
             }
-            .terminalSelectionSheetPresentation(
+            .sessionSwitcherSheetPresentation(
                 colorScheme: model.terminalSettings.theme.terminalChromeColorScheme,
                 chromeStyle: model.terminalSettings.theme.terminalChromeStyle
             )
@@ -741,15 +742,7 @@ private struct ConnectionLibraryView: View {
     }
 
     private var recentWorkspaces: [SavedWorkspace] {
-        snapshot.workspaces
-            .filter { !activeWorkspaceIDs.contains($0.id) }
-            .sorted { lhs, rhs in
-                if lhs.lastOpenedAt != rhs.lastOpenedAt {
-                    return lhs.lastOpenedAt > rhs.lastOpenedAt
-                }
-
-                return lhs.sessionName.localizedStandardCompare(rhs.sessionName) == .orderedAscending
-            }
+        snapshot.recentWorkspaces(excluding: activeWorkspaceIDs)
     }
 
     private var visibleRecentWorkspaces: [SavedWorkspace] {
