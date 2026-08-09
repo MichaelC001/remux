@@ -196,21 +196,44 @@ struct SessionSwitcherView: View {
             .animation(.snappy, value: projection.recentSessions.map(\.id))
             .accessibilityIdentifier("terminal.sessions.list")
         } actions: {
-            HStack(spacing: 10) {
-                TerminalSelectionSheetActionButton(
-                    title: discoveryState.isLoading ? "Refreshing…" : "Refresh",
-                    systemName: "arrow.clockwise",
-                    accessibilityIdentifier: "terminal.sessions.refresh",
-                    action: discoveryState.isLoading ? nil : onRefresh
-                )
-                TerminalSelectionSheetActionButton(
-                    title: "New Session…",
-                    systemName: "plus",
-                    accessibilityIdentifier: "terminal.sessions.new",
-                    action: newSessionAction
-                )
-            }
+            TerminalSelectionSheetActionButton(
+                title: "New Session…",
+                systemName: "plus",
+                accessibilityIdentifier: "terminal.sessions.new",
+                action: newSessionAction
+            )
         }
+        .overlay(alignment: .topTrailing) {
+            refreshButton
+                .padding(.top, 10)
+                .padding(.trailing, 16)
+        }
+    }
+
+    private var refreshButton: some View {
+        Button {
+            Haptic.tap()
+            onRefresh()
+        } label: {
+            Group {
+                if discoveryState.isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(TerminalSelectionSheetPalette.primary)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 15, weight: .semibold))
+                }
+            }
+            .foregroundStyle(TerminalSelectionSheetPalette.primary)
+            .frame(width: 36, height: 36)
+            .background(TerminalSelectionSheetPalette.controlFill, in: Circle())
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+        }
+        .disabled(discoveryState.isLoading)
+        .accessibilityLabel(discoveryState.isLoading ? "Refreshing Sessions" : "Refresh Sessions")
+        .accessibilityIdentifier("terminal.sessions.refresh")
     }
 
     private var sessionCountSummary: String {
