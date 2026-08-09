@@ -104,6 +104,39 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertTrue(harness.model.activeSessions.isEmpty)
     }
 
+    func testCancelledCurrentTmuxRefreshReturnsToIdleAndCanRetry() async throws {
+        let pair = makePasswordBackedServer()
+        let discoverer = RecordingTmuxSessionDiscoverer(
+            results: [
+                .failure(CancellationError()),
+                .success(["main"]),
+            ]
+        )
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
+        await harness.model.load()
+
+        harness.model.refreshTmuxSessions(for: pair.server.id)
+        let didReturnToIdle = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: pair.server.id) == .idle
+        }
+        XCTAssertTrue(didReturnToIdle)
+
+        harness.model.refreshTmuxSessions(for: pair.server.id)
+        let didRetry = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: pair.server.id) == .loaded(["main"])
+        }
+        XCTAssertTrue(didRetry)
+        let discoveryCount = await discoverer.targets().count
+        XCTAssertEqual(discoveryCount, 2)
+    }
+
     func testDeletedServerRejectsStaleTmuxRefreshResult() async throws {
         let pair = makePasswordBackedServer()
         let discoverer = SuspendingTmuxSessionDiscoverer()
@@ -3862,22 +3895,11 @@ private actor TestConnectionProfileRepository: ConnectionProfileRepository {
         guard servers.contains(where: { $0.id == serverID }) else {
             throw ConnectionProfileRepositoryError.missingServer(serverID)
         }
-        let existingNames = Set(
-            workspaces.lazy
-                .filter { $0.serverID == serverID }
-                .map(\.sessionName)
+        workspaces = DiscoveredWorkspaceReconciliation.appendingMissing(
+            to: workspaces,
+            for: serverID,
+            sessionNames: sessionNames
         )
-        var addedNames = Set<String>()
-        for name in sessionNames where !name.isEmpty {
-            guard !existingNames.contains(name), addedNames.insert(name).inserted else { continue }
-            workspaces.append(
-                SavedWorkspace(
-                    serverID: serverID,
-                    sessionName: name,
-                    lastOpenedAt: .distantPast
-                )
-            )
-        }
         return try await loadSnapshot()
     }
 

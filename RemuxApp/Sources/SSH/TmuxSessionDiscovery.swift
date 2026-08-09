@@ -31,10 +31,18 @@ enum TmuxSessionDiscovery {
             stdin: nil,
             trace: trace
         )
+        return try sessionNames(from: result)
+    }
+
+    static func sessionNames(from result: RemuxSSHExecResult) throws -> [String] {
+        let stderr = String(decoding: result.stderr, as: UTF8.self)
         guard result.exitStatus == 0 else {
+            if isMissingTmuxServer(exitStatus: result.exitStatus, stderr: stderr) {
+                return []
+            }
             throw TmuxSessionDiscoveryError.remoteExit(
                 status: result.exitStatus,
-                stderr: String(decoding: result.stderr, as: UTF8.self)
+                stderr: stderr
             )
         }
         return try parseSessionNames(result.stdout)
@@ -53,5 +61,15 @@ enum TmuxSessionDiscovery {
             names.append(name)
         }
         return names
+    }
+
+    private static func isMissingTmuxServer(exitStatus: Int, stderr: String) -> Bool {
+        guard exitStatus == 1 else { return false }
+        let message = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        return message.hasPrefix("no server running on ")
+            || (
+                message.hasPrefix("error connecting to ")
+                    && message.hasSuffix("(No such file or directory)")
+            )
     }
 }

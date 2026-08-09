@@ -35,6 +35,75 @@ final class SessionSwitcherProjectionTests: XCTestCase {
         XCTAssertEqual(projection.activeSessions.map(\.isSelected), [false, true])
     }
 
+    func testProjectionKeepsEveryActiveRuntimeWhenNamesMatch() {
+        let server = makeServer(name: "Production")
+        let first = makeWorkspace(
+            server: server,
+            name: "shared",
+            lastOpenedAt: Date(timeIntervalSince1970: 200)
+        )
+        let second = makeWorkspace(
+            server: server,
+            name: "shared",
+            lastOpenedAt: Date(timeIntervalSince1970: 100)
+        )
+
+        let projection = SessionSwitcherProjection(
+            snapshot: snapshot(servers: [server], workspaces: [first, second]),
+            activeSessions: [
+                makeSession(server: server, workspace: first),
+                makeSession(server: server, workspace: second),
+            ],
+            currentServerID: server.id,
+            discoveredSessionNames: ["shared"],
+            selectedSessionID: second.id
+        )
+
+        XCTAssertEqual(projection.activeSessions.map(\.id), [first.id, second.id])
+        XCTAssertEqual(projection.activeSessions.map(\.isSelected), [false, true])
+        XCTAssertTrue(projection.availableSessions.isEmpty)
+    }
+
+    func testProjectionSeparatesNeverOpenedAvailableFromRecentSessions() {
+        let server = makeServer(name: "Production")
+        let active = makeWorkspace(
+            server: server,
+            name: "active",
+            lastOpenedAt: Date(timeIntervalSince1970: 300)
+        )
+        let recentAvailable = makeWorkspace(
+            server: server,
+            name: "recent",
+            lastOpenedAt: Date(timeIntervalSince1970: 200)
+        )
+        let newlyDiscovered = makeWorkspace(
+            server: server,
+            name: "remote",
+            lastOpenedAt: .distantPast
+        )
+        let staleDiscovery = makeWorkspace(
+            server: server,
+            name: "gone",
+            lastOpenedAt: .distantPast
+        )
+
+        let projection = SessionSwitcherProjection(
+            snapshot: snapshot(
+                servers: [server],
+                workspaces: [active, recentAvailable, newlyDiscovered, staleDiscovery]
+            ),
+            activeSessions: [makeSession(server: server, workspace: active)],
+            currentServerID: server.id,
+            discoveredSessionNames: ["active", "recent", "remote"],
+            selectedSessionID: active.id
+        )
+
+        XCTAssertEqual(projection.activeSessions.map(\.id), [active.id])
+        XCTAssertEqual(projection.availableSessions.map(\.id), [newlyDiscovered.id])
+        XCTAssertEqual(projection.recentSessions.map(\.id), [recentAvailable.id])
+        XCTAssertEqual(projection.recentSessions.map(\.isAvailable), [true])
+    }
+
     func testProjectionIncludesEveryInactiveWorkspaceInRecentOrder() {
         let server = makeServer(name: "Mac Mini")
         let workspaces = (0..<7).map { index in

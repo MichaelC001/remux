@@ -100,6 +100,35 @@ enum ConnectionProfileRepositoryError: Error, Equatable {
     case missingServer(SavedServer.ID)
 }
 
+enum DiscoveredWorkspaceReconciliation {
+    static func appendingMissing(
+        to workspaces: [SavedWorkspace],
+        for serverID: SavedServer.ID,
+        sessionNames: [String]
+    ) -> [SavedWorkspace] {
+        var result = workspaces
+        let existingNames = Set(
+            workspaces.lazy
+                .filter { $0.serverID == serverID }
+                .map(\.sessionName)
+        )
+        var addedNames = Set<String>()
+        for name in sessionNames where !name.isEmpty {
+            guard !existingNames.contains(name), addedNames.insert(name).inserted else { continue }
+            // Discovery is not an open. Keep it out of recency ordering until
+            // the user actually attaches through the normal connect path.
+            result.append(
+                SavedWorkspace(
+                    serverID: serverID,
+                    sessionName: name,
+                    lastOpenedAt: .distantPast
+                )
+            )
+        }
+        return result
+    }
+}
+
 actor FileBackedConnectionProfileRepository: ConnectionProfileRepository {
     private let serverStore: JSONFileStore<SavedServer>
     private let workspaceStore: JSONFileStore<SavedWorkspace>
@@ -195,27 +224,14 @@ actor FileBackedConnectionProfileRepository: ConnectionProfileRepository {
             throw ConnectionProfileRepositoryError.missingServer(serverID)
         }
 
-        var workspaces = try await workspaceStore.load()
-        let existingNames = Set(
-            workspaces.lazy
-                .filter { $0.serverID == serverID }
-                .map(\.sessionName)
+        let workspaces = try await workspaceStore.load()
+        let reconciledWorkspaces = DiscoveredWorkspaceReconciliation.appendingMissing(
+            to: workspaces,
+            for: serverID,
+            sessionNames: sessionNames
         )
-        var namesToAdd = Set<String>()
-        for name in sessionNames where !name.isEmpty {
-            guard !existingNames.contains(name), namesToAdd.insert(name).inserted else { continue }
-            // Discovery is not an open. Keep it out of recency ordering until
-            // the user actually attaches through the normal connect path.
-            workspaces.append(
-                SavedWorkspace(
-                    serverID: serverID,
-                    sessionName: name,
-                    lastOpenedAt: .distantPast
-                )
-            )
-        }
-        if !namesToAdd.isEmpty {
-            try await workspaceStore.save(workspaces)
+        if reconciledWorkspaces.count != workspaces.count {
+            try await workspaceStore.save(reconciledWorkspaces)
         }
         return try await loadSnapshot()
     }

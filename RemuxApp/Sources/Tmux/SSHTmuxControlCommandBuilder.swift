@@ -47,6 +47,8 @@ enum SSHTmuxControlCommandBuilder {
     private static let discoveryScript = [
         #"PATH="${PATH:+$PATH:}\#(fallbackRemotePath)""#,
         "export PATH",
+        "LC_ALL=C",
+        "export LC_ALL",
         #"tmux=$(printf %b "$1")"#,
         #"resolved=$(command -v "$tmux" 2> /dev/null)"#,
         "if [ -x \"$resolved\" ]; then exec \"$resolved\" list-sessions -F \"#{session_name}\"; fi",

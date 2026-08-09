@@ -155,22 +155,11 @@ private actor InMemoryConnectionProfileRepository: ConnectionProfileRepository {
         guard servers.contains(where: { $0.id == serverID }) else {
             throw ConnectionProfileRepositoryError.missingServer(serverID)
         }
-        let existingNames = Set(
-            workspaces.lazy
-                .filter { $0.serverID == serverID }
-                .map(\.sessionName)
+        workspaces = DiscoveredWorkspaceReconciliation.appendingMissing(
+            to: workspaces,
+            for: serverID,
+            sessionNames: sessionNames
         )
-        var addedNames = Set<String>()
-        for name in sessionNames where !name.isEmpty {
-            guard !existingNames.contains(name), addedNames.insert(name).inserted else { continue }
-            workspaces.append(
-                SavedWorkspace(
-                    serverID: serverID,
-                    sessionName: name,
-                    lastOpenedAt: .distantPast
-                )
-            )
-        }
         return try await loadSnapshot()
     }
 

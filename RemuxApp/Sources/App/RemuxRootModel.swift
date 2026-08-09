@@ -260,13 +260,10 @@ final class RemuxRootModel: ObservableObject {
     }
 
     deinit {
-        let refreshTasks = MainActor.assumeIsolated {
-            Array(tmuxSessionRefreshTasks.values)
-        }
-        for task in refreshTasks {
-            task.cancel()
-        }
         MainActor.assumeIsolated {
+            for task in tmuxSessionRefreshTasks.values {
+                task.cancel()
+            }
             stopAllTerminalScreenModels()
         }
     }
@@ -1036,13 +1033,11 @@ final class RemuxRootModel: ObservableObject {
         let refreshID = UUID()
         tmuxSessionRefreshIDs[serverID] = refreshID
         tmuxSessionDiscoveryStates[serverID] = .loading
-        let dependencies = dependencies
-        tmuxSessionRefreshTasks[serverID] = Task { [weak self, dependencies] in
+        tmuxSessionRefreshTasks[serverID] = Task { [weak self] in
             guard let self else { return }
             await self.performTmuxSessionRefresh(
                 for: server,
-                refreshID: refreshID,
-                dependencies: dependencies
+                refreshID: refreshID
             )
         }
     }
@@ -1503,8 +1498,7 @@ final class RemuxRootModel: ObservableObject {
 
     private func performTmuxSessionRefresh(
         for server: SavedServer,
-        refreshID: UUID,
-        dependencies: RemuxAppDependencies
+        refreshID: UUID
     ) async {
         defer { finishTmuxSessionRefresh(for: server.id, refreshID: refreshID) }
 
@@ -1527,6 +1521,8 @@ final class RemuxRootModel: ObservableObject {
             library = snapshot
             tmuxSessionDiscoveryStates[server.id] = .loaded(names)
         } catch is CancellationError {
+            guard isCurrentTmuxSessionRefresh(server, refreshID: refreshID) else { return }
+            tmuxSessionDiscoveryStates[server.id] = .idle
             return
         } catch {
             guard isCurrentTmuxSessionRefresh(server, refreshID: refreshID) else { return }
