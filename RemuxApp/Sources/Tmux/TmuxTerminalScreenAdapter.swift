@@ -82,7 +82,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     private var activeManagedSurface: GhosttyManagedSurface?
     private var activeManagedPaneID: TmuxPaneID?
     private var pendingFocusedPaneID: TmuxPaneID?
-    private var initialViewportHandler: ((CGSize, CGFloat) -> Void)?
+    private var initialViewportHandler: ((CGSize, CGFloat, Bool) -> Void)?
     private var viewportStabilityHandler: ((Bool) -> Void)?
     private var latestViewportMeasurement: GhosttyTerminalViewportMeasurement?
     private var cachedTopologySnapshot = GhosttyRuntimeSurfaceTopologySnapshot.empty
@@ -105,7 +105,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     func activate(
         session: TmuxTerminalSession,
         zoomMultipaneWindowsByDefault: Bool = false,
-        initialViewportHandler: @escaping (CGSize, CGFloat) -> Void,
+        initialViewportHandler: @escaping (CGSize, CGFloat, Bool) -> Void,
         viewportStabilityHandler: @escaping (Bool) -> Void
     ) {
         self.session = session
@@ -505,8 +505,12 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
 // MARK: - GhosttyTerminalScreenModeling
 
 extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
-    func prepareInitialViewport(size: CGSize, scale: CGFloat) {
-        initialViewportHandler?(size, scale)
+    func prepareInitialViewport(
+        size: CGSize,
+        scale: CGFloat,
+        claimActiveViewport: Bool
+    ) {
+        initialViewportHandler?(size, scale, claimActiveViewport)
     }
 
     var terminalScreenPresentationProjection: GhosttyTerminalScreenPresentationProjection {
@@ -834,6 +838,14 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     }
 
     // MARK: tmux topology actions
+
+    func reclaimActiveTmuxViewport() {
+        controller?.reclaimActiveViewport()
+    }
+
+    func claimActiveTmuxViewportIfNeeded() {
+        controller?.claimActiveViewportIfNeeded()
+    }
 
     func focusTmuxPane(_ id: UUID) -> GhosttyTmuxModelActionOutcome {
         guard let paneID = identities.paneID(for: id), let controller else {

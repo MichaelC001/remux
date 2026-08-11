@@ -292,7 +292,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let adapter = TmuxTerminalScreenAdapter()
         adapter.activate(
             session: session,
-            initialViewportHandler: { _, _ in },
+            initialViewportHandler: { _, _, _ in },
             viewportStabilityHandler: { _ in }
         )
 
@@ -339,7 +339,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let adapter = TmuxTerminalScreenAdapter()
         adapter.activate(
             session: session,
-            initialViewportHandler: { _, _ in },
+            initialViewportHandler: { _, _, _ in },
             viewportStabilityHandler: { _ in }
         )
 
@@ -399,7 +399,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let adapter = TmuxTerminalScreenAdapter()
         adapter.activate(
             session: session,
-            initialViewportHandler: { _, _ in },
+            initialViewportHandler: { _, _, _ in },
             viewportStabilityHandler: { _ in }
         )
 
@@ -448,7 +448,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let adapter = TmuxTerminalScreenAdapter()
         adapter.activate(
             session: session,
-            initialViewportHandler: { _, _ in },
+            initialViewportHandler: { _, _, _ in },
             viewportStabilityHandler: { _ in }
         )
 
