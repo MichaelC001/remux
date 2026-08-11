@@ -720,6 +720,7 @@ private struct AvailableSessionsBrowserView: View {
             placement: .navigationBarDrawer(displayMode: .always),
             prompt: "Sessions or servers"
         )
+        .searchPresentationToolbarBehavior(.avoidHidingContent)
         .accessibilityIdentifier("terminal.sessions.available-browser-view")
     }
 
