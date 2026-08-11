@@ -241,9 +241,12 @@ final class TmuxScreenModel: ObservableObject {
         claimActiveViewport: Bool = false
     ) -> Bool {
         guard !stopped, let controller = session?.controller else { return false }
-        guard size != lastSubmittedClientSize else { return false }
-        lastSubmittedClientSize = size
-        if viewportIsStable { lastStableClientSize = size }
+        let sizeChanged = size != lastSubmittedClientSize
+        guard sizeChanged || claimActiveViewport else { return false }
+        if sizeChanged {
+            lastSubmittedClientSize = size
+            if viewportIsStable { lastStableClientSize = size }
+        }
         controller.setClientSize(
             cols: size.cols,
             rows: size.rows,
