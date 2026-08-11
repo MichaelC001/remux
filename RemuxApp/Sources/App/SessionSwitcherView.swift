@@ -692,6 +692,7 @@ private struct AvailableSessionsBrowserView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .containerBackground(.clear, for: .navigation)
         .navigationTitle("Available Sessions")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
