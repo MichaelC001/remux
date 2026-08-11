@@ -1108,6 +1108,17 @@ final class RemuxRootModel: ObservableObject {
         for model in models {
             model.handleAppLifecyclePhase(phase)
         }
+
+        guard phase == .active,
+              case .terminal(let selectedID) = state,
+              let session = RemuxActiveSessionCollection.session(
+                  selectedID,
+                  in: activeSessions
+              )
+        else { return }
+        terminalScreenModels[TerminalRuntimeAttemptKey(session: session)]?
+            .terminalScreenAdapter
+            .reclaimActiveTmuxViewport()
     }
 
     func disconnectActiveSession(_ id: SavedWorkspace.ID) {

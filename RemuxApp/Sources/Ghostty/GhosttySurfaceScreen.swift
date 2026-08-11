@@ -1045,6 +1045,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     }
 
     private func handleTerminalCoverSelectionChange(_ selected: Bool) {
+        if selected, scenePhase == .active {
+            model.reclaimActiveTmuxViewport()
+        }
         guard terminalCoverPhase.isRestoringKeyboard else { return }
         guard selected else {
             cancelTerminalCoverKeyboardRestoration(reason: "selection")
@@ -1380,6 +1383,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func showWindows() {
         guard !composer.isSubmitting else { return }
+        model.claimActiveTmuxViewportIfNeeded()
         guard let projection = model.windowSheetPresentationProjection() else { return }
         GhosttyRuntimeTrace.flowEventIfActive("tmux.newWindow", event: "ui.showWindows")
         applySelectionSheetPresentation(
@@ -1419,6 +1423,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func showPanes() {
         guard !composer.isSubmitting else { return }
+        model.claimActiveTmuxViewportIfNeeded()
         guard let projection = model.selectedPaneSheetPresentationProjection() else { return }
         GhosttyRuntimeTrace.flowEventIfActive("tmux.splitPane", event: "ui.showPanes")
 
@@ -1731,7 +1736,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         )
         model.prepareInitialViewport(
             size: observation.effectiveSize,
-            scale: displayScale
+            scale: displayScale,
+            claimActiveViewport: isSelected && scenePhase == .active
         )
     }
 
@@ -1943,7 +1949,11 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             liveSize: terminalViewportCoordinator.latestLiveSize
         )
         if nextEffectiveSize != previousEffectiveSize {
-            model.prepareInitialViewport(size: nextEffectiveSize, scale: displayScale)
+            model.prepareInitialViewport(
+                size: nextEffectiveSize,
+                scale: displayScale,
+                claimActiveViewport: isSelected && scenePhase == .active
+            )
         }
         GhosttyRuntimeTrace.perf(
             "viewport.freeze release kind=\(releaseKind) live=\(terminalViewportCoordinator.latestLiveSize.traceLabel) previousEffective=\(previousEffectiveSize.traceLabel) nextEffective=\(nextEffectiveSize.traceLabel)"
