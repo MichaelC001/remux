@@ -32,7 +32,7 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(RemuxAppLifecycleProjection(scenePhase: .background).appLifecyclePhase, .background)
     }
 
-    func testRefreshTmuxSessionsReconcilesMissingWorkspacesAndConnectsDiscoveredSession() async throws {
+    func testLaunchDiscoveryDoesNotPersistAvailableSessionsAndConnectsDiscoveredSession() async throws {
         let pair = makePasswordBackedServer()
         let existing = SavedWorkspace(
             serverID: pair.server.id,
@@ -52,21 +52,98 @@ final class RemuxRootModelTests: XCTestCase {
         try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
         await harness.model.load()
 
-        harness.model.refreshTmuxSessions(for: pair.server.id)
         let didLoadSessions = await waitUntil {
-            harness.model.tmuxSessionDiscoveryState(for: pair.server.id) == .loaded(["main", "ops", "ops"])
+            harness.model.tmuxSessionDiscoveryState(for: pair.server.id)
+                == TmuxSessionDiscoveryState.idle.finishingRefresh(with: ["main", "ops"])
         }
         XCTAssertTrue(didLoadSessions)
 
         XCTAssertEqual(harness.model.library.workspace(id: existing.id), existing)
         XCTAssertEqual(harness.model.library.workspace(id: stale.id), stale)
-        let opened = try XCTUnwrap(harness.model.library.workspaces.first { $0.sessionName == "ops" })
-        XCTAssertEqual(opened.lastOpenedAt, .distantPast)
+        XCTAssertNil(harness.model.library.workspaces.first { $0.sessionName == "ops" })
+        XCTAssertFalse(
+            TmuxSessionReconciliation.includesSavedWorkspace(
+                stale,
+                discoveryStates: harness.model.tmuxSessionDiscoveryStates
+            )
+        )
         let discoveredServerIDs = await discoverer.targets().map(\.server.id)
         XCTAssertEqual(discoveredServerIDs, [pair.server.id])
 
-        await harness.model.connect(to: opened.id)
-        XCTAssertEqual(harness.model.activeSessions.map(\.id), [opened.id])
+        await harness.model.connectToDiscoveredSession(named: "ops", on: pair.server.id)
+        let opened = try XCTUnwrap(harness.model.activeSessions.first)
+        XCTAssertEqual(opened.target.workspace.sessionName, "ops")
+        XCTAssertNotNil(harness.model.library.workspace(id: opened.id))
+    }
+
+    func testLaunchDiscoveryStartsForEverySavedServer() async throws {
+        let first = makePasswordBackedServer()
+        let second = makePasswordBackedServer()
+        let discoverer = RecordingTmuxSessionDiscoverer(
+            results: [
+                .success(["first"]),
+                .success(["second"]),
+            ]
+        )
+        let harness = makeHarness(
+            servers: [first.server, second.server],
+            identities: [first.identity, second.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        try await harness.credentialHelper.savePassword("first-secret", for: first.server.id)
+        try await harness.credentialHelper.savePassword("second-secret", for: second.server.id)
+
+        await harness.model.load()
+
+        let didDiscoverBoth = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: first.server.id).phase == .loaded
+                && harness.model.tmuxSessionDiscoveryState(for: second.server.id).phase == .loaded
+        }
+        XCTAssertTrue(didDiscoverBoth)
+        let discoveredServerIDs = Set(await discoverer.targets().map(\.server.id))
+        XCTAssertEqual(discoveredServerIDs, [first.server.id, second.server.id])
+    }
+
+    func testDiscoveryRefreshRetainsLastSuccessfulSnapshotOnFailure() {
+        let loaded = TmuxSessionDiscoveryState.idle.finishingRefresh(with: ["main"])
+
+        let loading = loaded.startingRefresh()
+        let failed = loading.failingRefresh()
+
+        XCTAssertEqual(loading.sessionNames, ["main"])
+        XCTAssertEqual(failed.sessionNames, ["main"])
+        XCTAssertEqual(failed.phase, .failed)
+        XCTAssertEqual(
+            failed.confirmingExistingSession(named: "new").sessionNames,
+            ["main", "new"]
+        )
+    }
+
+    func testInteractiveConnectionCancelsDiscoveryForItsServer() async throws {
+        let pair = makePasswordBackedServer()
+        let workspace = SavedWorkspace(serverID: pair.server.id, sessionName: "main")
+        let discoverer = SuspendingTmuxSessionDiscoverer()
+        let harness = makeHarness(
+            servers: [pair.server],
+            workspaces: [workspace],
+            identities: [pair.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                await discoverer.discover(target)
+            }
+        )
+        try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
+        await harness.model.load()
+        await discoverer.waitForCall()
+
+        await harness.model.connect(to: workspace.id)
+
+        XCTAssertEqual(harness.model.activeSessions.map(\.id), [workspace.id])
+        XCTAssertEqual(harness.model.tmuxSessionDiscoveryState(for: pair.server.id), .idle)
+        await discoverer.resumeAll(with: ["late"])
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(harness.model.tmuxSessionDiscoveryState(for: pair.server.id), .idle)
     }
 
     func testRefreshTmuxSessionsKeepsFailureLocalAndCoalescesDuplicateRequests() async throws {
@@ -77,7 +154,12 @@ final class RemuxRootModelTests: XCTestCase {
         }
 
         let pair = makePasswordBackedServer()
-        let discoverer = RecordingTmuxSessionDiscoverer(results: [.failure(DiscoveryFailure.unavailable)])
+        let discoverer = RecordingTmuxSessionDiscoverer(
+            results: [
+                .failure(DiscoveryFailure.unavailable),
+                .success(["main"]),
+            ]
+        )
         let harness = makeHarness(
             servers: [pair.server],
             identities: [pair.identity],
@@ -88,10 +170,9 @@ final class RemuxRootModelTests: XCTestCase {
         try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
         await harness.model.load()
 
-        harness.model.refreshTmuxSessions(for: pair.server.id)
-        harness.model.refreshTmuxSessions(for: pair.server.id)
         let didFailLocally = await waitUntil {
-            if case .failed("tmux is unavailable") = harness.model.tmuxSessionDiscoveryState(for: pair.server.id) {
+            if case .failed = harness.model
+                .tmuxSessionDiscoveryState(for: pair.server.id).phase {
                 return true
             }
             return false
@@ -102,6 +183,15 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(discoveryCount, 1)
         XCTAssertEqual(harness.model.state, .library)
         XCTAssertTrue(harness.model.activeSessions.isEmpty)
+
+        harness.model.refreshTmuxSessions(for: pair.server.id)
+        harness.model.refreshTmuxSessions(for: pair.server.id)
+        let didRetry = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: pair.server.id).sessionNames == ["main"]
+        }
+        XCTAssertTrue(didRetry)
+        let retryCount = await discoverer.targets().count
+        XCTAssertEqual(retryCount, 2)
     }
 
     func testCancelledCurrentTmuxRefreshReturnsToIdleAndCanRetry() async throws {
@@ -122,7 +212,9 @@ final class RemuxRootModelTests: XCTestCase {
         try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
         await harness.model.load()
 
-        harness.model.refreshTmuxSessions(for: pair.server.id)
+        while await discoverer.targets().isEmpty {
+            await Task.yield()
+        }
         let didReturnToIdle = await waitUntil {
             harness.model.tmuxSessionDiscoveryState(for: pair.server.id) == .idle
         }
@@ -130,7 +222,8 @@ final class RemuxRootModelTests: XCTestCase {
 
         harness.model.refreshTmuxSessions(for: pair.server.id)
         let didRetry = await waitUntil {
-            harness.model.tmuxSessionDiscoveryState(for: pair.server.id) == .loaded(["main"])
+            harness.model.tmuxSessionDiscoveryState(for: pair.server.id)
+                == TmuxSessionDiscoveryState.idle.finishingRefresh(with: ["main"])
         }
         XCTAssertTrue(didRetry)
         let discoveryCount = await discoverer.targets().count
@@ -150,7 +243,6 @@ final class RemuxRootModelTests: XCTestCase {
         try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
         await harness.model.load()
 
-        harness.model.refreshTmuxSessions(for: pair.server.id)
         await discoverer.waitForCall()
         await harness.model.deleteServer(pair.server.id)
         await discoverer.resumeAll(with: ["late"])
@@ -3886,21 +3978,6 @@ private actor TestConnectionProfileRepository: ConnectionProfileRepository {
     func saveProfile(server: SavedServer, workspace: SavedWorkspace) async throws {
         upsert(server, into: &servers)
         upsert(workspace, into: &workspaces)
-    }
-
-    func reconcileDiscoveredWorkspaces(
-        for serverID: SavedServer.ID,
-        sessionNames: [String]
-    ) async throws -> ConnectionLibrarySnapshot {
-        guard servers.contains(where: { $0.id == serverID }) else {
-            throw ConnectionProfileRepositoryError.missingServer(serverID)
-        }
-        workspaces = DiscoveredWorkspaceReconciliation.appendingMissing(
-            to: workspaces,
-            for: serverID,
-            sessionNames: sessionNames
-        )
-        return try await loadSnapshot()
     }
 
     func deleteServer(id: SavedServer.ID) async throws {

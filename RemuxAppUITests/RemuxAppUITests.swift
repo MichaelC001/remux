@@ -697,27 +697,47 @@ final class RemuxAppUITests: XCTestCase {
 
         openSessionSwitcherFromTerminal()
 
-        let availableRow = app.descendants(matching: .any)
-            .matching(identifier: "terminal.sessions.available-session")
-            .matching(NSPredicate(format: "label CONTAINS[c] %@", availableSessionName))
-            .firstMatch
-        XCTAssertTrue(
-            app.descendants(matching: .any)
-                .matching(identifier: "terminal.sessions.available-session")
-                .firstMatch.waitForExistence(timeout: 15),
-            "Discovered remote tmux sessions should appear under Available."
-        )
-        XCTAssertTrue(app.staticTexts["Available"].exists)
-        XCTAssertTrue(app.buttons["terminal.sessions.new"].isHittable)
         let sessionSheet = app.otherElements["terminal.sessions.sheet"]
         XCTAssertTrue(sessionSheet.waitForExistence(timeout: 5))
         let closeButton = app.buttons["terminal.sessions.close"]
         XCTAssertTrue(closeButton.waitForExistence(timeout: 5))
         let mediumTop = closeButton.frame.minY
-        attachScreenshot(named: "live-session-switcher-active-and-available-medium")
+        attachScreenshot(named: "live-session-switcher-medium")
 
-        sessionSheet.swipeUp()
-        RunLoop.current.run(until: Date().addingTimeInterval(1))
+        let refreshButton = app.buttons["terminal.sessions.refresh"]
+        XCTAssertTrue(refreshButton.waitForExistence(timeout: 5))
+        for _ in 0..<20 where !refreshButton.isEnabled {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        XCTAssertTrue(refreshButton.isEnabled)
+        refreshButton.tap()
+
+        let inlineAvailableRow = app.descendants(matching: .any)
+            .matching(identifier: "terminal.sessions.available-session")
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", availableSessionName))
+            .firstMatch
+        let availableBrowser = app.buttons["terminal.sessions.available-browser"]
+        let sessionList = app.descendants(matching: .any)["terminal.sessions.list"]
+        let discoveryDeadline = Date().addingTimeInterval(15)
+        while !inlineAvailableRow.exists,
+              !availableBrowser.exists,
+              Date() < discoveryDeadline {
+            if sessionList.exists {
+                sessionList.swipeUp()
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        XCTAssertTrue(
+            inlineAvailableRow.exists || availableBrowser.exists,
+            "Discovered remote tmux sessions should be reachable under Available."
+        )
+        XCTAssertTrue(app.staticTexts["Available"].exists)
+        XCTAssertTrue(app.buttons["terminal.sessions.new"].isHittable)
+
+        if closeButton.frame.minY >= mediumTop - 100 {
+            sessionSheet.swipeUp()
+            RunLoop.current.run(until: Date().addingTimeInterval(1))
+        }
         XCTAssertLessThan(
             closeButton.frame.minY,
             mediumTop - 100,
@@ -725,12 +745,40 @@ final class RemuxAppUITests: XCTestCase {
         )
         attachScreenshot(named: "live-session-switcher-active-and-available-large")
 
-        let sessionList = app.descendants(matching: .any)["terminal.sessions.list"]
-        for _ in 0..<8 where !availableRow.exists || !availableRow.isHittable {
-            sessionList.swipeUp()
+        let availableRow: XCUIElement
+        if availableBrowser.exists {
+            for _ in 0..<8 where !availableBrowser.isHittable {
+                sessionList.swipeUp()
+            }
+            XCTAssertTrue(availableBrowser.isHittable)
+            availableBrowser.tap()
+
+            let browserView = app.descendants(matching: .any)[
+                "terminal.sessions.available-browser-view"
+            ]
+            XCTAssertTrue(browserView.waitForExistence(timeout: 5))
+            let searchField = app.searchFields.firstMatch
+            XCTAssertTrue(searchField.waitForExistence(timeout: 5))
+            XCTAssertLessThan(
+                searchField.frame.minY,
+                mediumTop - 100,
+                "The Available browser should present at the large detent."
+            )
+            searchField.tap()
+            searchField.typeText(availableSessionName)
+            availableRow = app.descendants(matching: .any)
+                .matching(identifier: "terminal.sessions.available-result")
+                .matching(NSPredicate(format: "label CONTAINS[c] %@", availableSessionName))
+                .firstMatch
+            attachScreenshot(named: "live-session-switcher-available-search")
+        } else {
+            availableRow = inlineAvailableRow
+            for _ in 0..<8 where !availableRow.exists || !availableRow.isHittable {
+                sessionList.swipeUp()
+            }
         }
         XCTAssertTrue(
-            availableRow.isHittable,
+            availableRow.waitForExistence(timeout: 10) && availableRow.isHittable,
             "The specifically generated tmux session should be reachable under Available."
         )
         availableRow.tap()
@@ -748,7 +796,6 @@ final class RemuxAppUITests: XCTestCase {
             availableActiveRow.waitForExistence(timeout: 10),
             "The discovered session should move to Active after resuming."
         )
-        XCTAssertFalse(availableRow.exists)
 
         let primaryRecentRow = disconnectActiveSessionFromSwitcher(named: primarySessionName)
         primaryRecentRow.tap()

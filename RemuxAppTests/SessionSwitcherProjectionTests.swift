@@ -3,6 +3,26 @@ import XCTest
 @testable import Remux
 
 final class SessionSwitcherProjectionTests: XCTestCase {
+    @MainActor
+    func testLastOpenedPresentationUsesCalmSingleUnitRelativeValue() {
+        let referenceDate = Date(timeIntervalSince1970: 10_000)
+
+        XCTAssertEqual(
+            SessionLastOpenedText.value(
+                for: referenceDate.addingTimeInterval(-30),
+                relativeTo: referenceDate
+            ),
+            "Opened just now"
+        )
+        let longerValue = SessionLastOpenedText.value(
+            for: referenceDate.addingTimeInterval(-2_390),
+            relativeTo: referenceDate
+        )
+        XCTAssertTrue(longerValue.hasPrefix("Opened "))
+        XCTAssertFalse(longerValue.contains(","))
+        XCTAssertFalse(longerValue.localizedCaseInsensitiveContains("sec"))
+    }
+
     func testProjectionPreservesCanonicalActiveOrderAndMarksSelection() {
         let production = makeServer(name: "Production")
         let macMini = makeServer(name: "Mac Mini")
@@ -54,8 +74,7 @@ final class SessionSwitcherProjectionTests: XCTestCase {
                 makeSession(server: server, workspace: first),
                 makeSession(server: server, workspace: second),
             ],
-            currentServerID: server.id,
-            discoveredSessionNames: ["shared"],
+            discoveryStates: [server.id: loadedDiscovery(["shared"])],
             selectedSessionID: second.id
         )
 
@@ -64,44 +83,71 @@ final class SessionSwitcherProjectionTests: XCTestCase {
         XCTAssertTrue(projection.availableSessions.isEmpty)
     }
 
-    func testProjectionSeparatesNeverOpenedAvailableFromRecentSessions() {
-        let server = makeServer(name: "Production")
+    func testProjectionSeparatesConfirmedRecentFromGlobalAvailableSessions() {
+        let production = makeServer(name: "Production")
+        let staging = makeServer(name: "Staging")
         let active = makeWorkspace(
-            server: server,
+            server: production,
             name: "active",
             lastOpenedAt: Date(timeIntervalSince1970: 300)
         )
-        let recentAvailable = makeWorkspace(
-            server: server,
+        let recent = makeWorkspace(
+            server: production,
             name: "recent",
             lastOpenedAt: Date(timeIntervalSince1970: 200)
         )
-        let newlyDiscovered = makeWorkspace(
-            server: server,
-            name: "remote",
-            lastOpenedAt: .distantPast
-        )
-        let staleDiscovery = makeWorkspace(
-            server: server,
+        let missing = makeWorkspace(
+            server: production,
             name: "gone",
-            lastOpenedAt: .distantPast
+            lastOpenedAt: Date(timeIntervalSince1970: 100)
         )
 
         let projection = SessionSwitcherProjection(
             snapshot: snapshot(
-                servers: [server],
-                workspaces: [active, recentAvailable, newlyDiscovered, staleDiscovery]
+                servers: [production, staging],
+                workspaces: [active, recent, missing]
             ),
-            activeSessions: [makeSession(server: server, workspace: active)],
-            currentServerID: server.id,
-            discoveredSessionNames: ["active", "recent", "remote"],
+            activeSessions: [makeSession(server: production, workspace: active)],
+            discoveryStates: [
+                production.id: loadedDiscovery(["active", "recent", "remote"]),
+                staging.id: loadedDiscovery(["logs"]),
+            ],
             selectedSessionID: active.id
         )
 
         XCTAssertEqual(projection.activeSessions.map(\.id), [active.id])
-        XCTAssertEqual(projection.availableSessions.map(\.id), [newlyDiscovered.id])
-        XCTAssertEqual(projection.recentSessions.map(\.id), [recentAvailable.id])
-        XCTAssertEqual(projection.recentSessions.map(\.isAvailable), [true])
+        XCTAssertEqual(projection.recentSessions.map(\.id), [recent.id])
+        XCTAssertEqual(
+            projection.availableSessions.map(\.id),
+            [
+                RemoteTmuxSessionIdentity(serverID: production.id, sessionName: "remote"),
+                RemoteTmuxSessionIdentity(serverID: staging.id, sessionName: "logs"),
+            ]
+        )
+        XCTAssertFalse(projection.recentSessions.contains { $0.id == missing.id })
+        XCTAssertFalse(
+            projection.availableSessions.contains { $0.id.sessionName == "recent" }
+        )
+    }
+
+    func testProjectionKeepsLargeAvailableInventoryOutOfQuickSheet() {
+        let server = makeServer(name: "Production")
+        let projection = SessionSwitcherProjection(
+            snapshot: snapshot(servers: [server], workspaces: []),
+            activeSessions: [],
+            discoveryStates: [
+                server.id: loadedDiscovery(["one", "two", "three", "four", "five"]),
+            ],
+            selectedSessionID: nil
+        )
+
+        XCTAssertEqual(projection.availableSessions.count, 5)
+        XCTAssertEqual(projection.inlineAvailableSessions.count, 3)
+        XCTAssertEqual(projection.hiddenAvailableSessionCount, 2)
+        XCTAssertEqual(
+            projection.inlineAvailableSessions.map(\.id.sessionName),
+            Array(projection.availableSessions.prefix(3)).map(\.id.sessionName)
+        )
     }
 
     func testProjectionIncludesEveryInactiveWorkspaceInRecentOrder() {
@@ -232,6 +278,10 @@ final class SessionSwitcherProjectionTests: XCTestCase {
             ),
             runtimeState: .connected
         )
+    }
+
+    private func loadedDiscovery(_ names: [String]) -> TmuxSessionDiscoveryState {
+        TmuxSessionDiscoveryState.idle.finishingRefresh(with: names)
     }
 
     private func makeServer(name: String) -> SavedServer {

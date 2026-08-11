@@ -8,9 +8,13 @@ struct ActiveSessionSwitcherItem: Identifiable, Equatable {
     let isSelected: Bool
 }
 
-struct AvailableSessionSwitcherItem: Identifiable, Equatable {
-    let id: SavedWorkspace.ID
+struct RemoteTmuxSessionIdentity: Hashable {
+    let serverID: SavedServer.ID
     let sessionName: String
+}
+
+struct AvailableSessionSwitcherItem: Identifiable, Equatable {
+    let id: RemoteTmuxSessionIdentity
     let serverName: String
 }
 
@@ -19,19 +23,27 @@ struct RecentSessionSwitcherItem: Identifiable, Equatable {
     let sessionName: String
     let serverName: String
     let lastOpenedAt: Date
-    let isAvailable: Bool
 }
 
 struct SessionSwitcherProjection: Equatable {
+    static let maximumInlineAvailableSessionCount = 3
+
     let activeSessions: [ActiveSessionSwitcherItem]
     let availableSessions: [AvailableSessionSwitcherItem]
     let recentSessions: [RecentSessionSwitcherItem]
 
+    var inlineAvailableSessions: [AvailableSessionSwitcherItem] {
+        Array(availableSessions.prefix(Self.maximumInlineAvailableSessionCount))
+    }
+
+    var hiddenAvailableSessionCount: Int {
+        availableSessions.count - inlineAvailableSessions.count
+    }
+
     init(
         snapshot: ConnectionLibrarySnapshot,
         activeSessions: [ActiveTerminalSession],
-        currentServerID: SavedServer.ID? = nil,
-        discoveredSessionNames: [String] = [],
+        discoveryStates: [SavedServer.ID: TmuxSessionDiscoveryState] = [:],
         selectedSessionID: SavedWorkspace.ID?
     ) {
         self.activeSessions = RemuxActiveSessionCollection
@@ -47,52 +59,69 @@ struct SessionSwitcherProjection: Equatable {
             }
 
         let activeWorkspaceIDs = Set(activeSessions.map(\.id))
-        let discoveredNames = Set(discoveredSessionNames)
-        let activeNamesOnCurrentServer = Set(
-            activeSessions.lazy
-                .filter { $0.target.server.id == currentServerID }
-                .map { $0.target.workspace.sessionName }
-        )
+        let activeIdentities = Set(activeSessions.map {
+            RemoteTmuxSessionIdentity(
+                serverID: $0.target.server.id,
+                sessionName: $0.target.workspace.sessionName
+            )
+        })
 
-        if let currentServerID, let server = snapshot.server(id: currentServerID) {
-            var includedNames = activeNamesOnCurrentServer
-            self.availableSessions = snapshot
-                .workspaces(for: currentServerID)
-                .filter { workspace in
-                    workspace.lastOpenedAt == .distantPast
-                        && discoveredNames.contains(workspace.sessionName)
-                        && includedNames.insert(workspace.sessionName).inserted
-                }
-                .map { workspace in
-                    AvailableSessionSwitcherItem(
-                        id: workspace.id,
-                        sessionName: workspace.sessionName,
-                        serverName: server.displayName
-                    )
-                }
-                .sorted {
-                    $0.sessionName.localizedStandardCompare($1.sessionName) == .orderedAscending
-                }
-        } else {
-            self.availableSessions = []
-        }
-
+        var recentIdentities = Set<RemoteTmuxSessionIdentity>()
         self.recentSessions = snapshot
             .recentWorkspaces(excluding: activeWorkspaceIDs)
-            .filter { $0.lastOpenedAt != .distantPast }
+            .filter {
+                TmuxSessionReconciliation.includesSavedWorkspace(
+                    $0,
+                    discoveryStates: discoveryStates
+                )
+            }
             .compactMap { workspace in
                 guard let server = snapshot.server(id: workspace.serverID) else {
+                    return nil
+                }
+                let identity = RemoteTmuxSessionIdentity(
+                    serverID: workspace.serverID,
+                    sessionName: workspace.sessionName
+                )
+                guard !activeIdentities.contains(identity),
+                      recentIdentities.insert(identity).inserted else {
                     return nil
                 }
                 return RecentSessionSwitcherItem(
                     id: workspace.id,
                     sessionName: workspace.sessionName,
                     serverName: server.displayName,
-                    lastOpenedAt: workspace.lastOpenedAt,
-                    isAvailable: workspace.serverID == currentServerID
-                        && discoveredNames.contains(workspace.sessionName)
-                        && !activeNamesOnCurrentServer.contains(workspace.sessionName)
+                    lastOpenedAt: workspace.lastOpenedAt
                 )
+            }
+
+        self.availableSessions = snapshot.servers
+            .flatMap { server in
+                discoveryStates[server.id]?.sessionNames.map { sessionName in
+                    AvailableSessionSwitcherItem(
+                        id: RemoteTmuxSessionIdentity(
+                            serverID: server.id,
+                            sessionName: sessionName
+                        ),
+                        serverName: server.displayName
+                    )
+                } ?? []
+            }
+            .filter {
+                !activeIdentities.contains($0.id) && !recentIdentities.contains($0.id)
+            }
+            .sorted { lhs, rhs in
+                let serverComparison = lhs.serverName.localizedStandardCompare(rhs.serverName)
+                if serverComparison != .orderedSame {
+                    return serverComparison == .orderedAscending
+                }
+                let sessionComparison = lhs.id.sessionName.localizedStandardCompare(
+                    rhs.id.sessionName
+                )
+                if sessionComparison != .orderedSame {
+                    return sessionComparison == .orderedAscending
+                }
+                return lhs.id.serverID.uuidString < rhs.id.serverID.uuidString
             }
     }
 
@@ -114,6 +143,7 @@ struct SessionSwitcherProjection: Equatable {
 struct SessionSwitcherView: View {
     private enum Route: Hashable {
         case chooseServer
+        case availableSessions
     }
 
     @Environment(\.dismiss) private var dismiss
@@ -124,10 +154,11 @@ struct SessionSwitcherView: View {
     let currentServerID: SavedServer.ID?
     let onSelectActiveSession: (SavedWorkspace.ID) -> Void
     let onResumeSession: (SavedWorkspace.ID) -> Void
+    let onResumeAvailableSession: (SavedServer.ID, String) -> Void
     let onDisconnectSession: (SavedWorkspace.ID) -> Void
     let onCreateSession: (SavedServer.ID) -> Void
     let onRefresh: () -> Void
-    let discoveryState: TmuxSessionDiscoveryState
+    let discoveryStates: [SavedServer.ID: TmuxSessionDiscoveryState]
 
     @State private var path: [Route] = []
 
@@ -146,9 +177,22 @@ struct SessionSwitcherView: View {
                             currentServerID: currentServerID,
                             onSelect: beginNewSession
                         )
+                    case .availableSessions:
+                        AvailableSessionsBrowserView(
+                            sessions: projection.availableSessions,
+                            isRefreshing: isRefreshing,
+                            failureMessage: failedServerNames.isEmpty
+                                ? nil
+                                : discoveryFailureMessage,
+                            onRefresh: onRefresh,
+                            onSelect: resumeAvailableSession
+                        )
                     }
                 }
         }
+        .presentationDetents([.medium, .large])
+        .presentationContentInteraction(.resizes)
+        .presentationDragIndicator(.visible)
         .accessibilityIdentifier("terminal.sessions.sheet")
     }
 
@@ -177,12 +221,14 @@ struct SessionSwitcherView: View {
                     }
                 }
 
-                discoverySection
-
-                if !projection.availableSessions.isEmpty {
+                if !servers.isEmpty {
                     Section {
-                        ForEach(projection.availableSessions) { session in
+                        discoveryStatusRows
+                        ForEach(projection.inlineAvailableSessions) { session in
                             availableSessionRow(session)
+                        }
+                        if projection.hiddenAvailableSessionCount > 0 {
+                            availableSessionsBrowserRow
                         }
                     } header: {
                         SessionSwitcherSectionHeader(title: "Available")
@@ -216,7 +262,7 @@ struct SessionSwitcherView: View {
             onRefresh()
         } label: {
             Group {
-                if discoveryState.isLoading {
+                if isRefreshing {
                     ProgressView()
                         .controlSize(.small)
                         .tint(TerminalSelectionSheetPalette.primary)
@@ -231,8 +277,8 @@ struct SessionSwitcherView: View {
             .frame(width: 44, height: 44)
             .contentShape(Rectangle())
         }
-        .disabled(discoveryState.isLoading)
-        .accessibilityLabel(discoveryState.isLoading ? "Refreshing Sessions" : "Refresh Sessions")
+        .disabled(isRefreshing)
+        .accessibilityLabel(isRefreshing ? "Refreshing Sessions" : "Refresh Sessions")
         .accessibilityIdentifier("terminal.sessions.refresh")
     }
 
@@ -272,14 +318,62 @@ struct SessionSwitcherView: View {
 
     private func availableSessionRow(_ session: AvailableSessionSwitcherItem) -> some View {
         Button {
-            Haptic.selection()
-            dismiss()
-            onResumeSession(session.id)
+            resumeAvailableSession(session)
         } label: {
             AvailableSessionSwitcherRow(session: session)
         }
         .buttonStyle(.plain)
         .sessionSwitcherListRow(accessibilityIdentifier: "terminal.sessions.available-session")
+    }
+
+    private var availableSessionsBrowserRow: some View {
+        Button {
+            Haptic.tap()
+            path.append(.availableSessions)
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "magnifyingglass")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(TerminalSelectionSheetPalette.secondary)
+                    .frame(width: 28, height: 32)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Find Available Sessions…")
+                        .font(.headline)
+                        .foregroundStyle(TerminalSelectionSheetPalette.primary)
+
+                    Text(availableSessionsBrowserSummary)
+                        .font(.footnote)
+                        .foregroundStyle(TerminalSelectionSheetPalette.secondary)
+                }
+
+                Spacer(minLength: 8)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(TerminalSelectionSheetPalette.tertiary)
+            }
+            .frame(minHeight: 52)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .sessionSwitcherListRow(
+            accessibilityIdentifier: "terminal.sessions.available-browser"
+        )
+    }
+
+    private var availableSessionsBrowserSummary: String {
+        let sessionCount = projection.availableSessions.count
+        let serverCount = Set(projection.availableSessions.map(\.id.serverID)).count
+        let sessions = sessionCount == 1 ? "1 session" : "\(sessionCount) sessions"
+        let servers = serverCount == 1 ? "1 server" : "\(serverCount) servers"
+        return "\(sessions) across \(servers)"
+    }
+
+    private func resumeAvailableSession(_ session: AvailableSessionSwitcherItem) {
+        Haptic.selection()
+        dismiss()
+        onResumeAvailableSession(session.id.serverID, session.id.sessionName)
     }
 
     private func recentSessionRow(_ session: RecentSessionSwitcherItem) -> some View {
@@ -313,30 +407,65 @@ struct SessionSwitcherView: View {
         onCreateSession(serverID)
     }
 
-    @ViewBuilder
-    private var discoverySection: some View {
-        switch discoveryState {
-        case .loading:
-            Section {
-                Label("Looking for tmux sessions…", systemImage: "arrow.clockwise")
-                    .foregroundStyle(TerminalSelectionSheetPalette.secondary)
-                    .listRowBackground(Color.clear)
-            } header: {
-                SessionSwitcherSectionHeader(title: "Available")
-            }
+    private var serverDiscoveryStates: [(SavedServer, TmuxSessionDiscoveryState)] {
+        servers.map { ($0, discoveryStates[$0.id] ?? .idle) }
+    }
 
-        case .failed(let message):
-            Section {
-                Label(message, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(TerminalSelectionSheetPalette.secondary)
-                    .listRowBackground(Color.clear)
-            } header: {
-                SessionSwitcherSectionHeader(title: "Available")
-            }
+    private var isRefreshing: Bool {
+        serverDiscoveryStates.contains { $0.1.isLoading }
+    }
 
-        case .idle, .loaded:
-            EmptyView()
+    private var failedServerNames: [String] {
+        serverDiscoveryStates.compactMap { server, state in
+            guard case .failed = state.phase else { return nil }
+            return server.displayName
         }
+    }
+
+    private var hasUndiscoveredServer: Bool {
+        serverDiscoveryStates.contains { $0.1.phase == .idle }
+    }
+
+    @ViewBuilder
+    private var discoveryStatusRows: some View {
+        if isRefreshing {
+            discoveryStatusRow(
+                "Looking for tmux sessions…",
+                systemImage: "arrow.clockwise"
+            )
+        } else if !failedServerNames.isEmpty {
+            discoveryStatusRow(
+                discoveryFailureMessage,
+                systemImage: "exclamationmark.triangle"
+            )
+        } else if projection.availableSessions.isEmpty,
+                  hasUndiscoveredServer {
+            discoveryStatusRow(
+                "Refresh to find tmux sessions",
+                systemImage: "arrow.clockwise"
+            )
+        } else if projection.availableSessions.isEmpty {
+            discoveryStatusRow(
+                "No available sessions",
+                systemImage: "checkmark.circle"
+            )
+        }
+    }
+
+    private func discoveryStatusRow(
+        _ title: String,
+        systemImage: String
+    ) -> some View {
+        Label(title, systemImage: systemImage)
+            .foregroundStyle(TerminalSelectionSheetPalette.secondary)
+            .listRowBackground(Color.clear)
+    }
+
+    private var discoveryFailureMessage: String {
+        if failedServerNames.count == 1, let serverName = failedServerNames.first {
+            return "Couldn’t check sessions on \(serverName)"
+        }
+        return "Couldn’t check sessions on \(failedServerNames.count) servers"
     }
 }
 
@@ -412,6 +541,7 @@ private struct ActiveSessionSwitcherRow: View {
 
 private struct AvailableSessionSwitcherRow: View {
     let session: AvailableSessionSwitcherItem
+    var showsServerName = true
 
     var body: some View {
         HStack(spacing: 12) {
@@ -421,24 +551,18 @@ private struct AvailableSessionSwitcherRow: View {
                 .frame(width: 28, height: 32)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(session.sessionName)
+                Text(session.id.sessionName)
                     .font(.headline)
                     .foregroundStyle(TerminalSelectionSheetPalette.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
 
-                HStack(spacing: 6) {
+                if showsServerName {
                     Text(session.serverName)
+                        .font(.footnote)
+                        .foregroundStyle(TerminalSelectionSheetPalette.secondary)
                         .lineLimit(1)
-
-                    Text("·")
-                        .accessibilityHidden(true)
-
-                    Text("Available")
                 }
-                .font(.footnote)
-                .foregroundStyle(TerminalSelectionSheetPalette.secondary)
-                .lineLimit(1)
             }
 
             Spacer(minLength: 8)
@@ -446,7 +570,7 @@ private struct AvailableSessionSwitcherRow: View {
         .frame(minHeight: 52)
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(session.sessionName), \(session.serverName)")
+        .accessibilityLabel("\(session.id.sessionName), \(session.serverName)")
         .accessibilityValue("Available")
         .accessibilityHint("Resume this session")
         .accessibilityAddTraits(.isButton)
@@ -477,11 +601,7 @@ private struct RecentSessionSwitcherRow: View {
                     Text("·")
                         .accessibilityHidden(true)
 
-                    if session.isAvailable {
-                        Text("Available")
-                    } else {
-                        Text("opened \(session.lastOpenedAt, style: .relative)")
-                    }
+                    SessionLastOpenedText(date: session.lastOpenedAt)
                 }
                 .font(.footnote)
                 .foregroundStyle(TerminalSelectionSheetPalette.secondary)
@@ -494,16 +614,156 @@ private struct RecentSessionSwitcherRow: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(session.sessionName), \(session.serverName)")
-        .accessibilityValue(accessibilityValue)
+        .accessibilityValue(SessionLastOpenedText.value(for: session.lastOpenedAt))
         .accessibilityHint("Resume this session")
         .accessibilityAddTraits(.isButton)
     }
+}
 
-    private var accessibilityValue: Text {
-        if session.isAvailable {
-            return Text("Available")
+struct SessionLastOpenedText: View {
+    let date: Date
+
+    var body: some View {
+        Text(Self.value(for: date))
+    }
+
+    static func value(for date: Date, relativeTo referenceDate: Date = Date()) -> String {
+        let elapsed = referenceDate.timeIntervalSince(date)
+        if elapsed >= 0, elapsed < 60 {
+            return "Opened just now"
         }
-        return Text("Opened \(session.lastOpenedAt, style: .relative)")
+
+        let formatter = RelativeDateTimeFormatter()
+        formatter.dateTimeStyle = .named
+        formatter.unitsStyle = .abbreviated
+        return "Opened \(formatter.localizedString(for: date, relativeTo: referenceDate))"
+    }
+}
+
+private struct AvailableSessionsBrowserView: View {
+    private struct ServerGroup: Identifiable {
+        let id: SavedServer.ID
+        let serverName: String
+        let sessions: [AvailableSessionSwitcherItem]
+    }
+
+    let sessions: [AvailableSessionSwitcherItem]
+    let isRefreshing: Bool
+    let failureMessage: String?
+    let onRefresh: () -> Void
+    let onSelect: (AvailableSessionSwitcherItem) -> Void
+
+    @State private var query = ""
+
+    var body: some View {
+        List {
+            if let failureMessage {
+                Label(failureMessage, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(TerminalSelectionSheetPalette.secondary)
+                    .listRowBackground(Color.clear)
+            }
+
+            if groups.isEmpty {
+                emptyResults
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            } else {
+                ForEach(groups) { group in
+                    Section {
+                        ForEach(group.sessions) { session in
+                            Button {
+                                onSelect(session)
+                            } label: {
+                                AvailableSessionSwitcherRow(
+                                    session: session,
+                                    showsServerName: false
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .sessionSwitcherListRow(
+                                accessibilityIdentifier: "terminal.sessions.available-result"
+                            )
+                        }
+                    } header: {
+                        SessionSwitcherSectionHeader(title: group.serverName)
+                    }
+                }
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .navigationTitle("Available Sessions")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Haptic.tap()
+                    onRefresh()
+                } label: {
+                    if isRefreshing {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+                .disabled(isRefreshing)
+                .accessibilityLabel(
+                    isRefreshing ? "Refreshing Sessions" : "Refresh Sessions"
+                )
+                .accessibilityIdentifier("terminal.sessions.available-refresh")
+            }
+        }
+        .searchable(
+            text: $query,
+            placement: .navigationBarDrawer(displayMode: .always),
+            prompt: "Sessions or servers"
+        )
+        .accessibilityIdentifier("terminal.sessions.available-browser-view")
+    }
+
+    private var matchingSessions: [AvailableSessionSwitcherItem] {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return sessions }
+        return sessions.filter {
+            $0.id.sessionName.localizedCaseInsensitiveContains(term)
+                || $0.serverName.localizedCaseInsensitiveContains(term)
+        }
+    }
+
+    private var groups: [ServerGroup] {
+        Dictionary(grouping: matchingSessions, by: \.id.serverID)
+            .compactMap { serverID, sessions in
+                guard let serverName = sessions.first?.serverName else { return nil }
+                return ServerGroup(
+                    id: serverID,
+                    serverName: serverName,
+                    sessions: sessions.sorted {
+                        $0.id.sessionName.localizedStandardCompare($1.id.sessionName)
+                            == .orderedAscending
+                    }
+                )
+            }
+            .sorted { lhs, rhs in
+                let comparison = lhs.serverName.localizedStandardCompare(rhs.serverName)
+                if comparison != .orderedSame {
+                    return comparison == .orderedAscending
+                }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+    }
+
+    @ViewBuilder
+    private var emptyResults: some View {
+        if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            ContentUnavailableView(
+                "No Available Sessions",
+                systemImage: "terminal"
+            )
+        } else {
+            ContentUnavailableView.search(text: query)
+        }
     }
 }
 
@@ -564,42 +824,6 @@ private struct NewSessionServerPickerView: View {
         .navigationTitle("Choose Server")
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("terminal.sessions.server-picker")
-    }
-}
-
-private struct SessionSwitcherSheetPresentationModifier: ViewModifier {
-    let colorScheme: ColorScheme
-    let chromeStyle: GhosttyTerminalChromeStyle
-
-    @State private var selectedDetent: PresentationDetent = .medium
-
-    func body(content: Content) -> some View {
-        content
-            .presentationDetents(
-                [.medium, .large],
-                selection: $selectedDetent
-            )
-            .presentationContentInteraction(.resizes)
-            .presentationDragIndicator(.visible)
-            .terminalSelectionSheetPresentationBackground()
-            .ghosttyTerminalChromePresentation(
-                colorScheme,
-                chromeStyle: chromeStyle
-            )
-    }
-}
-
-extension View {
-    func sessionSwitcherSheetPresentation(
-        colorScheme: ColorScheme,
-        chromeStyle: GhosttyTerminalChromeStyle
-    ) -> some View {
-        modifier(
-            SessionSwitcherSheetPresentationModifier(
-                colorScheme: colorScheme,
-                chromeStyle: chromeStyle
-            )
-        )
     }
 }
 

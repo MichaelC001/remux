@@ -87,10 +87,6 @@ protocol ConnectionProfileRepository: Sendable {
         workspace: SavedWorkspace
     ) async throws
     func saveProfile(server: SavedServer, workspace: SavedWorkspace) async throws
-    func reconcileDiscoveredWorkspaces(
-        for serverID: SavedServer.ID,
-        sessionNames: [String]
-    ) async throws -> ConnectionLibrarySnapshot
     func deleteServer(id: SavedServer.ID) async throws
     func deleteWorkspace(id: SavedWorkspace.ID) async throws
     func deleteIdentity(id: SSHIdentity.ID) async throws
@@ -98,35 +94,6 @@ protocol ConnectionProfileRepository: Sendable {
 
 enum ConnectionProfileRepositoryError: Error, Equatable {
     case missingServer(SavedServer.ID)
-}
-
-enum DiscoveredWorkspaceReconciliation {
-    static func appendingMissing(
-        to workspaces: [SavedWorkspace],
-        for serverID: SavedServer.ID,
-        sessionNames: [String]
-    ) -> [SavedWorkspace] {
-        var result = workspaces
-        let existingNames = Set(
-            workspaces.lazy
-                .filter { $0.serverID == serverID }
-                .map(\.sessionName)
-        )
-        var addedNames = Set<String>()
-        for name in sessionNames where !name.isEmpty {
-            guard !existingNames.contains(name), addedNames.insert(name).inserted else { continue }
-            // Discovery is not an open. Keep it out of recency ordering until
-            // the user actually attaches through the normal connect path.
-            result.append(
-                SavedWorkspace(
-                    serverID: serverID,
-                    sessionName: name,
-                    lastOpenedAt: .distantPast
-                )
-            )
-        }
-        return result
-    }
 }
 
 actor FileBackedConnectionProfileRepository: ConnectionProfileRepository {
@@ -213,27 +180,6 @@ actor FileBackedConnectionProfileRepository: ConnectionProfileRepository {
 
         try await serverStore.save(servers)
         try await workspaceStore.save(workspaces)
-    }
-
-    func reconcileDiscoveredWorkspaces(
-        for serverID: SavedServer.ID,
-        sessionNames: [String]
-    ) async throws -> ConnectionLibrarySnapshot {
-        let servers = try await serverStore.load()
-        guard servers.contains(where: { $0.id == serverID }) else {
-            throw ConnectionProfileRepositoryError.missingServer(serverID)
-        }
-
-        let workspaces = try await workspaceStore.load()
-        let reconciledWorkspaces = DiscoveredWorkspaceReconciliation.appendingMissing(
-            to: workspaces,
-            for: serverID,
-            sessionNames: sessionNames
-        )
-        if reconciledWorkspaces.count != workspaces.count {
-            try await workspaceStore.save(reconciledWorkspaces)
-        }
-        return try await loadSnapshot()
     }
 
     func deleteServer(id: SavedServer.ID) async throws {
