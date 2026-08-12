@@ -557,21 +557,21 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
 
     func makePanePreviewSession(
         leafIDs: [UUID],
-        previewSizing: GhosttyPanePreviewSession.PreviewSizing
+        previewAvailableWidth: CGFloat
     ) -> GhosttyPanePreviewSession {
         return newPanePreviewSession(
             leafIDs: leafIDs,
-            previewSizing: previewSizing
+            previewAvailableWidth: previewAvailableWidth
         )
     }
 
     private func newPanePreviewSession(
         leafIDs: [UUID],
-        previewSizing: GhosttyPanePreviewSession.PreviewSizing
+        previewAvailableWidth: CGFloat
     ) -> GhosttyPanePreviewSession {
         GhosttyPanePreviewSession(
             leafIDs: leafIDs,
-            previewSizing: previewSizing,
+            previewAvailableWidth: previewAvailableWidth,
             client: GhosttyPanePreviewSession.PreviewClient(
                 capture: { [weak self] leafID, budget in
                     guard let self,
@@ -579,16 +579,11 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                           let paneID = self.identities.paneID(for: leafID),
                           let pane = self.latestTopology?.panes.first(where: { $0.id == paneID })
                     else { return nil }
-                    let captureBudget = self.previewBudget(
-                        budget,
-                        for: pane,
-                        sizing: previewSizing
-                    )
                     return await session.capturePickerPreview(
                         paneID: paneID,
                         columns: pane.width,
                         rows: pane.height,
-                        budget: captureBudget
+                        budget: budget
                     )
                 },
                 cancelCapture: { [weak self] leafID in
@@ -648,41 +643,6 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
                     }
                 }
             )
-        )
-    }
-
-    private func previewBudget(
-        _ budget: GhosttyPanePreviewSession.PixelBudget,
-        for pane: TmuxSessionController.PaneInfo,
-        sizing: GhosttyPanePreviewSession.PreviewSizing
-    ) -> GhosttyPanePreviewSession.PixelBudget {
-        guard case .paneMap = sizing else { return budget }
-        guard let window = latestTopology?.windows.first(where: {
-            $0.id == pane.windowID
-        }), window.width > 0, window.height > 0 else { return budget }
-        return .init(
-            width: Self.proportionalPreviewDimension(
-                budget.width,
-                part: pane.width,
-                whole: window.width
-            ),
-            height: Self.proportionalPreviewDimension(
-                budget.height,
-                part: pane.height,
-                whole: window.height
-            )
-        )
-    }
-
-    private static func proportionalPreviewDimension(
-        _ dimension: UInt32,
-        part: UInt32,
-        whole: UInt32
-    ) -> UInt32 {
-        guard dimension > 0, part > 0, whole > 0 else { return 1 }
-        return max(
-            1,
-            UInt32((Double(dimension) * Double(part) / Double(whole)).rounded(.up))
         )
     }
 

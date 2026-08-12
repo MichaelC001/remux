@@ -1396,7 +1396,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private func makeWindowPreviewSession(leafIDs: [UUID]) -> GhosttyPanePreviewSession {
         model.makePanePreviewSession(
             leafIDs: leafIDs,
-            previewSizing: .windowGridForCurrentScreen
+            previewAvailableWidth: PanePreviewLayout.currentSheetContentWidth()
         )
     }
 
@@ -1435,7 +1435,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 topLevelID: projection.topLevelID,
                 previews: model.makePanePreviewSession(
                     leafIDs: projection.previewLeafIDs,
-                    previewSizing: .paneMapForCurrentScreen
+                    previewAvailableWidth: PanePreviewLayout.currentSheetContentWidth()
                 )
             )
         )

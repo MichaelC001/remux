@@ -55,24 +55,6 @@ final class GhosttyPanePreviewSession: ObservableObject {
         }
     }
 
-    enum PreviewSizing: Equatable {
-        case paneMap(availableWidth: CGFloat, maximumHeight: CGFloat)
-        case windowGrid(availableWidth: CGFloat)
-
-        @MainActor
-        static var paneMapForCurrentScreen: PreviewSizing {
-            .paneMap(
-                availableWidth: PanePreviewLayout.currentSheetContentWidth(),
-                maximumHeight: PanePreviewLayout.currentPaneMapMaximumHeight()
-            )
-        }
-
-        @MainActor
-        static var windowGridForCurrentScreen: PreviewSizing {
-            .windowGrid(availableWidth: PanePreviewLayout.currentSheetContentWidth())
-        }
-    }
-
     enum PreviewState {
         case pending
         case ready(RenderedPreview)
@@ -83,7 +65,7 @@ final class GhosttyPanePreviewSession: ObservableObject {
     @Published private(set) var imagesByPaneID: [UUID: PreviewState] = [:]
 
     private let displayScale: CGFloat
-    private let previewSizing: PreviewSizing
+    private let previewAvailableWidth: CGFloat
     private let client: PreviewClient
     private var trackedLeafIDs: [UUID]
     private var refreshTask: Task<Void, Never>?
@@ -95,11 +77,11 @@ final class GhosttyPanePreviewSession: ObservableObject {
     init(
         leafIDs: [UUID],
         scale: CGFloat = PanePreviewLayout.currentScale(),
-        previewSizing: PreviewSizing,
+        previewAvailableWidth: CGFloat,
         client: PreviewClient
     ) {
         displayScale = scale
-        self.previewSizing = previewSizing
+        self.previewAvailableWidth = previewAvailableWidth
         self.client = client
         trackedLeafIDs = Self.unique(leafIDs)
         seedCachedImages(for: trackedLeafIDs)
@@ -187,19 +169,10 @@ final class GhosttyPanePreviewSession: ObservableObject {
     }
 
     private func pixelBudget() -> PixelBudget {
-        let dimensions: (width: UInt32, height: UInt32) = switch previewSizing {
-        case .paneMap(let availableWidth, let maximumHeight):
-            PanePreviewLayout.paneMapPhysicalPixelBudget(
-                availableWidth: availableWidth,
-                maximumHeight: maximumHeight,
-                scale: displayScale
-            )
-        case .windowGrid(let availableWidth):
-            PanePreviewLayout.windowPhysicalPixelBudget(
-                availableWidth: availableWidth,
-                scale: displayScale
-            )
-        }
+        let dimensions = PanePreviewLayout.windowPhysicalPixelBudget(
+            availableWidth: previewAvailableWidth,
+            scale: displayScale
+        )
         return PixelBudget(width: dimensions.width, height: dimensions.height)
     }
 

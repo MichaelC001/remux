@@ -12,7 +12,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         let session = GhosttyPanePreviewSession(
             leafIDs: [paneID],
             scale: 1,
-            previewSizing: .windowGrid(availableWidth: 320),
+            previewAvailableWidth: 320,
             client: .init(
                 capture: { _, _ in
                     captureCount += 1
@@ -39,7 +39,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         let session = GhosttyPanePreviewSession(
             leafIDs: [first, second],
             scale: 2,
-            previewSizing: .windowGrid(availableWidth: 320),
+            previewAvailableWidth: 320,
             client: .init(
                 capture: {
                     await harness.capture(paneID: $0, budget: $1)
@@ -94,7 +94,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         let session = GhosttyPanePreviewSession(
             leafIDs: [paneID],
             scale: 1,
-            previewSizing: .windowGrid(availableWidth: 320),
+            previewAvailableWidth: 320,
             client: .init(
                 capture: {
                     await harness.capture(paneID: $0, budget: $1)
@@ -121,7 +121,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         let session = GhosttyPanePreviewSession(
             leafIDs: [paneID],
             scale: 1,
-            previewSizing: .windowGrid(availableWidth: 320),
+            previewAvailableWidth: 320,
             client: .init(
                 capture: {
                     await harness.capture(paneID: $0, budget: $1)
@@ -145,7 +145,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         let session = GhosttyPanePreviewSession(
             leafIDs: [paneID],
             scale: 1,
-            previewSizing: .windowGrid(availableWidth: 320),
+            previewAvailableWidth: 320,
             client: .init(
                 capture: {
                     await harness.capture(paneID: $0, budget: $1)
@@ -173,7 +173,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         let session = GhosttyPanePreviewSession(
             leafIDs: [removed],
             scale: 1,
-            previewSizing: .windowGrid(availableWidth: 320),
+            previewAvailableWidth: 320,
             client: .init(
                 capture: {
                     await harness.capture(paneID: $0, budget: $1)
@@ -213,7 +213,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         let session = GhosttyPanePreviewSession(
             leafIDs: [paneID, paneID, paneID],
             scale: 1,
-            previewSizing: .windowGrid(availableWidth: 320),
+            previewAvailableWidth: 320,
             client: .init(
                 capture: {
                     await harness.capture(paneID: $0, budget: $1)
@@ -234,7 +234,7 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         let session = GhosttyPanePreviewSession(
             leafIDs: [paneID],
             scale: 1,
-            previewSizing: .windowGrid(availableWidth: 320),
+            previewAvailableWidth: 320,
             client: .init(
                 capture: {
                     await harness.capture(paneID: $0, budget: $1)
