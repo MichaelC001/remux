@@ -21,6 +21,53 @@ final class PanePreviewLayoutTests: XCTestCase {
         XCTAssertEqual(budget.height, 360)
     }
 
+    func testBothPickersUseTheSameLandscapeContentBudget() {
+        let availableHeight: CGFloat = 393
+        let maximumContentHeight = TerminalSelectionSheetLayout.maximumContentHeight(
+            availableHeight: availableHeight
+        )
+        let windowHeight = PanePreviewLayout.gridIdealHeight(
+            itemCount: 100,
+            metrics: PanePreviewLayout.windowMetrics(availableWidth: 361),
+            maximumContentHeight: maximumContentHeight
+        )
+        let paneHeight = PanePreviewLayout.panePickerMetrics(
+            itemCount: 100,
+            availableWidth: 361,
+            maximumContentHeight: maximumContentHeight
+        ).visibleContentHeight
+
+        XCTAssertEqual(
+            maximumContentHeight + TerminalSelectionSheetLayout.fixedChromeHeight,
+            availableHeight
+        )
+        XCTAssertEqual(windowHeight, maximumContentHeight)
+        XCTAssertEqual(paneHeight, maximumContentHeight)
+        XCTAssertEqual(
+            TerminalSelectionSheetLayout.sheetHeight(contentHeight: windowHeight),
+            availableHeight
+        )
+        XCTAssertEqual(
+            TerminalSelectionSheetLayout.sheetHeight(contentHeight: paneHeight),
+            availableHeight
+        )
+    }
+
+    func testWindowGridPreservesItsPartialNextRowAffordanceWithinTheBudget() {
+        let metrics = PanePreviewLayout.windowMetrics(availableWidth: 361)
+        let expectedHeight = metrics.tilePointSize.height
+            + metrics.gridSpacing
+            + metrics.tilePointSize.height * 0.5
+        let height = PanePreviewLayout.gridIdealHeight(
+            itemCount: 5,
+            metrics: metrics,
+            maximumContentHeight: 320
+        )
+
+        XCTAssertEqual(height, expectedHeight)
+        XCTAssertLessThanOrEqual(height, 320)
+    }
+
     func testPanePickerUsesUniformTwoColumnCardsAndCapsDenseContent() {
         let metrics = PanePreviewLayout.panePickerMetrics(
             itemCount: 10,

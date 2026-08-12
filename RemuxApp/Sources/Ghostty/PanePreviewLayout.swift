@@ -69,25 +69,32 @@ enum PanePreviewLayout {
     /// rather than hiding part of the final row. Only grids larger than the
     /// budget scroll, showing complete rows plus half of the next tile so
     /// the cut is an unmistakable scroll affordance.
-    @MainActor
-    static func gridIdealHeight(itemCount: Int, metrics: Metrics) -> CGFloat {
+    static func gridIdealHeight(
+        itemCount: Int,
+        metrics: Metrics,
+        maximumContentHeight: CGFloat
+    ) -> CGFloat {
         let fullHeight = metrics.gridHeight(itemCount: itemCount)
-        let budget = UIScreen.main.bounds.height * 0.72
+        let budget = max(0, maximumContentHeight)
         guard fullHeight > budget else { return fullHeight }
+        guard budget > 0 else { return 0 }
 
         let tile = metrics.tilePointSize.height
         let spacing = metrics.gridSpacing
         let peek = tile * 0.5
 
-        func height(fullRows: Int) -> CGFloat {
-            CGFloat(fullRows) * tile + CGFloat(fullRows - 1) * spacing + spacing + peek
+        func completedHeight(rows: Int) -> CGFloat {
+            CGFloat(rows) * tile + CGFloat(max(0, rows - 1)) * spacing
         }
 
-        var rows = 1
-        while height(fullRows: rows + 1) <= budget {
+        var rows = 0
+        while completedHeight(rows: rows + 1) <= budget {
             rows += 1
         }
-        return min(height(fullRows: rows), fullHeight)
+        guard rows > 0 else { return budget }
+
+        let heightWithPeek = completedHeight(rows: rows) + spacing + peek
+        return min(heightWithPeek, fullHeight, budget)
     }
 
     private static let defaultSheetContentWidth: CGFloat = 361
@@ -120,15 +127,6 @@ enum PanePreviewLayout {
         return width.isFinite && width > 0 ? width : defaultSheetContentWidth
     }
 
-    @MainActor
-    static func panePickerMetricsForCurrentScreen(itemCount: Int) -> PanePickerMetrics {
-        panePickerMetrics(
-            itemCount: itemCount,
-            availableWidth: currentSheetContentWidth(),
-            maximumContentHeight: UIScreen.main.bounds.height * 0.68
-        )
-    }
-
     static func panePickerMetrics(
         itemCount: Int,
         availableWidth: CGFloat,
@@ -159,7 +157,7 @@ enum PanePreviewLayout {
             columnCount: panePickerColumnCount,
             gridSpacing: panePickerGridSpacing,
             sectionSpacing: panePickerSectionSpacing,
-            visibleContentHeight: min(maximumContentHeight, fullContentHeight)
+            visibleContentHeight: min(max(0, maximumContentHeight), fullContentHeight)
         )
     }
 

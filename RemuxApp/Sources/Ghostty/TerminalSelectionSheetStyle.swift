@@ -30,14 +30,27 @@ enum TerminalSelectionSheetLayout {
     static let actionBarHeight: CGFloat = 44
     static let actionsBottomPadding: CGFloat = 8
 
+    static var fixedChromeHeight: CGFloat {
+        headerTopPadding
+            + headerHeight
+            + headerBottomPadding
+            + contextHeight
+            + contextToContentSpacing
+            + contentToActionsSpacing
+            + actionBarHeight
+            + actionsBottomPadding
+    }
+
+    static func maximumContentHeight(availableHeight: CGFloat) -> CGFloat {
+        guard availableHeight.isFinite else { return 0 }
+        return max(0, availableHeight - fixedChromeHeight)
+    }
+
     /// The `.height()` detent excludes the bottom safe area (verified by
     /// measurement: adding it produced exactly one safe-area of slack), so
     /// the sum covers only the content rows the scaffold lays out.
-    static func sheetHeight(gridHeight: CGFloat) -> CGFloat {
-        headerTopPadding + headerHeight + headerBottomPadding
-            + contextHeight + contextToContentSpacing
-            + gridHeight
-            + contentToActionsSpacing + actionBarHeight + actionsBottomPadding
+    static func sheetHeight(contentHeight: CGFloat) -> CGFloat {
+        fixedChromeHeight + max(0, contentHeight)
     }
 }
 

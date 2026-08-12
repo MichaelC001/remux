@@ -31,6 +31,7 @@ struct GhosttyWindowSelectionSheet: View {
 
     let projection: GhosttyWindowSelectionSheetRenderProjection
     let sessionName: String
+    let contentHeight: CGFloat
     let commandFailureMessage: String?
     let onCreateWindow: (() -> Void)?
     let onSelect: (UUID) -> Void
@@ -50,6 +51,7 @@ struct GhosttyWindowSelectionSheet: View {
                     layout: layout
                 )
             }
+            .frame(height: contentHeight)
             .accessibilityIdentifier("terminal.windows.scroll")
             .contentMargins(.horizontal, 16, for: .scrollContent)
         } actions: {
@@ -200,6 +202,7 @@ struct GhosttyPaneSelectionSheet: View {
     @State private var pendingContextAction: GhosttyPaneRemovalRequest?
 
     let projection: GhosttyPaneSelectionSheetRenderProjection
+    let contentHeight: CGFloat
     let commandFailureMessage: String?
     let onSplitPane: (() -> Void)?
     let onStackPane: (() -> Void)?
@@ -296,8 +299,10 @@ struct GhosttyPaneSelectionSheet: View {
     }
 
     private var panePicker: some View {
-        let metrics = PanePreviewLayout.panePickerMetricsForCurrentScreen(
-            itemCount: projection.paneCount
+        let metrics = PanePreviewLayout.panePickerMetrics(
+            itemCount: projection.paneCount,
+            availableWidth: PanePreviewLayout.currentSheetContentWidth(),
+            maximumContentHeight: contentHeight
         )
         let topology = paneTopologyMetrics(
             size: GhosttyPaneTopologyDiagram.contentSize(for: metrics.topologySize)

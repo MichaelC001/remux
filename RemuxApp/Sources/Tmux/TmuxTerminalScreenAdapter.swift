@@ -656,7 +656,26 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
               let currentSurfaceID = session?.surfacesByPaneID[paneID]?.instanceID.rawValue
         else { return false }
 
-        switch preview.source {
+        return Self.previewSourceIsCurrent(
+            preview.source,
+            currentSurfaceID: currentSurfaceID,
+            pane: pane,
+            window: window,
+            viewportMetrics: latestViewportMeasurement?.displayMetrics(
+                columns: window.width,
+                rows: window.height
+            )
+        )
+    }
+
+    static func previewSourceIsCurrent(
+        _ source: GhosttyPanePreviewSession.PreviewSource,
+        currentSurfaceID: UUID,
+        pane: TmuxSessionController.PaneInfo,
+        window: TmuxSessionController.WindowInfo,
+        viewportMetrics: GhosttySurfaceDisplayMetrics?
+    ) -> Bool {
+        switch source {
         case .paneGeometry(let provenance):
             return provenance.surfaceID == currentSurfaceID
                 && pane.width == provenance.columns
@@ -664,14 +683,11 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         case .fullViewport(let provenance):
             guard provenance.surfaceID == currentSurfaceID,
                   window.zoomed,
-                  window.activePaneID == paneID,
-                  let metrics = latestViewportMeasurement?.displayMetrics(
-                      columns: window.width,
-                      rows: window.height
-                  )
+                  window.activePaneID == pane.id,
+                  let viewportMetrics
             else { return false }
-            return metrics.pixelWidth == provenance.pixelWidth
-                && metrics.pixelHeight == provenance.pixelHeight
+            return viewportMetrics.pixelWidth == provenance.pixelWidth
+                && viewportMetrics.pixelHeight == provenance.pixelHeight
         }
     }
 
