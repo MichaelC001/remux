@@ -740,7 +740,7 @@ final class RemuxAppUITests: XCTestCase {
         let panes = app.buttons["terminal.panes"]
         XCTAssertTrue(panes.waitForExistence(timeout: 10))
         panes.tap()
-        let split = app.buttons["Split"]
+        let split = app.buttons["terminal.pane.split.right"]
         XCTAssertTrue(split.waitForExistence(timeout: 8))
         split.tap()
         RunLoop.current.run(until: Date().addingTimeInterval(5))
@@ -877,7 +877,7 @@ final class RemuxAppUITests: XCTestCase {
         let panes = app.buttons["terminal.panes"]
         XCTAssertTrue(panes.waitForExistence(timeout: 10))
         panes.tap()
-        XCTAssertTrue(app.buttons["Split"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["terminal.pane.split.right"].waitForExistence(timeout: 8))
         dismissTopSheetIfPresent()
 
         let windows = app.buttons["terminal.windows"]
@@ -905,7 +905,7 @@ final class RemuxAppUITests: XCTestCase {
         )
 
         openPanesSheet()
-        tapPickerButton(identifier: "terminal.pane.split", fallbackLabel: "Split")
+        tapPickerButton(identifier: "terminal.pane.split.right", fallbackLabel: "Split right")
         waitForLiveTerminalReady(timeout: 30)
 
         sendTerminalCommand(
@@ -1164,7 +1164,7 @@ final class RemuxAppUITests: XCTestCase {
         waitForLiveTerminalReady(timeout: 30)
 
         openPanesSheet()
-        tapPickerButton(identifier: "terminal.pane.split", fallbackLabel: "Split")
+        tapPickerButton(identifier: "terminal.pane.split.right", fallbackLabel: "Split right")
         waitForLiveTerminalReady(timeout: 30)
 
         openPanesSheet()
@@ -1404,7 +1404,7 @@ final class RemuxAppUITests: XCTestCase {
         openPanesSheet()
         XCTAssertTrue(waitForPanePickerTileCount(1, timeout: 10))
 
-        tapPickerButton(identifier: "terminal.pane.stack", fallbackLabel: "Stack")
+        tapPickerButton(identifier: "terminal.pane.split.down", fallbackLabel: "Split down")
         waitForLiveTerminalReady(timeout: 30)
 
         openPanesSheet()
@@ -1591,7 +1591,7 @@ final class RemuxAppUITests: XCTestCase {
         waitForLiveTerminalReady(timeout: 90)
 
         openPanesSheet()
-        tapPickerButton(identifier: "terminal.pane.split", fallbackLabel: "Split")
+        tapPickerButton(identifier: "terminal.pane.split.right", fallbackLabel: "Split right")
         waitForLiveTerminalReady(timeout: 30)
 
         openPanesSheet()
@@ -3586,8 +3586,8 @@ final class RemuxAppUITests: XCTestCase {
             waitForAnyPickerElement(
                 [
                     elementWithIdentifier("terminal.panes.sheet"),
-                    app.buttons["terminal.pane.split"],
-                    app.buttons["Split"],
+                    app.buttons["terminal.pane.split.right"],
+                    app.buttons["Split right"],
                 ],
                 timeout: 8
             ),
@@ -3603,8 +3603,8 @@ final class RemuxAppUITests: XCTestCase {
 
     private var panePickerIsOpen: Bool {
         elementWithIdentifier("terminal.panes.sheet").exists
-            || app.buttons["terminal.pane.split"].exists
-            || app.buttons["Split"].exists
+            || app.buttons["terminal.pane.split.right"].exists
+            || app.buttons["Split right"].exists
     }
 
     private func tapPickerButton(identifier: String, fallbackLabel: String) {
