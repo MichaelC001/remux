@@ -2083,11 +2083,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             )
         case .panes(let topLevelID, _):
             let projection = model.paneSelectionSheetRenderProjection(topLevelID: topLevelID)
-            gridHeight = projection.windowGrid.flatMap {
-                PanePreviewLayout.paneMapMetricsForCurrentScreen(
-                    windowGrid: $0
-                )?.size.height
-            } ?? 160
+            gridHeight = PanePreviewLayout.panePickerMetricsForCurrentScreen(
+                itemCount: projection.paneCount
+            ).visibleContentHeight
         }
         return TerminalSelectionSheetLayout.sheetHeight(gridHeight: gridHeight)
     }

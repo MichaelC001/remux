@@ -1,8 +1,7 @@
 import CoreGraphics
 import UIKit
 
-/// Single source of truth for window-preview and proportional pane-map
-/// geometry plus their physical capture budgets.
+/// Single source of truth for terminal preview geometry and capture budgets.
 ///
 /// Used by:
 /// - `GhosttyPanePreviewSession` for the local image budget
@@ -12,16 +11,39 @@ import UIKit
 /// sheet is open does not justify reissuing previews; we keep the originally
 /// requested image regardless.
 enum PanePreviewLayout {
-    struct PaneMapMetrics: Equatable {
-        let size: CGSize
-        let cellSize: CGSize
+    struct TopologyPane: Equatable {
+        let id: UUID
+        let frame: GhosttyTerminalGridRect
+    }
 
-        func frame(for pane: GhosttyTerminalGridRect) -> CGRect {
-            CGRect(
-                x: CGFloat(pane.x) * cellSize.width,
-                y: CGFloat(pane.y) * cellSize.height,
-                width: CGFloat(pane.columns) * cellSize.width,
-                height: CGFloat(pane.rows) * cellSize.height
+    struct TopologyMetrics: Equatable {
+        let framesByPaneID: [UUID: CGRect]
+        let orderedPaneIDs: [UUID]
+
+        func frame(for paneID: UUID) -> CGRect? {
+            framesByPaneID[paneID]
+        }
+    }
+
+    struct PanePickerMetrics: Equatable {
+        let topologySize: CGSize
+        let cardSize: CGSize
+        let columnCount: Int
+        let gridSpacing: CGFloat
+        let sectionSpacing: CGFloat
+        let visibleContentHeight: CGFloat
+
+        func gridHeight(itemCount: Int) -> CGFloat {
+            guard itemCount > 0 else { return 0 }
+            let rows = (itemCount + columnCount - 1) / columnCount
+            return CGFloat(rows) * cardSize.height
+                + CGFloat(rows - 1) * gridSpacing
+        }
+
+        func cardViewportHeight(itemCount: Int) -> CGFloat {
+            min(
+                gridHeight(itemCount: itemCount),
+                max(1, visibleContentHeight - topologySize.height - sectionSpacing)
             )
         }
     }
@@ -29,9 +51,10 @@ enum PanePreviewLayout {
     struct Metrics: Equatable {
         let columnCount: Int
         let tilePointSize: CGSize
-        let previewPointSize: CGSize
+        /// Snapshot budget remains independent from the visual card size.
+        /// Card chrome can change without increasing renderer work.
+        let capturePointSize: CGSize
         let gridSpacing: CGFloat
-        let tilePadding: CGFloat
 
         func gridHeight(itemCount: Int) -> CGFloat {
             guard itemCount > 0 else { return 0 }
@@ -70,15 +93,18 @@ enum PanePreviewLayout {
     private static let defaultSheetContentWidth: CGFloat = 361
     private static let sheetHorizontalPadding: CGFloat = 32
     private static let defaultPreviewAspectRatio: CGFloat = 4.0 / 3.0
-    private static let tilePadding: CGFloat = 8
-    private static let windowCaptionHeight: CGFloat = 30
-    private static let tileCaptionSpacing: CGFloat = 6
+    private static let previewCaptureHorizontalInset: CGFloat = 8
+    private static let previewCardHeightRatio: CGFloat = 1.10
 
     /// Window grid uses a fixed two-column layout. The "New Window" affordance
     /// is a fixed sheet action, not a trailing grid cell, so dense sessions can
     /// scroll windows without hiding the create command.
     private static let windowGridColumnCount: Int = 2
     private static let windowGridSpacing: CGFloat = 10
+
+    private static let panePickerColumnCount: Int = 2
+    private static let panePickerGridSpacing: CGFloat = 10
+    private static let panePickerSectionSpacing: CGFloat = 12
 
     /// Display scale captured once at session init. Avoids touching
     /// UIScreen.main during request construction or rendering.
@@ -94,54 +120,69 @@ enum PanePreviewLayout {
         return width.isFinite && width > 0 ? width : defaultSheetContentWidth
     }
 
-    static func paneMapMetrics(
-        windowGrid: GhosttyTerminalGridSize,
+    @MainActor
+    static func panePickerMetricsForCurrentScreen(itemCount: Int) -> PanePickerMetrics {
+        panePickerMetrics(
+            itemCount: itemCount,
+            availableWidth: currentSheetContentWidth(),
+            maximumContentHeight: UIScreen.main.bounds.height * 0.68
+        )
+    }
+
+    static func panePickerMetrics(
+        itemCount: Int,
         availableWidth: CGFloat,
-        maximumHeight: CGFloat
-    ) -> PaneMapMetrics? {
-        guard windowGrid.columns > 0, windowGrid.rows > 0,
-              availableWidth.isFinite, availableWidth > 0,
-              maximumHeight.isFinite, maximumHeight > 0
+        maximumContentHeight: CGFloat
+    ) -> PanePickerMetrics {
+        let safeWidth = max(1, availableWidth)
+        let totalGridSpacing = CGFloat(panePickerColumnCount - 1) * panePickerGridSpacing
+        let cardWidth = max(
+            1,
+            floor((safeWidth - totalGridSpacing) / CGFloat(panePickerColumnCount))
+        )
+        let cardHeight = ceil(cardWidth * previewCardHeightRatio)
+        let topologyHeight = min(112, max(88, safeWidth * 0.28))
+        let topologySize = CGSize(width: safeWidth, height: topologyHeight)
+        let rows = max(0, (itemCount + panePickerColumnCount - 1) / panePickerColumnCount)
+        let fullGridHeight: CGFloat = if rows == 0 {
+            0
+        } else {
+            CGFloat(rows) * cardHeight
+                + CGFloat(rows - 1) * panePickerGridSpacing
+        }
+        let fullContentHeight = topologyHeight
+            + (rows == 0 ? 0 : panePickerSectionSpacing + fullGridHeight)
+
+        return PanePickerMetrics(
+            topologySize: topologySize,
+            cardSize: CGSize(width: cardWidth, height: cardHeight),
+            columnCount: panePickerColumnCount,
+            gridSpacing: panePickerGridSpacing,
+            sectionSpacing: panePickerSectionSpacing,
+            visibleContentHeight: min(maximumContentHeight, fullContentHeight)
+        )
+    }
+
+    static func topologyMetrics(
+        panes: [TopologyPane],
+        size: CGSize
+    ) -> TopologyMetrics? {
+        guard size.width.isFinite, size.width > 0,
+              size.height.isFinite, size.height > 0,
+              let topology = PaneTopology(panes: panes)
         else { return nil }
 
-        let side = min(availableWidth, maximumHeight)
-        guard side.isFinite, side > 0 else { return nil }
-
-        return PaneMapMetrics(
-            size: CGSize(width: side, height: side),
-            cellSize: CGSize(
-                width: side / CGFloat(windowGrid.columns),
-                height: side / CGFloat(windowGrid.rows)
-            )
+        var framesByPaneID: [UUID: CGRect] = [:]
+        topology.place(
+            in: CGRect(origin: .zero, size: size),
+            framesByPaneID: &framesByPaneID
         )
-    }
-
-    @MainActor
-    static func paneMapMetricsForCurrentScreen(
-        windowGrid: GhosttyTerminalGridSize
-    ) -> PaneMapMetrics? {
-        paneMapMetrics(
-            windowGrid: windowGrid,
-            availableWidth: currentSheetContentWidth(),
-            maximumHeight: currentPaneMapMaximumHeight()
-        )
-    }
-
-    @MainActor
-    static func currentPaneMapMaximumHeight() -> CGFloat {
-        UIScreen.main.bounds.height * 0.54
-    }
-
-    static func paneMapPhysicalPixelBudget(
-        availableWidth: CGFloat,
-        maximumHeight: CGFloat,
-        scale: CGFloat
-    ) -> (width: UInt32, height: UInt32) {
-        let safeScale = max(scale, 1)
-        let side = min(availableWidth, maximumHeight)
-        return (
-            clampUInt32((side * safeScale).rounded(.up)),
-            clampUInt32((side * safeScale).rounded(.up))
+        var orderedPaneIDs: [UUID] = []
+        orderedPaneIDs.reserveCapacity(panes.count)
+        topology.appendPaneIDs(to: &orderedPaneIDs)
+        return TopologyMetrics(
+            framesByPaneID: framesByPaneID,
+            orderedPaneIDs: orderedPaneIDs
         )
     }
 
@@ -160,15 +201,14 @@ enum PanePreviewLayout {
             1,
             floor((safeAvailableWidth - totalGridSpacing) / CGFloat(columnCount))
         )
-        let previewWidth = max(1, tileWidth - tilePadding * 2)
-        let previewHeight = ceil(previewWidth / defaultPreviewAspectRatio)
-        let tileHeight = previewHeight + tileCaptionSpacing + windowCaptionHeight + tilePadding * 2
+        let captureWidth = max(1, tileWidth - previewCaptureHorizontalInset * 2)
+        let captureHeight = ceil(captureWidth / defaultPreviewAspectRatio)
+        let tileHeight = ceil(tileWidth * previewCardHeightRatio)
         return .init(
             columnCount: columnCount,
             tilePointSize: CGSize(width: tileWidth, height: tileHeight),
-            previewPointSize: CGSize(width: previewWidth, height: previewHeight),
-            gridSpacing: windowGridSpacing,
-            tilePadding: tilePadding
+            capturePointSize: CGSize(width: captureWidth, height: captureHeight),
+            gridSpacing: windowGridSpacing
         )
     }
 
@@ -178,8 +218,8 @@ enum PanePreviewLayout {
     ) -> (width: UInt32, height: UInt32) {
         let metrics = windowMetrics(availableWidth: availableWidth)
         let safeScale = max(scale, 1)
-        let widthPx = (metrics.previewPointSize.width * safeScale).rounded(.up)
-        let heightPx = (metrics.previewPointSize.height * safeScale).rounded(.up)
+        let widthPx = (metrics.capturePointSize.width * safeScale).rounded(.up)
+        let heightPx = (metrics.capturePointSize.height * safeScale).rounded(.up)
         return (
             clampUInt32(widthPx),
             clampUInt32(heightPx)
@@ -190,5 +230,139 @@ enum PanePreviewLayout {
         guard value.isFinite, value > 0 else { return 1 }
         let clamped = min(value, CGFloat(UInt32.max))
         return max(1, UInt32(clamped))
+    }
+
+    private indirect enum PaneTopology {
+        case pane(UUID)
+        case split(Axis, PaneTopology, PaneTopology)
+
+        enum Axis {
+            case horizontal
+            case vertical
+        }
+
+        init?(panes: [TopologyPane]) {
+            guard !panes.isEmpty else { return nil }
+            if panes.count == 1 {
+                self = .pane(panes[0].id)
+                return
+            }
+
+            if let groups = Self.partition(panes, axis: .horizontal),
+               let first = PaneTopology(panes: groups.0),
+               let second = PaneTopology(panes: groups.1) {
+                self = .split(.horizontal, first, second)
+                return
+            }
+            if let groups = Self.partition(panes, axis: .vertical),
+               let first = PaneTopology(panes: groups.0),
+               let second = PaneTopology(panes: groups.1) {
+                self = .split(.vertical, first, second)
+                return
+            }
+            return nil
+        }
+
+        private var paneCount: Int {
+            switch self {
+            case .pane:
+                1
+            case .split(_, let first, let second):
+                first.paneCount + second.paneCount
+            }
+        }
+
+        func place(
+            in frame: CGRect,
+            framesByPaneID: inout [UUID: CGRect]
+        ) {
+            switch self {
+            case .pane(let id):
+                framesByPaneID[id] = frame
+
+            case .split(let axis, let first, let second):
+                let firstFraction = CGFloat(first.paneCount) / CGFloat(paneCount)
+                let firstFrame: CGRect
+                let secondFrame: CGRect
+                switch axis {
+                case .horizontal:
+                    let firstWidth = frame.width * firstFraction
+                    firstFrame = CGRect(
+                        x: frame.minX,
+                        y: frame.minY,
+                        width: firstWidth,
+                        height: frame.height
+                    )
+                    secondFrame = CGRect(
+                        x: firstFrame.maxX,
+                        y: frame.minY,
+                        width: frame.width - firstWidth,
+                        height: frame.height
+                    )
+
+                case .vertical:
+                    let firstHeight = frame.height * firstFraction
+                    firstFrame = CGRect(
+                        x: frame.minX,
+                        y: frame.minY,
+                        width: frame.width,
+                        height: firstHeight
+                    )
+                    secondFrame = CGRect(
+                        x: frame.minX,
+                        y: firstFrame.maxY,
+                        width: frame.width,
+                        height: frame.height - firstHeight
+                    )
+                }
+                first.place(in: firstFrame, framesByPaneID: &framesByPaneID)
+                second.place(in: secondFrame, framesByPaneID: &framesByPaneID)
+            }
+        }
+
+        func appendPaneIDs(to paneIDs: inout [UUID]) {
+            switch self {
+            case .pane(let id):
+                paneIDs.append(id)
+            case .split(_, let first, let second):
+                first.appendPaneIDs(to: &paneIDs)
+                second.appendPaneIDs(to: &paneIDs)
+            }
+        }
+
+        private static func partition(
+            _ panes: [TopologyPane],
+            axis: Axis
+        ) -> ([TopologyPane], [TopologyPane])? {
+            let sorted = panes.sorted {
+                axis == .horizontal
+                    ? $0.frame.x < $1.frame.x
+                    : $0.frame.y < $1.frame.y
+            }
+            for index in 1..<sorted.count {
+                let first = Array(sorted[..<index])
+                let second = Array(sorted[index...])
+                let firstEnd = first.map {
+                    axis == .horizontal ? $0.maxX : $0.maxY
+                }.max() ?? 0
+                let secondStart = second.map {
+                    axis == .horizontal ? $0.frame.x : $0.frame.y
+                }.min() ?? 0
+                if firstEnd < UInt64(secondStart) {
+                    return (first, second)
+                }
+            }
+            return nil
+        }
+    }
+}
+
+private extension PanePreviewLayout.TopologyPane {
+    var maxX: UInt64 {
+        UInt64(frame.x) + UInt64(frame.columns)
+    }
+
+    var maxY: UInt64 {
+        UInt64(frame.y) + UInt64(frame.rows)
     }
 }
