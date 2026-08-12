@@ -693,7 +693,7 @@ private struct GhosttyPreviewIndexBadge: View {
             .background(
                 isSelected
                     ? chromeStyle.accent
-                    : TerminalSelectionSheetPalette.controlFill,
+                    : Color(uiColor: .secondarySystemBackground).opacity(0.84),
                 in: RoundedRectangle(cornerRadius: 8, style: .continuous)
             )
             .overlay {
