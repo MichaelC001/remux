@@ -24,6 +24,7 @@ enum GhosttySurfaceSelectionSheet: Identifiable {
 }
 
 struct GhosttyWindowSelectionSheet: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
     @ObservedObject var session: GhosttyPanePreviewSession
     @State private var pendingRemoval: GhosttyWindowRemovalRequest?
@@ -39,26 +40,46 @@ struct GhosttyWindowSelectionSheet: View {
     var body: some View {
         let layout = PanePreviewLayout.windowMetricsForCurrentScreen()
 
-        TerminalSelectionSheetScaffold(
-            title: "Windows",
-            context: "\(sessionName) · \(projection.windows.count) \(projection.windows.count == 1 ? "window" : "windows")",
-            closeAccessibilityIdentifier: "terminal.windows.close"
-        ) {
-            ScrollView(showsIndicators: false) {
-                windowGrid(
-                    windows: projection.windows,
-                    layout: layout
+        NavigationStack {
+            TerminalSelectionSheetContent(
+                context: "\(sessionName) · \(projection.windows.count) \(projection.windows.count == 1 ? "window" : "windows")"
+            ) {
+                ScrollView(showsIndicators: false) {
+                    windowGrid(
+                        windows: projection.windows,
+                        layout: layout
+                    )
+                }
+                .frame(
+                    height: PanePreviewLayout.gridIdealHeight(
+                        itemCount: projection.windows.count,
+                        metrics: layout
+                    )
+                )
+                .accessibilityIdentifier("terminal.windows.scroll")
+                .contentMargins(.horizontal, 16, for: .scrollContent)
+            } actions: {
+                TerminalSelectionSheetActionButton(
+                    title: "New Window",
+                    systemName: "plus",
+                    accessibilityIdentifier: "terminal.window.new",
+                    action: onCreateWindow
                 )
             }
-            .accessibilityIdentifier("terminal.windows.scroll")
-            .contentMargins(.horizontal, 16, for: .scrollContent)
-        } actions: {
-            TerminalSelectionSheetActionButton(
-                title: "New Window",
-                systemName: "plus",
-                accessibilityIdentifier: "terminal.window.new",
-                action: onCreateWindow
-            )
+            .navigationTitle("Windows")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        Haptic.tap()
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .accessibilityLabel("Close Windows")
+                    .accessibilityIdentifier("terminal.windows.close")
+                }
+            }
         }
         .task(id: session.id) {
             session.reconcile(leafIDs: projection.previewLeafIDs)
@@ -194,6 +215,7 @@ struct GhosttyWindowSelectionSheet: View {
 }
 
 struct GhosttyPaneSelectionSheet: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.ghosttyTerminalChromeStyle) private var chromeStyle
     @ObservedObject var session: GhosttyPanePreviewSession
     @State private var pendingRemoval: GhosttyPaneRemovalRequest?
@@ -208,47 +230,61 @@ struct GhosttyPaneSelectionSheet: View {
     let onRemovePane: (UUID) -> Void
 
     var body: some View {
-        TerminalSelectionSheetScaffold(
-            title: "Panes",
-            context: "\(projection.paneCount) \(projection.paneCount == 1 ? "pane" : "panes")",
-            closeAccessibilityIdentifier: "terminal.panes.close"
-        ) {
-            panePicker
-                .padding(.horizontal, 16)
-        } actions: {
-            HStack(spacing: 0) {
-                GhosttyPaneSheetActionButton(
-                    title: "Split",
-                    systemName: "arrow.right",
-                    accessibilityLabel: "Split right",
-                    accessibilityIdentifier: "terminal.pane.split.right",
-                    action: onSplitPane
-                )
+        NavigationStack {
+            TerminalSelectionSheetContent(
+                context: "\(projection.paneCount) \(projection.paneCount == 1 ? "pane" : "panes")"
+            ) {
+                panePicker
+                    .padding(.horizontal, 16)
+            } actions: {
+                HStack(spacing: 0) {
+                    GhosttyPaneSheetActionButton(
+                        title: "Split",
+                        systemName: "arrow.right",
+                        accessibilityLabel: "Split right",
+                        accessibilityIdentifier: "terminal.pane.split.right",
+                        action: onSplitPane
+                    )
 
-                GhosttyPaneSheetControlDivider()
-
-                GhosttyPaneSheetActionButton(
-                    title: "Split",
-                    systemName: "arrow.down",
-                    accessibilityLabel: "Split down",
-                    accessibilityIdentifier: "terminal.pane.split.down",
-                    action: onStackPane
-                )
-
-                if projection.paneCount > 1 {
                     GhosttyPaneSheetControlDivider()
 
-                    GhosttyPaneSheetZoomControl(
-                        isOn: Binding(
-                            get: { projection.isServerZoomed },
-                            set: { zoomed in onSetZoomed(zoomed) }
-                        ),
-                        accent: chromeStyle.accent
+                    GhosttyPaneSheetActionButton(
+                        title: "Split",
+                        systemName: "arrow.down",
+                        accessibilityLabel: "Split down",
+                        accessibilityIdentifier: "terminal.pane.split.down",
+                        action: onStackPane
                     )
+
+                    if projection.paneCount > 1 {
+                        GhosttyPaneSheetControlDivider()
+
+                        GhosttyPaneSheetZoomControl(
+                            isOn: Binding(
+                                get: { projection.isServerZoomed },
+                                set: { zoomed in onSetZoomed(zoomed) }
+                            ),
+                            accent: chromeStyle.accent
+                        )
+                    }
+                }
+                .frame(height: TerminalSelectionSheetLayout.actionBarHeight)
+                .terminalSelectionSheetControlGroupSurface()
+            }
+            .navigationTitle("Panes")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        Haptic.tap()
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .accessibilityLabel("Close Panes")
+                    .accessibilityIdentifier("terminal.panes.close")
                 }
             }
-            .frame(height: TerminalSelectionSheetLayout.actionBarHeight)
-            .terminalSelectionSheetControlGroupSurface()
         }
         .task(id: session.id) {
             // First-render reconcile closes the gap between tap-time session

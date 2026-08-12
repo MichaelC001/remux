@@ -16,27 +16,35 @@ enum TerminalSelectionSheetPalette {
     }
 }
 
-/// Single source of truth for selector-sheet chrome heights. The scaffold
-/// lays its rows out from these tokens and `sheetHeight` sums the same
-/// tokens for the presentation detent, so the sheet always cleanly fits
-/// its content: the views and the height math cannot drift apart.
+/// Shared selector-sheet content geometry beneath system-owned navigation
+/// chrome. Preview regions own their bounded viewport heights; the sheet
+/// derives its presentation size from this content instead of duplicating
+/// the navigation bar's geometry in detent arithmetic.
 enum TerminalSelectionSheetLayout {
-    static let headerTopPadding: CGFloat = 14
-    static let headerHeight: CGFloat = 36
-    static let headerBottomPadding: CGFloat = 12
+    /// Standard iPhone sheet detents place root content eight points below
+    /// the native navigation bar. Custom-height detents don't inherit that
+    /// inset, so fitted selectors supply the same boundary explicitly.
+    static let navigationToContextSpacing: CGFloat = 8
     static let contextHeight: CGFloat = 16
     static let contextToContentSpacing: CGFloat = 12
     static let contentToActionsSpacing: CGFloat = 16
     static let actionBarHeight: CGFloat = 44
     static let actionsBottomPadding: CGFloat = 8
 
-    /// The `.height()` detent excludes the bottom safe area (verified by
-    /// measurement: adding it produced exactly one safe-area of slack), so
-    /// the sum covers only the content rows the scaffold lays out.
-    static func sheetHeight(gridHeight: CGFloat) -> CGFloat {
-        headerTopPadding + headerHeight + headerBottomPadding
-            + contextHeight + contextToContentSpacing
-            + gridHeight
+    @MainActor
+    static func nativeNavigationBarHeight(width: CGFloat) -> CGFloat {
+        UINavigationBar().sizeThatFits(
+            CGSize(width: width, height: .greatestFiniteMagnitude)
+        ).height
+    }
+
+    static func sheetHeight(
+        contentHeight: CGFloat,
+        navigationBarHeight: CGFloat
+    ) -> CGFloat {
+        navigationBarHeight
+            + navigationToContextSpacing + contextHeight + contextToContentSpacing
+            + contentHeight
             + contentToActionsSpacing + actionBarHeight + actionsBottomPadding
     }
 }
@@ -58,85 +66,24 @@ struct TerminalSelectionSheetContextLabel: View {
     }
 }
 
-extension View {
-    func compactCircularChromeButtonLabel() -> some View {
-        self
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(TerminalSelectionSheetPalette.primary)
-            .frame(width: 36, height: 36)
-            .background(TerminalSelectionSheetPalette.controlFill, in: Circle())
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
-    }
-}
-
-struct TerminalSelectionSheetCloseButton: View {
-    let title: String
-    let accessibilityIdentifier: String
-    let action: () -> Void
-
-    var body: some View {
-        Button {
-            Haptic.tap()
-            action()
-        } label: {
-            Image(systemName: "xmark")
-                .compactCircularChromeButtonLabel()
-        }
-        .accessibilityLabel("Close \(title)")
-        .accessibilityIdentifier(accessibilityIdentifier)
-    }
-}
-
-/// Shared anatomy for the terminal selector sheets. Owns its header (title
-/// and close button) as plain content — no navigation bar — so the sheet's
-/// natural height is fully defined by views the app controls, which is what
-/// lets fitted presentation size the sheet to its content.
-struct TerminalSelectionSheetScaffold<Content: View, Actions: View>: View {
-    @Environment(\.dismiss) private var dismiss
-
-    let title: String
+/// Shared selector anatomy below a native navigation bar.
+struct TerminalSelectionSheetContent<Content: View, Actions: View>: View {
     let context: String
-    let closeAccessibilityIdentifier: String
     let content: Content
     let actions: Actions
 
     init(
-        title: String,
         context: String,
-        closeAccessibilityIdentifier: String,
         @ViewBuilder content: () -> Content,
         @ViewBuilder actions: () -> Actions
     ) {
-        self.title = title
         self.context = context
-        self.closeAccessibilityIdentifier = closeAccessibilityIdentifier
         self.content = content()
         self.actions = actions()
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                TerminalSelectionSheetCloseButton(
-                    title: title,
-                    accessibilityIdentifier: closeAccessibilityIdentifier,
-                    action: dismiss.callAsFunction
-                )
-
-                Spacer(minLength: 0)
-            }
-            .overlay {
-                Text(title)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(TerminalSelectionSheetPalette.primary)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 16)
-            .frame(height: TerminalSelectionSheetLayout.headerHeight)
-            .padding(.top, TerminalSelectionSheetLayout.headerTopPadding)
-            .padding(.bottom, TerminalSelectionSheetLayout.headerBottomPadding)
-
             VStack(alignment: .leading, spacing: TerminalSelectionSheetLayout.contextToContentSpacing) {
                 TerminalSelectionSheetContextLabel(text: context)
                     .padding(.horizontal, 16)
@@ -153,6 +100,7 @@ struct TerminalSelectionSheetScaffold<Content: View, Actions: View>: View {
                 .padding(.top, TerminalSelectionSheetLayout.contentToActionsSpacing)
                 .padding(.bottom, TerminalSelectionSheetLayout.actionsBottomPadding)
         }
+        .padding(.top, TerminalSelectionSheetLayout.navigationToContextSpacing)
     }
 }
 

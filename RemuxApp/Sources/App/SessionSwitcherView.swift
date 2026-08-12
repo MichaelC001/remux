@@ -168,7 +168,6 @@ struct SessionSwitcherView: View {
     var body: some View {
         NavigationStack(path: $path) {
             sessionList
-                .toolbar(.hidden, for: .navigationBar)
                 .navigationDestination(for: Route.self) { route in
                     switch route {
                     case .chooseServer:
@@ -200,11 +199,10 @@ struct SessionSwitcherView: View {
     }
 
     private var sessionList: some View {
-        TerminalSelectionSheetScaffold(
-            title: "Sessions",
-            context: sessionCountSummary,
-            closeAccessibilityIdentifier: "terminal.sessions.close"
-        ) {
+        VStack(alignment: .leading, spacing: 8) {
+            TerminalSelectionSheetContextLabel(text: sessionCountSummary)
+                .padding(.horizontal, 16)
+
             List {
                 Section {
                     ForEach(projection.activeSessions) { session in
@@ -255,7 +253,7 @@ struct SessionSwitcherView: View {
                             availableSessionsBrowserRow
                         }
                     } header: {
-                        SessionSwitcherSectionHeader(title: "Available")
+                        availableSessionsHeader
                     }
                 }
             }
@@ -265,40 +263,63 @@ struct SessionSwitcherView: View {
             .animation(.snappy, value: projection.availableSessions.map(\.id))
             .animation(.snappy, value: projection.recentSessions.map(\.id))
             .accessibilityIdentifier("terminal.sessions.list")
-        } actions: {
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             TerminalSelectionSheetActionButton(
                 title: "New Session…",
                 systemName: "plus",
                 accessibilityIdentifier: "terminal.sessions.new",
                 action: newSessionAction
             )
+            .frame(height: TerminalSelectionSheetLayout.actionBarHeight)
+            .padding(.horizontal, 16)
+            .padding(.top, TerminalSelectionSheetLayout.contentToActionsSpacing)
+            .padding(.bottom, TerminalSelectionSheetLayout.actionsBottomPadding)
         }
-        .overlay(alignment: .topTrailing) {
-            refreshButton
-                .padding(.top, 10)
-                .padding(.trailing, 16)
+        .navigationTitle("Sessions")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button {
+                    Haptic.tap()
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .accessibilityLabel("Close Sessions")
+                .accessibilityIdentifier("terminal.sessions.close")
+            }
         }
     }
 
-    private var refreshButton: some View {
-        Button {
-            Haptic.tap()
-            onRefresh()
-        } label: {
-            Group {
+    private var availableSessionsHeader: some View {
+        HStack(spacing: 8) {
+            SessionSwitcherSectionHeader(title: "Available")
+
+            Spacer(minLength: 0)
+
+            Button {
+                Haptic.tap()
+                onRefresh()
+            } label: {
                 if isRefreshing {
                     ProgressView()
                         .controlSize(.small)
-                        .tint(TerminalSelectionSheetPalette.primary)
+                        .tint(TerminalSelectionSheetPalette.secondary)
                 } else {
                     Image(systemName: "arrow.clockwise")
                 }
             }
-            .compactCircularChromeButtonLabel()
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(TerminalSelectionSheetPalette.secondary)
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .disabled(isRefreshing)
+            .accessibilityLabel(isRefreshing ? "Refreshing Available Sessions" : "Refresh Available Sessions")
+            .accessibilityIdentifier("terminal.sessions.refresh")
         }
-        .disabled(isRefreshing)
-        .accessibilityLabel(isRefreshing ? "Refreshing Sessions" : "Refresh Sessions")
-        .accessibilityIdentifier("terminal.sessions.refresh")
     }
 
     private var sessionCountSummary: String {
@@ -681,6 +702,8 @@ private struct AvailableSessionsBrowserView: View {
 
     var body: some View {
         List {
+            refreshRow
+
             if let failureMessage {
                 Label(failureMessage, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(TerminalSelectionSheetPalette.secondary)
@@ -720,26 +743,6 @@ private struct AvailableSessionsBrowserView: View {
         .navigationTitle("Available Sessions")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    Haptic.tap()
-                    onRefresh()
-                } label: {
-                    if isRefreshing {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                }
-                .disabled(isRefreshing)
-                .accessibilityLabel(
-                    isRefreshing ? "Refreshing Sessions" : "Refresh Sessions"
-                )
-                .accessibilityIdentifier("terminal.sessions.available-refresh")
-            }
-        }
         .searchable(
             text: $query,
             placement: .navigationBarDrawer(displayMode: .always),
@@ -747,6 +750,33 @@ private struct AvailableSessionsBrowserView: View {
         )
         .searchPresentationToolbarBehavior(.avoidHidingContent)
         .accessibilityIdentifier("terminal.sessions.available-browser-view")
+    }
+
+    private var refreshRow: some View {
+        Button {
+            Haptic.tap()
+            onRefresh()
+        } label: {
+            Label {
+                Text(isRefreshing ? "Checking Available Sessions…" : "Refresh Available Sessions")
+            } icon: {
+                if isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(TerminalSelectionSheetPalette.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isRefreshing)
+        .sessionSwitcherListRow(
+            accessibilityIdentifier: "terminal.sessions.available-refresh"
+        )
     }
 
     private var matchingSessions: [AvailableSessionSwitcherItem] {

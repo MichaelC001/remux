@@ -493,8 +493,6 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 completeKeyboardDidHide()
             }
             .sheet(item: selectionSheetBinding) { sheet in
-                // Every input to this height is independent of the sheet's
-                // current height: spec tokens and grid math from screen width.
                 selectionSheetContent(sheet)
                     .presentationDetents(
                         [.height(selectionSheetHeight(for: sheet))]
@@ -2074,20 +2072,27 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private func selectionSheetHeight(
         for sheet: GhosttySurfaceSelectionSheet
     ) -> CGFloat {
-        var gridHeight: CGFloat
+        let contentHeight: CGFloat
         switch sheet {
         case .windows:
-            gridHeight = PanePreviewLayout.gridIdealHeight(
+            contentHeight = PanePreviewLayout.gridIdealHeight(
                 itemCount: model.windowSelectionSheetRenderProjection().windows.count,
                 metrics: PanePreviewLayout.windowMetricsForCurrentScreen()
             )
         case .panes(let topLevelID, _):
             let projection = model.paneSelectionSheetRenderProjection(topLevelID: topLevelID)
-            gridHeight = PanePreviewLayout.panePickerMetricsForCurrentScreen(
+            contentHeight = PanePreviewLayout.panePickerMetricsForCurrentScreen(
                 itemCount: projection.paneCount
             ).visibleContentHeight
         }
-        return TerminalSelectionSheetLayout.sheetHeight(gridHeight: gridHeight)
+
+        let width = PanePreviewLayout.currentSheetContentWidth()
+        return TerminalSelectionSheetLayout.sheetHeight(
+            contentHeight: contentHeight,
+            navigationBarHeight: TerminalSelectionSheetLayout.nativeNavigationBarHeight(
+                width: width
+            )
+        )
     }
 
     @ViewBuilder
