@@ -200,6 +200,7 @@ final class TmuxSessionController: @unchecked Sendable {
             topologyRevisionAtSubmission: UInt64,
             onSuccess: (@Sendable () -> Void)?
         )
+        case viewportClaim
         case paneCurrentDirectory(
             @Sendable (Result<String, PaneCurrentDirectoryError>) -> Void
         )
@@ -219,6 +220,7 @@ final class TmuxSessionController: @unchecked Sendable {
     private var deferredNavigationIntent: NavigationIntent?
     private var deferredWindowZoomIntent: WindowZoomIntent?
     private var successfulMutationRequiredAfterRevision: UInt64?
+    private var viewportClaimAwaitingTopology = false
     private var topologyRevision: UInt64 = 0
     private var outboundSink: (@Sendable (Data) -> Void)?
     private var shuttingDown = false
@@ -309,6 +311,7 @@ final class TmuxSessionController: @unchecked Sendable {
             deferredNavigationIntent = nil
             deferredWindowZoomIntent = nil
             successfulMutationRequiredAfterRevision = nil
+            viewportClaimAwaitingTopology = false
             guard case .closed = state else {
                 publishState(.detached(.transportClosed))
                 return
@@ -327,6 +330,7 @@ final class TmuxSessionController: @unchecked Sendable {
             deferredNavigationIntent = nil
             deferredWindowZoomIntent = nil
             successfulMutationRequiredAfterRevision = nil
+            viewportClaimAwaitingTopology = false
             guard case .closed = state else {
                 publishState(.detached(nil))
                 return
@@ -346,6 +350,7 @@ final class TmuxSessionController: @unchecked Sendable {
             deferredNavigationIntent = nil
             deferredWindowZoomIntent = nil
             successfulMutationRequiredAfterRevision = nil
+            viewportClaimAwaitingTopology = false
             topology = nil
             clientSize = nil
             retainedPaneIDs.removeAll()
@@ -423,6 +428,7 @@ final class TmuxSessionController: @unchecked Sendable {
             deferredNavigationIntent = nil
             deferredWindowZoomIntent = nil
             successfulMutationRequiredAfterRevision = nil
+            viewportClaimAwaitingTopology = false
             let exit = action.value.exit
             let detail = decodeTmuxString(exit.detail)
             switch exit.reason {
@@ -483,6 +489,7 @@ final class TmuxSessionController: @unchecked Sendable {
         topology = snapshot
         topologyRevision &+= 1
         clearSatisfiedMutationBarrier()
+        clearSatisfiedViewportClaim()
 
         for paneID in removed {
             retainedPaneIDs.remove(paneID)
@@ -537,6 +544,10 @@ final class TmuxSessionController: @unchecked Sendable {
         preconditionOnWriterQueue()
         guard let outstanding = requestsByToken.removeValue(forKey: completion.token) else { return }
         switch outstanding {
+        case .viewportClaim:
+            viewportClaimAwaitingTopology = completion.status == GHOSTTY_TMUX_COMMAND_SUCCESS
+                && !activeViewportMatchesClientSize
+            return
         case .trackedInput(let completionHandler):
             let succeeded = completion.status == GHOSTTY_TMUX_COMMAND_SUCCESS
             if !succeeded {
@@ -638,6 +649,7 @@ final class TmuxSessionController: @unchecked Sendable {
                 DispatchQueue.main.async { self.callbacks.onRequestFailed(.sendInput) }
                 return
             }
+            _ = admitActiveViewportClaimIfNeeded()
             let result = bytes.withUnsafeBytes { buffer in
                 ghostty_tmux_client_send_pane_input(
                     client,
@@ -701,6 +713,7 @@ final class TmuxSessionController: @unchecked Sendable {
                 completion(false)
                 return
             }
+            _ = admitActiveViewportClaimIfNeeded()
             var token: UInt64 = 0
             let result = bytes.withUnsafeBytes { buffer in
                 let pointer = buffer.bindMemory(to: UInt8.self).baseAddress
@@ -734,25 +747,38 @@ final class TmuxSessionController: @unchecked Sendable {
         return true
     }
 
-    func setClientSize(cols: UInt32, rows: UInt32) {
+    func setClientSize(
+        cols: UInt32,
+        rows: UInt32,
+        claimActiveViewport: Bool = false
+    ) {
         guard cols > 0, rows > 0, cols <= UInt16.max, rows <= UInt16.max else {
             DispatchQueue.main.async { self.callbacks.onRequestFailed(.setClientSize) }
             return
         }
         let nextSize = ClientSize(cols: cols, rows: rows)
         queue.async { [self] in
-            guard clientSize != nextSize else { return }
-            guard admitCommandOnWriter(
-                command: "refresh-client -C \(cols)x\(rows)",
-                request: .setClientSize
-            ) else { return }
-            clientSize = nextSize
-            _ = drainOutbound()
+            var admittedWork = false
+            if clientSize != nextSize {
+                guard admitCommandOnWriter(
+                    command: "refresh-client -C \(cols)x\(rows)",
+                    request: .setClientSize
+                ) else { return }
+                clientSize = nextSize
+                admittedWork = true
+            }
+            if claimActiveViewport, admitActiveViewportClaimIfNeeded() {
+                admittedWork = true
+            }
+            if admittedWork { _ = drainOutbound() }
         }
     }
 
     func requestNewWindow() {
-        enqueue(command: "new-window", request: .newWindow)
+        queue.async { [self] in
+            _ = admitActiveViewportClaimIfNeeded()
+            enqueueOnWriter(command: "new-window", request: .newWindow, onSuccess: nil)
+        }
     }
 
     func requestSplit(
@@ -768,11 +794,14 @@ final class TmuxSessionController: @unchecked Sendable {
         case .down: "-v"
         }
         let zoomFlag = zoom ? " -Z" : ""
-        enqueue(
-            command: "split-window \(flags)\(zoomFlag) -t %\(paneID.rawValue)",
-            request: .splitPane,
-            onSuccess: onZoomCreated
-        )
+        queue.async { [self] in
+            _ = admitActiveViewportClaimIfNeeded()
+            enqueueOnWriter(
+                command: "split-window \(flags)\(zoomFlag) -t %\(paneID.rawValue)",
+                request: .splitPane,
+                onSuccess: onZoomCreated
+            )
+        }
     }
 
     func requestClosePane(paneID: TmuxPaneID) {
@@ -829,7 +858,28 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     func requestCopyMode(paneID: TmuxPaneID) {
-        enqueue(command: "copy-mode -t %\(paneID.rawValue)", request: .copyMode)
+        queue.async { [self] in
+            _ = admitActiveViewportClaimIfNeeded()
+            enqueueOnWriter(
+                command: "copy-mode -t %\(paneID.rawValue)",
+                request: .copyMode,
+                onSuccess: nil
+            )
+        }
+    }
+
+    func claimActiveViewportIfNeeded() {
+        queue.async { [self] in
+            guard admitActiveViewportClaimIfNeeded() else { return }
+            _ = drainOutbound()
+        }
+    }
+
+    func reclaimActiveViewport() {
+        queue.async { [self] in
+            guard admitActiveViewportClaim(force: true) else { return }
+            _ = drainOutbound()
+        }
     }
 
     func paneCurrentDirectory(for paneID: TmuxPaneID) async throws -> String {
@@ -874,6 +924,13 @@ final class TmuxSessionController: @unchecked Sendable {
               topologyRevision > requiredRevision
         else { return }
         successfulMutationRequiredAfterRevision = nil
+    }
+
+    private func clearSatisfiedViewportClaim() {
+        preconditionOnWriterQueue()
+        if activeViewportMatchesClientSize {
+            viewportClaimAwaitingTopology = false
+        }
     }
 
     private func admitDeferredMutationsIfPossible() {
@@ -935,10 +992,14 @@ final class TmuxSessionController: @unchecked Sendable {
             reportRequestFailure(.zoomPane)
             return
         }
+        let claimedViewport = admitActiveViewportClaimIfNeeded()
         let hasSibling = topology.panes.contains {
             $0.windowID == window.id && $0.id != paneID
         }
-        guard (!desired || hasSibling), window.zoomed != desired else { return }
+        guard (!desired || hasSibling), window.zoomed != desired else {
+            if claimedViewport, drainOutbound { _ = self.drainOutbound() }
+            return
+        }
         guard admitCommandOnWriter(
             command: "resize-pane -Z -t %\(paneID.rawValue)",
             request: .zoomPane
@@ -994,6 +1055,7 @@ final class TmuxSessionController: @unchecked Sendable {
             reportRequestFailure(.closePane)
             return
         }
+        _ = admitActiveViewportClaimIfNeeded()
 
         let windowPanes = topology.panes.filter { $0.windowID == window.id }
         guard window.zoomed, windowPanes.count > 2 else {
@@ -1024,6 +1086,7 @@ final class TmuxSessionController: @unchecked Sendable {
             reportRequestFailure(.closeWindow)
             return
         }
+        _ = admitActiveViewportClaimIfNeeded()
         submitCommandOnWriter(
             command: "kill-window -t @\(windowID.rawValue)",
             request: .closeWindow,
@@ -1052,7 +1115,11 @@ final class TmuxSessionController: @unchecked Sendable {
             return
         }
 
-        guard window.activePaneID != paneID else { return }
+        let claimedViewport = admitActiveViewportClaimIfNeeded()
+        guard window.activePaneID != paneID else {
+            if claimedViewport, drainOutbound { _ = self.drainOutbound() }
+            return
+        }
         let command = window.zoomed
             ? "select-pane -Z -t %\(paneID.rawValue)"
             : "select-pane -t %\(paneID.rawValue)"
@@ -1077,8 +1144,15 @@ final class TmuxSessionController: @unchecked Sendable {
         }
         let paneID = preferredPaneID ?? window.activePaneID
         if topology.activeWindowID == windowID {
-            guard let paneID else { return }
-            guard window.activePaneID != paneID else { return }
+            let claimedViewport = admitActiveViewportClaimIfNeeded()
+            guard let paneID else {
+                if claimedViewport, drainOutbound { _ = self.drainOutbound() }
+                return
+            }
+            guard window.activePaneID != paneID else {
+                if claimedViewport, drainOutbound { _ = self.drainOutbound() }
+                return
+            }
             let command = window.zoomed
                 ? "select-pane -Z -t %\(paneID.rawValue)"
                 : "select-pane -t %\(paneID.rawValue)"
@@ -1126,6 +1200,25 @@ final class TmuxSessionController: @unchecked Sendable {
         }
     }
 
+    private var hasOutstandingViewportClaim: Bool {
+        requestsByToken.values.contains {
+            guard case .viewportClaim = $0 else { return false }
+            return true
+        }
+    }
+
+    private var activeViewportMatchesClientSize: Bool {
+        guard let clientSize,
+              let topology,
+              let activeWindowID = topology.activeWindowID,
+              let activeWindow = topology.windows.first(where: {
+                  $0.id == activeWindowID
+              })
+        else { return false }
+        return activeWindow.width == clientSize.cols
+            && activeWindow.height == clientSize.rows
+    }
+
     private var awaitingTopologyMutationSettlement: Bool {
         hasOutstandingTopologyMutation
             || successfulMutationRequiredAfterRevision != nil
@@ -1139,6 +1232,50 @@ final class TmuxSessionController: @unchecked Sendable {
         case .copyMode, .setClientSize, .sendInput:
             false
         }
+    }
+
+    @discardableResult
+    private func admitActiveViewportClaimIfNeeded() -> Bool {
+        admitActiveViewportClaim(force: false)
+    }
+
+    @discardableResult
+    private func admitActiveViewportClaim(force: Bool) -> Bool {
+        preconditionOnWriterQueue()
+        guard let client,
+              outboundSink != nil,
+              !shuttingDown,
+              let clientSize,
+              let topology,
+              let activeWindowID = topology.activeWindowID,
+              let activeWindow = topology.windows.first(where: {
+                  $0.id == activeWindowID
+              })
+        else { return false }
+
+        let viewportMatches = activeWindow.width == clientSize.cols
+            && activeWindow.height == clientSize.rows
+        if viewportMatches {
+            viewportClaimAwaitingTopology = false
+            if !force { return false }
+        }
+        guard !viewportClaimAwaitingTopology,
+              !hasOutstandingViewportClaim
+        else { return false }
+
+        let (result, token) = enqueueCommandTokenOnWriter(
+            "select-window -t @\(activeWindowID.rawValue)",
+            client: client
+        )
+        guard result == GHOSTTY_TMUX_RESULT_OK else {
+            if result == GHOSTTY_TMUX_RESULT_CLIENT_FAILED
+                || result == GHOSTTY_TMUX_RESULT_CLOSED {
+                handleClientFailure(result)
+            }
+            return false
+        }
+        requestsByToken[token] = .viewportClaim
+        return true
     }
 
     static func crossWindowSelectionCommands(
@@ -1157,20 +1294,6 @@ final class TmuxSessionController: @unchecked Sendable {
                 ? "select-pane -Z -t %\(preferredPaneID.rawValue)"
                 : "select-pane -t %\(preferredPaneID.rawValue)",
         ]
-    }
-
-    private func enqueue(
-        command: String,
-        request: Request,
-        onSuccess: (@Sendable () -> Void)? = nil
-    ) {
-        queue.async { [self] in
-            enqueueOnWriter(
-                command: command,
-                request: request,
-                onSuccess: onSuccess
-            )
-        }
     }
 
     private func enqueueOnWriter(
@@ -1360,6 +1483,7 @@ final class TmuxSessionController: @unchecked Sendable {
         deferredNavigationIntent = nil
         deferredWindowZoomIntent = nil
         successfulMutationRequiredAfterRevision = nil
+        viewportClaimAwaitingTopology = false
         switch result {
         case GHOSTTY_TMUX_RESULT_OUT_OF_MEMORY:
             publishState(.detached(.outOfMemory))
