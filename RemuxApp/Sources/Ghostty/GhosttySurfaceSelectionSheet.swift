@@ -299,7 +299,9 @@ struct GhosttyPaneSelectionSheet: View {
         let metrics = PanePreviewLayout.panePickerMetricsForCurrentScreen(
             itemCount: projection.paneCount
         )
-        let topology = paneTopologyMetrics(size: metrics.topologySize)
+        let topology = paneTopologyMetrics(
+            size: GhosttyPaneTopologyDiagram.contentSize(for: metrics.topologySize)
+        )
         let panesByID = Dictionary(uniqueKeysWithValues: projection.panes.map { ($0.id, $0) })
         let orderedPanes = topology?.orderedPaneIDs.compactMap { panesByID[$0] }
             ?? projection.panes
@@ -710,6 +712,10 @@ private struct GhosttyPreviewIndexBadge: View {
 }
 
 private struct GhosttyPaneTopologyDiagram: View {
+    static let contentInset: CGFloat = 6
+    private static let outerCornerRadius: CGFloat = 12
+    private static let tileInset: CGFloat = 2
+
     let panes: [GhosttyPaneSelectionSheetRenderProjection.Pane]
     let selectedPaneID: UUID?
     let layout: PanePreviewLayout.TopologyMetrics?
@@ -718,12 +724,19 @@ private struct GhosttyPaneTopologyDiagram: View {
     let accent: Color
     let onSelect: (UUID) -> Void
 
+    static func contentSize(for outerSize: CGSize) -> CGSize {
+        CGSize(
+            width: max(1, outerSize.width - contentInset * 2),
+            height: max(1, outerSize.height - contentInset * 2)
+        )
+    }
+
     var body: some View {
         Canvas { context, _ in
             guard let layout else { return }
             for pane in panes {
                 guard let frame = layout.frame(for: pane.id) else { continue }
-                let tile = frame.insetBy(dx: 2, dy: 2)
+                let tile = frame.insetBy(dx: Self.tileInset, dy: Self.tileInset)
                 let radius = min(6, min(tile.width, tile.height) * 0.18)
                 let path = Path(roundedRect: tile, cornerRadius: max(1, radius))
                 let selected = pane.id == selectedPaneID
@@ -758,17 +771,12 @@ private struct GhosttyPaneTopologyDiagram: View {
                 }
             }
         }
-        .frame(width: size.width, height: size.height)
-        .background(Color.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(TerminalSelectionSheetPalette.stroke, lineWidth: 1)
-        }
+        .frame(width: Self.contentSize(for: size).width, height: Self.contentSize(for: size).height)
         .overlay(alignment: .topLeading) {
             if let layout {
                 ForEach(panes) { pane in
                     if let frame = layout.frame(for: pane.id) {
-                        let tile = frame.insetBy(dx: 2, dy: 2)
+                        let tile = frame.insetBy(dx: Self.tileInset, dy: Self.tileInset)
                         Button {
                             onSelect(pane.id)
                         } label: {
@@ -781,6 +789,16 @@ private struct GhosttyPaneTopologyDiagram: View {
                     }
                 }
             }
+        }
+        .padding(Self.contentInset)
+        .frame(width: size.width, height: size.height)
+        .background(
+            Color.black.opacity(0.18),
+            in: RoundedRectangle(cornerRadius: Self.outerCornerRadius, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: Self.outerCornerRadius, style: .continuous)
+                .strokeBorder(TerminalSelectionSheetPalette.stroke, lineWidth: 1)
         }
         .accessibilityIdentifier("terminal.panes.topology")
         .accessibilityHidden(true)
