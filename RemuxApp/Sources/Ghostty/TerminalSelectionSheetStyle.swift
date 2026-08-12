@@ -88,22 +88,6 @@ struct TerminalSelectionSheetCloseButton: View {
     }
 }
 
-struct TerminalSelectionTileCheckmark: View {
-    let chromeStyle: GhosttyTerminalChromeStyle
-
-    var body: some View {
-        Image(systemName: "checkmark")
-            .font(.system(size: 10, weight: .bold))
-            .foregroundStyle(chromeStyle.accentForeground)
-            .frame(width: 22, height: 22)
-            .background(chromeStyle.accent, in: Circle())
-            .overlay {
-                Circle().strokeBorder(Color.white.opacity(0.24), lineWidth: 0.5)
-            }
-            .accessibilityHidden(true)
-    }
-}
-
 /// Shared anatomy for the terminal selector sheets. Owns its header (title
 /// and close button) as plain content — no navigation bar — so the sheet's
 /// natural height is fully defined by views the app controls, which is what
@@ -251,12 +235,6 @@ extension View {
                             : TerminalSelectionSheetPalette.stroke,
                         lineWidth: isSelected ? 1.25 : 1
                     )
-            }
-            .overlay(alignment: .topTrailing) {
-                if isSelected {
-                    TerminalSelectionTileCheckmark(chromeStyle: chromeStyle)
-                        .padding(6)
-                }
             }
     }
 

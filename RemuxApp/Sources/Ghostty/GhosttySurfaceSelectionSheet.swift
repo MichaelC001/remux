@@ -558,17 +558,14 @@ private struct GhosttyWindowSelectionTile: View {
         ZStack(alignment: .bottomLeading) {
             previewSurface
 
-            LinearGradient(
-                colors: [.clear, Color.black.opacity(0.82)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: 58)
-            .allowsHitTesting(false)
-
             metadata
-                .padding(.horizontal, 10)
-                .padding(.bottom, 9)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(
+                    Color.black.opacity(0.78),
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
+                .padding(8)
         }
         .frame(
             width: layout.tilePointSize.width,
@@ -613,14 +610,11 @@ private struct GhosttyWindowSelectionTile: View {
             Text("·")
 
             Text("\(paneCount) \(paneCount == 1 ? "pane" : "panes")")
-
-            Spacer(minLength: 0)
         }
         .font(.system(size: 11))
         .foregroundStyle(Color.white.opacity(0.94))
         .lineLimit(1)
         .truncationMode(.tail)
-        .shadow(color: .black.opacity(0.45), radius: 2, y: 1)
     }
 
     private var accessibilityLabel: String {
