@@ -38,14 +38,33 @@ enum TerminalSelectionSheetLayout {
         ).height
     }
 
+    static func fixedChromeHeight(
+        navigationBarHeight: CGFloat
+    ) -> CGFloat {
+        max(0, navigationBarHeight)
+            + navigationToContextSpacing + contextHeight + contextToContentSpacing
+            + contentToActionsSpacing + actionBarHeight + actionsBottomPadding
+    }
+
+    static func maximumContentHeight(
+        availableHeight: CGFloat,
+        navigationBarHeight: CGFloat
+    ) -> CGFloat {
+        guard availableHeight.isFinite else { return 0 }
+        return max(
+            0,
+            availableHeight - fixedChromeHeight(
+                navigationBarHeight: navigationBarHeight
+            )
+        )
+    }
+
     static func sheetHeight(
         contentHeight: CGFloat,
         navigationBarHeight: CGFloat
     ) -> CGFloat {
-        navigationBarHeight
-            + navigationToContextSpacing + contextHeight + contextToContentSpacing
-            + contentHeight
-            + contentToActionsSpacing + actionBarHeight + actionsBottomPadding
+        fixedChromeHeight(navigationBarHeight: navigationBarHeight)
+            + max(0, contentHeight)
     }
 }
 

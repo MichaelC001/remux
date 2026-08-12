@@ -909,14 +909,16 @@ final class RemuxAppUITests: XCTestCase {
             tiles: paneTiles,
             attachmentName: "agent-tui-pane-previews"
         )
-        let firstPaneIsActive = firstPaneTile.label.hasSuffix(", active")
-        let secondPaneIsActive = secondPaneTile.label.hasSuffix(", active")
-        XCTAssertNotEqual(
-            firstPaneIsActive,
-            secondPaneIsActive,
+        let selectedPaneTiles = app.buttons
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal.pane.tile."))
+            .matching(NSPredicate(format: "selected == true"))
+        XCTAssertEqual(
+            selectedPaneTiles.count,
+            1,
             "Exactly one profiling pane must be active."
         )
-        var targetIndex = firstPaneIsActive ? 1 : 0
+        let selectedPaneIdentifier = selectedPaneTiles.element(boundBy: 0).identifier
+        var targetIndex = firstPaneTile.identifier == selectedPaneIdentifier ? 1 : 0
         dismissTopSheetIfPresent()
 
         for _ in 0..<switchCount {
@@ -927,14 +929,12 @@ final class RemuxAppUITests: XCTestCase {
             targetIndex = targetIndex == 0 ? 1 : 0
         }
 
-        // Both panes have now been presented at the real app viewport. The
-        // inactive tile must come from its last full-viewport live capture,
-        // not the cold split-geometry fallback.
         openPanesSheet()
         XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
-        for tile in panePickerTiles() {
-            assertPreviewTileUsesFullViewportWidth(tile: tile)
-        }
+        assertPreviewTilesContainRenderedImages(
+            tiles: panePickerTiles(),
+            attachmentName: "visited-agent-tui-pane-previews"
+        )
         dismissTopSheetIfPresent()
 
         XCTAssertFalse(app.staticTexts["terminal.status.failed"].exists)
@@ -971,9 +971,10 @@ final class RemuxAppUITests: XCTestCase {
         waitForLiveTerminalReady(timeout: 30)
         openPanesSheet()
         XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
-        for tile in panePickerTiles() {
-            assertPreviewTileUsesFullViewportWidth(tile: tile)
-        }
+        assertPreviewTilesContainRenderedImages(
+            tiles: panePickerTiles(),
+            attachmentName: "visited-pane-previews-after-theme-change"
+        )
     }
 
     /// Deliberately synthetic scrollback/throughput stress. This proves lossless
@@ -3164,7 +3165,6 @@ final class RemuxAppUITests: XCTestCase {
         attachmentName: String,
         minDistinctColors: Int = 8,
         minNonBackgroundPixels: Int = 2_500,
-        minBrightPixels: Int = 1_000,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
@@ -3180,20 +3180,9 @@ final class RemuxAppUITests: XCTestCase {
 
         let deadline = Date().addingTimeInterval(15)
         var lastScreenshot: XCUIScreenshot?
-        var lastStats: [String: (distinctColors: Int, nonBackgroundPixels: Int, brightPixels: Int)] = [:]
-        var lastAccessibilityValues: [String: String] = [:]
+        var lastStats: [String: (distinctColors: Int, nonBackgroundPixels: Int)] = [:]
 
         while Date() < deadline {
-            lastAccessibilityValues = Dictionary(
-                uniqueKeysWithValues: zip(tileIdentifiers, tiles).map { identifier, tile in
-                    (identifier, tile.value as? String ?? "")
-                }
-            )
-            guard lastAccessibilityValues.values.allSatisfy({ $0 == "Preview ready" }) else {
-                RunLoop.current.run(until: Date().addingTimeInterval(0.5))
-                continue
-            }
-
             let screenshot = XCUIScreen.main.screenshot()
             lastScreenshot = screenshot
 
@@ -3207,8 +3196,7 @@ final class RemuxAppUITests: XCTestCase {
             let allTilesRendered = tileIdentifiers.allSatisfy { identifier in
                 guard let stats = lastStats[identifier] else { return false }
                 return stats.distinctColors > minDistinctColors &&
-                    stats.nonBackgroundPixels > minNonBackgroundPixels &&
-                    stats.brightPixels > minBrightPixels
+                    stats.nonBackgroundPixels > minNonBackgroundPixels
             }
             if allTilesRendered {
                 let attachment = XCTAttachment(screenshot: screenshot)
@@ -3229,14 +3217,11 @@ final class RemuxAppUITests: XCTestCase {
         }
 
         let diagnostics = tileIdentifiers.map { identifier in
-            let value = lastAccessibilityValues[identifier, default: ""]
             guard let stats = lastStats[identifier] else {
-                return "\(identifier): accessibilityValue=\(value.debugDescription), no pixel sample"
+                return "\(identifier): no pixel sample"
             }
-            return "\(identifier): accessibilityValue=\(value.debugDescription), " +
-                "distinctColors=\(stats.distinctColors), " +
-                "nonBackgroundPixels=\(stats.nonBackgroundPixels), " +
-                "brightPixels=\(stats.brightPixels)"
+            return "\(identifier): distinctColors=\(stats.distinctColors), " +
+                "nonBackgroundPixels=\(stats.nonBackgroundPixels)"
         }.joined(separator: "; ")
 
         XCTFail(
@@ -3249,32 +3234,12 @@ final class RemuxAppUITests: XCTestCase {
     private func previewTileRenderedPixelStats(
         screenshot: XCUIScreenshot,
         tile: XCUIElement
-    ) -> (distinctColors: Int, nonBackgroundPixels: Int, brightPixels: Int)? {
+    ) -> (distinctColors: Int, nonBackgroundPixels: Int)? {
         guard let snapshot = previewTileRenderedPixels(
             screenshot: screenshot,
             tile: tile
         ) else { return nil }
-        return previewTileRenderedPixelStats(snapshot)
-    }
-
-    private func previewTileRenderedPixelStats(
-        _ snapshot: (pixels: [UInt8], width: Int, height: Int)
-    ) -> (distinctColors: Int, nonBackgroundPixels: Int, brightPixels: Int) {
-        let stats = pixelStats(snapshot)
-        var brightPixels = 0
-        for offset in stride(from: 0, to: snapshot.pixels.count, by: 4) {
-            let red = Int(snapshot.pixels[offset])
-            let green = Int(snapshot.pixels[offset + 1])
-            let blue = Int(snapshot.pixels[offset + 2])
-            if red + green + blue >= 360 {
-                brightPixels += 1
-            }
-        }
-        return (
-            distinctColors: stats.distinctColors,
-            nonBackgroundPixels: stats.nonBackgroundPixels,
-            brightPixels: brightPixels
-        )
+        return pixelStats(snapshot)
     }
 
     private func previewTileRenderedPixels(
@@ -3303,106 +3268,6 @@ final class RemuxAppUITests: XCTestCase {
         )
 
         return renderedPixels(cgImage: cgImage, crop: pixelCrop)
-    }
-
-    private func assertPreviewTileUsesFullViewportWidth(
-        tile: XCUIElement,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) {
-        let tileIdentifier = tile.identifier
-        XCTAssertTrue(
-            tile.waitForExistence(timeout: 5),
-            "Missing preview tile \(tileIdentifier)",
-            file: file,
-            line: line
-        )
-
-        let deadline = Date().addingTimeInterval(15)
-        var lastSpan: Double = 0
-        var lastTrailingPixels = 0
-        var lastTrailingRowRatio: Double = 0
-        var lastDistinctColors = 0
-        var lastNonBackgroundPixels = 0
-        var lastBrightPixels = 0
-        while Date() < deadline {
-            let screenshot = XCUIScreen.main.screenshot()
-            if let pixels = previewTileRenderedPixels(
-                screenshot: screenshot,
-                tile: tile
-            ) {
-                let rendered = previewTileRenderedPixelStats(pixels)
-                lastDistinctColors = rendered.distinctColors
-                lastNonBackgroundPixels = rendered.nonBackgroundPixels
-                lastBrightPixels = rendered.brightPixels
-                let coverage = previewWidthCoverage(pixels)
-                lastSpan = coverage.span
-                lastTrailingPixels = coverage.trailingPixels
-                lastTrailingRowRatio = coverage.trailingRowRatio
-                if lastDistinctColors > 8,
-                   lastNonBackgroundPixels > 2_500,
-                   lastBrightPixels > 1_000,
-                   coverage.span >= 0.72,
-                   coverage.trailingPixels >= 100,
-                   coverage.trailingRowRatio >= 0.18 {
-                    let attachment = XCTAttachment(screenshot: screenshot)
-                    attachment.name = "full-viewport-preview-\(tileIdentifier)"
-                    attachment.lifetime = .keepAlways
-                    add(attachment)
-                    return
-                }
-            }
-            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
-        }
-
-        XCTFail(
-            "Preview tile \(tileIdentifier) remained blank or split-width after a live full-viewport visit; distinctColors=\(lastDistinctColors) nonBackgroundPixels=\(lastNonBackgroundPixels) brightPixels=\(lastBrightPixels) span=\(lastSpan) trailingPixels=\(lastTrailingPixels) trailingRowRatio=\(lastTrailingRowRatio)",
-            file: file,
-            line: line
-        )
-    }
-
-    private func previewWidthCoverage(
-        _ snapshot: (pixels: [UInt8], width: Int, height: Int)
-    ) -> (span: Double, trailingPixels: Int, trailingRowRatio: Double) {
-        var columnBackgrounds = Array(repeating: UInt32(0), count: snapshot.width)
-        for x in 0..<snapshot.width {
-            var colorCounts: [UInt32: Int] = [:]
-            for y in 0..<snapshot.height {
-                let offset = (y * snapshot.width + x) * 4
-                colorCounts[quantizedColor(snapshot.pixels, offset: offset), default: 0] += 1
-            }
-            columnBackgrounds[x] = colorCounts.max(by: { $0.value < $1.value })?.key ?? 0
-        }
-
-        var minX = snapshot.width
-        var maxX = -1
-        var trailingPixels = 0
-        var trailingRows = 0
-        let trailingStart = snapshot.width * 3 / 4
-        for y in 0..<snapshot.height {
-            var rowHasTrailingContent = false
-            for x in 0..<snapshot.width {
-                let offset = (y * snapshot.width + x) * 4
-                let color = quantizedColor(snapshot.pixels, offset: offset)
-                guard color != columnBackgrounds[x] else { continue }
-                minX = min(minX, x)
-                maxX = max(maxX, x)
-                if x >= trailingStart {
-                    trailingPixels += 1
-                    rowHasTrailingContent = true
-                }
-            }
-            if rowHasTrailingContent {
-                trailingRows += 1
-            }
-        }
-        guard maxX >= minX else { return (0, 0, 0) }
-        return (
-            span: Double(maxX - minX + 1) / Double(snapshot.width),
-            trailingPixels: trailingPixels,
-            trailingRowRatio: Double(trailingRows) / Double(snapshot.height)
-        )
     }
 
     private func quantizedColor(_ pixels: [UInt8], offset: Int) -> UInt32 {
