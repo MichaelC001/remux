@@ -1031,7 +1031,7 @@ private struct ServerDetailView: View {
     }
 }
 
-private struct DisclosureRowLabel: View {
+struct DisclosureRowLabel: View {
     let title: String
     let systemImage: String
 

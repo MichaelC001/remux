@@ -141,6 +141,8 @@ struct SessionSwitcherProjection: Equatable {
 }
 
 struct SessionSwitcherView: View {
+    private static let collapsedRecentSessionCount = 5
+
     private enum Route: Hashable {
         case chooseServer
         case availableSessions
@@ -161,6 +163,7 @@ struct SessionSwitcherView: View {
     let discoveryStates: [SavedServer.ID: TmuxSessionDiscoveryState]
 
     @State private var path: [Route] = []
+    @State private var showsAllRecentSessions = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -213,8 +216,29 @@ struct SessionSwitcherView: View {
 
                 if !projection.recentSessions.isEmpty {
                     Section {
-                        ForEach(projection.recentSessions) { session in
+                        ForEach(visibleRecentSessions) { session in
                             recentSessionRow(session)
+                        }
+
+                        if projection.recentSessions.count > Self.collapsedRecentSessionCount {
+                            Button {
+                                withAnimation(.snappy) {
+                                    showsAllRecentSessions.toggle()
+                                }
+                            } label: {
+                                DisclosureRowLabel(
+                                    title: showsAllRecentSessions
+                                        ? "Show fewer"
+                                        : "View all \(projection.recentSessions.count)",
+                                    systemImage: showsAllRecentSessions
+                                        ? "chevron.up"
+                                        : "chevron.down"
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .sessionSwitcherListRow(
+                                accessibilityIdentifier: "terminal.sessions.recent-toggle"
+                            )
                         }
                     } header: {
                         SessionSwitcherSectionHeader(title: "Recent")
@@ -287,6 +311,11 @@ struct SessionSwitcherView: View {
             + projection.availableSessions.count
             + projection.recentSessions.count
         return count == 1 ? "1 session" : "\(count) sessions"
+    }
+
+    private var visibleRecentSessions: [RecentSessionSwitcherItem] {
+        guard !showsAllRecentSessions else { return projection.recentSessions }
+        return Array(projection.recentSessions.prefix(Self.collapsedRecentSessionCount))
     }
 
     private func activeSessionRow(_ session: ActiveSessionSwitcherItem) -> some View {
