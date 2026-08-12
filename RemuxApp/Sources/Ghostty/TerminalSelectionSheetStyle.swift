@@ -58,6 +58,18 @@ struct TerminalSelectionSheetContextLabel: View {
     }
 }
 
+extension View {
+    func compactCircularChromeButtonLabel() -> some View {
+        self
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(TerminalSelectionSheetPalette.primary)
+            .frame(width: 36, height: 36)
+            .background(TerminalSelectionSheetPalette.controlFill, in: Circle())
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+    }
+}
+
 struct TerminalSelectionSheetCloseButton: View {
     let title: String
     let accessibilityIdentifier: String
@@ -69,10 +81,7 @@ struct TerminalSelectionSheetCloseButton: View {
             action()
         } label: {
             Image(systemName: "xmark")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(TerminalSelectionSheetPalette.primary)
-                .frame(width: 36, height: 36)
-                .background(TerminalSelectionSheetPalette.controlFill, in: Circle())
+                .compactCircularChromeButtonLabel()
         }
         .accessibilityLabel("Close \(title)")
         .accessibilityIdentifier(accessibilityIdentifier)
@@ -249,20 +258,6 @@ extension View {
                         .padding(6)
                 }
             }
-    }
-
-    func terminalSelectionSheetPresentation(
-        colorScheme: ColorScheme,
-        chromeStyle: GhosttyTerminalChromeStyle
-    ) -> some View {
-        presentationDetents([.medium])
-            .presentationContentInteraction(.scrolls)
-            .presentationDragIndicator(.hidden)
-            .terminalSelectionSheetPresentationBackground()
-            .ghosttyTerminalChromePresentation(
-                colorScheme,
-                chromeStyle: chromeStyle
-            )
     }
 
     @ViewBuilder
