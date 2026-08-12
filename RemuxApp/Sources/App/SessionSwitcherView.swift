@@ -292,15 +292,10 @@ struct SessionSwitcherView: View {
                         .tint(TerminalSelectionSheetPalette.primary)
                 } else {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 15, weight: .semibold))
                 }
             }
-            .foregroundStyle(TerminalSelectionSheetPalette.primary)
-            .frame(width: 36, height: 36)
-            .background(TerminalSelectionSheetPalette.controlFill, in: Circle())
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
         }
+        .buttonStyle(CompactCircularChromeButtonStyle())
         .disabled(isRefreshing)
         .accessibilityLabel(isRefreshing ? "Refreshing Sessions" : "Refresh Sessions")
         .accessibilityIdentifier("terminal.sessions.refresh")
