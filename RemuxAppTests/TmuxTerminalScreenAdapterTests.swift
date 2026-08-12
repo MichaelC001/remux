@@ -536,30 +536,66 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         XCTAssertEqual(cache.totalByteCost, 0)
     }
 
-    func testPanePreviewCacheRetainsFullViewportProvenance() throws {
-        let image = try makeImage(width: 4, height: 4)
-        let expected = provenance()
-        var cache = TmuxPanePreviewImageCache(byteLimit: 1024)
+    func testPaneGeometryPreviewValidityTracksSurfaceAndPaneGeometry() {
+        let surfaceID = UUID()
+        let source = GhosttyPanePreviewSession.PreviewSource.paneGeometry(.init(
+            surfaceID: surfaceID,
+            columns: 80,
+            rows: 24
+        ))
+        let currentPane = pane(id: 10, windowID: 1)
+        let currentWindow = window(id: 1, active: true, paneID: 10)
+        let cases = [
+            (true, surfaceID, currentPane),
+            (false, surfaceID, pane(id: 10, windowID: 1, width: 79)),
+            (false, UUID(), currentPane),
+        ]
 
-        cache.store(
-            .init(image: image, source: .fullViewport(expected)),
-            for: 1
-        )
-
-        XCTAssertEqual(cache.entries[1]?.preview.source, .fullViewport(expected))
+        for (expected, candidateSurfaceID, candidatePane) in cases {
+            XCTAssertEqual(TmuxTerminalScreenAdapter.previewSourceIsCurrent(
+                source,
+                currentSurfaceID: candidateSurfaceID,
+                pane: candidatePane,
+                window: currentWindow,
+                viewportMetrics: nil
+            ), expected)
+        }
     }
 
-    func testPanePreviewCacheRetainsPaneGeometrySource() throws {
-        let image = try makeImage(width: 4, height: 4)
-        var cache = TmuxPanePreviewImageCache(byteLimit: 1024)
+    func testFullViewportPreviewValidityRequiresTheActiveZoomedViewport() {
+        let surfaceID = UUID()
+        let source = GhosttyPanePreviewSession.PreviewSource.fullViewport(.init(
+            surfaceID: surfaceID,
+            pixelWidth: 800,
+            pixelHeight: 480
+        ))
+        let currentPane = pane(id: 10, windowID: 1)
+        let currentWindow = window(id: 1, active: true, paneID: 10)
+        let currentMetrics = GhosttySurfaceDisplayMetrics(
+            contentScale: 2,
+            pixelWidth: 800,
+            pixelHeight: 480
+        )
+        let cases: [(Bool, TmuxSessionController.WindowInfo, GhosttySurfaceDisplayMetrics?)] = [
+            (true, currentWindow, currentMetrics),
+            (false, window(id: 1, active: true, paneID: 10, zoomed: false), currentMetrics),
+            (false, window(id: 1, active: true, paneID: 11), currentMetrics),
+            (false, currentWindow, .init(
+                contentScale: 2,
+                pixelWidth: 799,
+                pixelHeight: 480
+            )),
+        ]
 
-        cache.store(preview(image), for: 1)
-
-        guard case .paneGeometry(let provenance)? = cache.preview(for: 1)?.source else {
-            return XCTFail("expected pane geometry provenance")
+        for (expected, candidateWindow, candidateMetrics) in cases {
+            XCTAssertEqual(TmuxTerminalScreenAdapter.previewSourceIsCurrent(
+                source,
+                currentSurfaceID: surfaceID,
+                pane: currentPane,
+                window: candidateWindow,
+                viewportMetrics: candidateMetrics
+            ), expected)
         }
-        XCTAssertEqual(provenance.columns, 80)
-        XCTAssertEqual(provenance.rows, 24)
     }
 
     func testPanePreviewCacheReplacesThePreviousImageForAPane() throws {

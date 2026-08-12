@@ -493,11 +493,15 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 completeKeyboardDidHide()
             }
             .sheet(item: selectionSheetBinding) { sheet in
-                // Every input to this height is independent of the sheet's
-                // current height: spec tokens and grid math from screen width.
-                selectionSheetContent(sheet)
+                let contentHeight = selectionSheetContentHeight(
+                    for: sheet,
+                    availableHeight: screenProxy.size.height
+                )
+                selectionSheetContent(sheet, contentHeight: contentHeight)
                     .presentationDetents(
-                        [.height(selectionSheetHeight(for: sheet))]
+                        [.height(TerminalSelectionSheetLayout.sheetHeight(
+                            contentHeight: contentHeight
+                        ))]
                     )
                     .presentationContentInteraction(.scrolls)
                     .presentationDragIndicator(.hidden)
@@ -1396,7 +1400,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
     private func makeWindowPreviewSession(leafIDs: [UUID]) -> GhosttyPanePreviewSession {
         model.makePanePreviewSession(
             leafIDs: leafIDs,
-            previewSizing: .windowGridForCurrentScreen
+            previewAvailableWidth: PanePreviewLayout.currentSheetContentWidth()
         )
     }
 
@@ -1435,7 +1439,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 topLevelID: projection.topLevelID,
                 previews: model.makePanePreviewSession(
                     leafIDs: projection.previewLeafIDs,
-                    previewSizing: .paneMapForCurrentScreen
+                    previewAvailableWidth: PanePreviewLayout.currentSheetContentWidth()
                 )
             )
         )
@@ -2071,35 +2075,42 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         _ = model.setFocusedTmuxPaneZoomed(zoomed)
     }
 
-    private func selectionSheetHeight(
-        for sheet: GhosttySurfaceSelectionSheet
+    private func selectionSheetContentHeight(
+        for sheet: GhosttySurfaceSelectionSheet,
+        availableHeight: CGFloat
     ) -> CGFloat {
-        var gridHeight: CGFloat
+        let maximumContentHeight = TerminalSelectionSheetLayout.maximumContentHeight(
+            availableHeight: availableHeight
+        )
         switch sheet {
         case .windows:
-            gridHeight = PanePreviewLayout.gridIdealHeight(
+            return PanePreviewLayout.gridIdealHeight(
                 itemCount: model.windowSelectionSheetRenderProjection().windows.count,
-                metrics: PanePreviewLayout.windowMetricsForCurrentScreen()
+                metrics: PanePreviewLayout.windowMetricsForCurrentScreen(),
+                maximumContentHeight: maximumContentHeight
             )
         case .panes(let topLevelID, _):
             let projection = model.paneSelectionSheetRenderProjection(topLevelID: topLevelID)
-            gridHeight = projection.windowGrid.flatMap {
-                PanePreviewLayout.paneMapMetricsForCurrentScreen(
-                    windowGrid: $0
-                )?.size.height
-            } ?? 160
+            return PanePreviewLayout.panePickerMetrics(
+                itemCount: projection.paneCount,
+                availableWidth: PanePreviewLayout.currentSheetContentWidth(),
+                maximumContentHeight: maximumContentHeight
+            ).visibleContentHeight
         }
-        return TerminalSelectionSheetLayout.sheetHeight(gridHeight: gridHeight)
     }
 
     @ViewBuilder
-    private func selectionSheetContent(_ sheet: GhosttySurfaceSelectionSheet) -> some View {
+    private func selectionSheetContent(
+        _ sheet: GhosttySurfaceSelectionSheet,
+        contentHeight: CGFloat
+    ) -> some View {
         switch sheet {
         case .windows(let session):
             GhosttyWindowSelectionSheet(
                 session: session,
                 projection: model.windowSelectionSheetRenderProjection(),
                 sessionName: presentation.sessionName,
+                contentHeight: contentHeight,
                 commandFailureMessage: selectionSheetCommandFailureMessage,
                 onCreateWindow: createTmuxWindowFromSelectionSheet,
                 onSelect: selectTmuxWindowFromSelectionSheet,
@@ -2110,6 +2121,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             GhosttyPaneSelectionSheet(
                 session: session,
                 projection: model.paneSelectionSheetRenderProjection(topLevelID: topLevelID),
+                contentHeight: contentHeight,
                 commandFailureMessage: selectionSheetCommandFailureMessage,
                 onSplitPane: {
                     splitFocusedTmuxPaneFromSelectionSheet(

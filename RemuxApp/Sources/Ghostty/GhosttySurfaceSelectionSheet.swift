@@ -31,6 +31,7 @@ struct GhosttyWindowSelectionSheet: View {
 
     let projection: GhosttyWindowSelectionSheetRenderProjection
     let sessionName: String
+    let contentHeight: CGFloat
     let commandFailureMessage: String?
     let onCreateWindow: (() -> Void)?
     let onSelect: (UUID) -> Void
@@ -50,6 +51,7 @@ struct GhosttyWindowSelectionSheet: View {
                     layout: layout
                 )
             }
+            .frame(height: contentHeight)
             .accessibilityIdentifier("terminal.windows.scroll")
             .contentMargins(.horizontal, 16, for: .scrollContent)
         } actions: {
@@ -200,6 +202,7 @@ struct GhosttyPaneSelectionSheet: View {
     @State private var pendingContextAction: GhosttyPaneRemovalRequest?
 
     let projection: GhosttyPaneSelectionSheetRenderProjection
+    let contentHeight: CGFloat
     let commandFailureMessage: String?
     let onSplitPane: (() -> Void)?
     let onStackPane: (() -> Void)?
@@ -213,7 +216,7 @@ struct GhosttyPaneSelectionSheet: View {
             context: "\(projection.paneCount) \(projection.paneCount == 1 ? "pane" : "panes")",
             closeAccessibilityIdentifier: "terminal.panes.close"
         ) {
-            paneMap
+            panePicker
                 .padding(.horizontal, 16)
         } actions: {
             HStack(spacing: 0) {
@@ -295,79 +298,127 @@ struct GhosttyPaneSelectionSheet: View {
         .accessibilityIdentifier("terminal.panes.sheet")
     }
 
-    @ViewBuilder
-    private var paneMap: some View {
-        if let windowGrid = projection.windowGrid,
-           let layout = PanePreviewLayout.paneMapMetricsForCurrentScreen(
-               windowGrid: windowGrid
-           ) {
-            ZStack(alignment: .topLeading) {
-                ForEach(projection.panes) { pane in
-                    if let gridFrame = pane.frame {
-                        let frame = layout.frame(for: gridFrame)
+    private var panePicker: some View {
+        let metrics = PanePreviewLayout.panePickerMetrics(
+            itemCount: projection.paneCount,
+            availableWidth: PanePreviewLayout.currentSheetContentWidth(),
+            maximumContentHeight: contentHeight
+        )
+        let topology = paneTopologyMetrics(
+            size: GhosttyPaneTopologyDiagram.contentSize(for: metrics.topologySize)
+        )
+        let panesByID = Dictionary(uniqueKeysWithValues: projection.panes.map { ($0.id, $0) })
+        let orderedPanes = topology?.orderedPaneIDs.compactMap { panesByID[$0] }
+            ?? projection.panes
+        let displayIndices = Dictionary(
+            uniqueKeysWithValues: orderedPanes.enumerated().map { ($0.element.id, $0.offset + 1) }
+        )
 
-                        let request = removalRequest(for: pane)
+        return VStack(spacing: metrics.sectionSpacing) {
+            GhosttyPaneTopologyDiagram(
+                panes: orderedPanes,
+                selectedPaneID: projection.selectedPaneID,
+                layout: topology,
+                displayIndices: displayIndices,
+                size: metrics.topologySize,
+                accent: chromeStyle.selectedStroke,
+                onSelect: { paneID in
+                    Haptic.selection()
+                    pendingContextAction = nil
+                    onSelect(paneID)
+                }
+            )
 
-                        ZStack(alignment: .topTrailing) {
-                            Button {
-                                Haptic.selection()
-                                pendingContextAction = nil
-                                onSelect(pane.id)
-                            } label: {
-                                GhosttyPaneMapTile(
-                                    isSelected: pane.isSelected,
-                                    state: session.imagesByPaneID[pane.id],
-                                    size: frame.size
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("terminal.pane.tile.\(pane.id.uuidString)")
-                            .highPriorityGesture(
-                                LongPressGesture(minimumDuration: 0.42, maximumDistance: 18)
-                                    .onEnded { _ in
-                                        Haptic.warning()
-                                        pendingContextAction = request
-                                    }
+            if !orderedPanes.isEmpty {
+                ScrollView(showsIndicators: false) {
+                    LazyVGrid(
+                        columns: Array(
+                            repeating: GridItem(
+                                .fixed(metrics.cardSize.width),
+                                spacing: metrics.gridSpacing
+                            ),
+                            count: metrics.columnCount
+                        ),
+                        alignment: .center,
+                        spacing: metrics.gridSpacing
+                    ) {
+                        ForEach(orderedPanes) { pane in
+                            paneCard(
+                                pane,
+                                displayIndex: displayIndices[pane.id] ?? 1,
+                                size: metrics.cardSize
                             )
-                            .allowsHitTesting(pendingContextAction?.id != pane.id)
-
-                            if pendingContextAction?.id == pane.id {
-                                GhosttySelectionContextActionButton(
-                                    title: "Remove Pane",
-                                    accessibilityIdentifier: "terminal.pane.remove.\(pane.id.uuidString)",
-                                    action: { performRemoval(request) }
-                                )
-                                .padding(4)
-                                .transition(.scale(scale: 0.92).combined(with: .opacity))
-                                .zIndex(1)
-                            }
-                        }
-                        .frame(width: frame.width, height: frame.height)
-                        .offset(x: frame.minX, y: frame.minY)
-                        .animation(.spring(response: 0.24, dampingFraction: 0.82), value: pendingContextAction?.id)
-                        .accessibilityAction(named: Text("Remove Pane")) {
-                            Haptic.warning()
-                            pendingContextAction = request
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .top)
                 }
-
-                GhosttyPaneMapSeparators(
-                    panes: projection.panes,
-                    selectedPaneID: projection.selectedPaneID,
-                    layout: layout,
-                    accent: chromeStyle.selectedStroke
-                )
-                .allowsHitTesting(false)
+                .frame(height: metrics.cardViewportHeight(itemCount: projection.paneCount))
+                .accessibilityIdentifier("terminal.panes.scroll")
             }
-            .frame(width: layout.size.width, height: layout.size.height, alignment: .topLeading)
-            .frame(maxWidth: .infinity, alignment: .center)
-            .accessibilityIdentifier("terminal.panes.map")
-        } else {
-            Color.black.opacity(0.30)
-                .frame(maxWidth: .infinity, minHeight: 160)
-                .accessibilityIdentifier("terminal.panes.map")
         }
+        .frame(height: metrics.visibleContentHeight, alignment: .top)
+        .accessibilityIdentifier("terminal.panes.picker")
+    }
+
+    private func paneCard(
+        _ pane: GhosttyPaneSelectionSheetRenderProjection.Pane,
+        displayIndex: Int,
+        size: CGSize
+    ) -> some View {
+        let request = removalRequest(for: pane)
+
+        return ZStack(alignment: .topTrailing) {
+            Button {
+                Haptic.selection()
+                pendingContextAction = nil
+                onSelect(pane.id)
+            } label: {
+                GhosttyPanePreviewCard(
+                    displayIndex: displayIndex,
+                    isSelected: pane.isSelected,
+                    state: session.imagesByPaneID[pane.id],
+                    size: size,
+                    chromeStyle: chromeStyle
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("terminal.pane.tile.\(pane.id.uuidString)")
+            .highPriorityGesture(
+                LongPressGesture(minimumDuration: 0.42, maximumDistance: 18)
+                    .onEnded { _ in
+                        Haptic.warning()
+                        pendingContextAction = request
+                    }
+            )
+            .allowsHitTesting(pendingContextAction?.id != pane.id)
+
+            if pendingContextAction?.id == pane.id {
+                GhosttySelectionContextActionButton(
+                    title: "Remove Pane",
+                    accessibilityIdentifier: "terminal.pane.remove.\(pane.id.uuidString)",
+                    action: { performRemoval(request) }
+                )
+                .padding(4)
+                .transition(.scale(scale: 0.92).combined(with: .opacity))
+                .zIndex(1)
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .animation(.spring(response: 0.24, dampingFraction: 0.82), value: pendingContextAction?.id)
+        .accessibilityAction(named: Text("Remove Pane")) {
+            Haptic.warning()
+            pendingContextAction = request
+        }
+    }
+
+    private func paneTopologyMetrics(
+        size: CGSize
+    ) -> PanePreviewLayout.TopologyMetrics? {
+        let topologyPanes = projection.panes.compactMap { pane in
+            pane.frame.map { PanePreviewLayout.TopologyPane(id: pane.id, frame: $0) }
+        }
+        guard topologyPanes.count == projection.panes.count else { return nil }
+        return PanePreviewLayout.topologyMetrics(panes: topologyPanes, size: size)
     }
 
     private func removalRequest(
@@ -494,7 +545,6 @@ private struct GhosttyRenderedPreviewSurface: View {
             .frame(width: size.width, height: size.height)
             .background(Color.black.opacity(0.30))
             .clipped()
-            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 
 }
@@ -510,17 +560,32 @@ private struct GhosttyWindowSelectionTile: View {
     let layout: PanePreviewLayout.Metrics
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        ZStack(alignment: .bottomLeading) {
             previewSurface
-            caption
+
+            metadata
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(
+                    Color.black.opacity(0.78),
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
+                .padding(8)
         }
-        .padding(layout.tilePadding)
         .frame(
             width: layout.tilePointSize.width,
             height: layout.tilePointSize.height,
             alignment: .topLeading
         )
         .terminalSelectionTileChrome(isSelected: isSelected, chromeStyle: chromeStyle)
+        .overlay(alignment: .topLeading) {
+            GhosttyPreviewIndexBadge(
+                displayIndex: displayIndex,
+                isSelected: isSelected,
+                chromeStyle: chromeStyle
+            )
+            .padding(8)
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(previewState.accessibilityValue)
@@ -533,51 +598,28 @@ private struct GhosttyWindowSelectionTile: View {
         case .ready(let preview):
             GhosttyRenderedPreviewSurface(
                 preview: preview,
-                size: layout.previewPointSize
+                size: layout.tilePointSize
             )
 
         case .pending, .none, .failed:
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color.black.opacity(0.30))
-                .frame(
-                    width: layout.previewPointSize.width,
-                    height: layout.previewPointSize.height
-                )
+            Color.black.opacity(0.30)
+                .frame(width: layout.tilePointSize.width, height: layout.tilePointSize.height)
         }
     }
 
-    private var caption: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                Text("\(displayIndex)")
-                    .font(.system(size: 11, weight: .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(TerminalSelectionSheetPalette.tertiary)
+    private var metadata: some View {
+        HStack(spacing: 4) {
+            Text(displayName.isEmpty ? "Window \(displayIndex)" : displayName)
+                .fontWeight(.semibold)
 
-                if !displayName.isEmpty {
-                    Text(displayName)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(TerminalSelectionSheetPalette.primary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
+            Text("·")
 
-                Spacer(minLength: 0)
-            }
-
-            if paneCount > 1 {
-                HStack(spacing: 6) {
-                    Text("\(paneCount)")
-                        .monospacedDigit()
-
-                    Text("panes")
-                }
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(TerminalSelectionSheetPalette.secondary)
-                .lineLimit(1)
-            }
+            Text("\(paneCount) \(paneCount == 1 ? "pane" : "panes")")
         }
-        .padding(.horizontal, 2)
+        .font(.system(size: 11))
+        .foregroundStyle(Color.white.opacity(0.94))
+        .lineLimit(1)
+        .truncationMode(.tail)
     }
 
     private var accessibilityLabel: String {
@@ -591,40 +633,34 @@ private struct GhosttyWindowSelectionTile: View {
     }
 }
 
-private struct GhosttyPaneMapTile: View {
+private struct GhosttyPanePreviewCard: View {
+    let displayIndex: Int
     let isSelected: Bool
     let state: GhosttyPanePreviewSession.PreviewState?
     let size: CGSize
+    let chromeStyle: GhosttyTerminalChromeStyle
 
     var body: some View {
-        let inset = min(1.5, min(size.width, size.height) * 0.08)
-        let contentSize = CGSize(
-            width: max(1, size.width - inset * 2),
-            height: max(1, size.height - inset * 2)
-        )
-        let cornerRadius = min(8, max(3, min(contentSize.width, contentSize.height) * 0.08))
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-
-        previewSurface(size: contentSize)
-        .frame(width: contentSize.width, height: contentSize.height)
-        .clipShape(shape)
-        .overlay {
-            shape.strokeBorder(
-                Color.white.opacity(0.14),
-                lineWidth: 0.75
-            )
-        }
-        .padding(inset)
-        .frame(width: size.width, height: size.height)
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityLabel)
-        .accessibilityValue(state.accessibilityValue)
-        .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
+        previewSurface(size: size)
+            .frame(width: size.width, height: size.height)
+            .terminalSelectionTileChrome(isSelected: isSelected, chromeStyle: chromeStyle)
+            .overlay(alignment: .topLeading) {
+                GhosttyPreviewIndexBadge(
+                    displayIndex: displayIndex,
+                    isSelected: isSelected,
+                    chromeStyle: chromeStyle
+                )
+                    .padding(8)
+            }
+            .contentShape(Rectangle())
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityValue(state.accessibilityValue)
+            .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
     }
 
     private var accessibilityLabel: String {
-        isSelected ? "Selected pane" : "Pane"
+        isSelected ? "Pane \(displayIndex), selected" : "Pane \(displayIndex)"
     }
 
     @ViewBuilder
@@ -638,58 +674,132 @@ private struct GhosttyPaneMapTile: View {
                 .clipped()
 
         case .pending, .none, .failed:
-            Rectangle()
-                .fill(Color.black.opacity(0.30))
+            Color.black.opacity(0.30)
                 .frame(width: size.width, height: size.height)
         }
     }
 }
 
-private struct GhosttyPaneMapSeparators: View {
+private struct GhosttyPreviewIndexBadge: View {
+    let displayIndex: Int
+    let isSelected: Bool
+    let chromeStyle: GhosttyTerminalChromeStyle
+
+    var body: some View {
+        Text("\(displayIndex)")
+            .font(.system(size: 12, weight: .bold, design: .rounded))
+            .monospacedDigit()
+            .foregroundStyle(
+                isSelected
+                    ? chromeStyle.accentForeground
+                    : TerminalSelectionSheetPalette.primary
+            )
+            .frame(width: 28, height: 28)
+            .background(
+                isSelected
+                    ? chromeStyle.accent
+                    : Color(uiColor: .secondarySystemBackground).opacity(0.84),
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .overlay {
+                if !isSelected {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(TerminalSelectionSheetPalette.stroke, lineWidth: 0.75)
+                }
+            }
+    }
+}
+
+private struct GhosttyPaneTopologyDiagram: View {
+    static let contentInset: CGFloat = 6
+    private static let outerCornerRadius: CGFloat = 12
+    private static let tileInset: CGFloat = 2
+
     let panes: [GhosttyPaneSelectionSheetRenderProjection.Pane]
     let selectedPaneID: UUID?
-    let layout: PanePreviewLayout.PaneMapMetrics
+    let layout: PanePreviewLayout.TopologyMetrics?
+    let displayIndices: [UUID: Int]
+    let size: CGSize
     let accent: Color
+    let onSelect: (UUID) -> Void
+
+    static func contentSize(for outerSize: CGSize) -> CGSize {
+        CGSize(
+            width: max(1, outerSize.width - contentInset * 2),
+            height: max(1, outerSize.height - contentInset * 2)
+        )
+    }
 
     var body: some View {
         Canvas { context, _ in
-            let separatorPanes = panes.compactMap { pane in
-                pane.frame.map {
-                    GhosttyPaneSeparatorLayout.Pane(id: pane.id, frame: $0)
+            guard let layout else { return }
+            for pane in panes {
+                guard let frame = layout.frame(for: pane.id) else { continue }
+                let tile = frame.insetBy(dx: Self.tileInset, dy: Self.tileInset)
+                let radius = min(6, min(tile.width, tile.height) * 0.18)
+                let path = Path(roundedRect: tile, cornerRadius: max(1, radius))
+                let selected = pane.id == selectedPaneID
+                context.fill(
+                    path,
+                    with: .color(
+                        selected
+                            ? accent.opacity(0.24)
+                            : TerminalSelectionSheetPalette.row.opacity(0.84)
+                    )
+                )
+                context.stroke(
+                    path,
+                    with: .color(selected ? accent : TerminalSelectionSheetPalette.stroke),
+                    lineWidth: selected ? 2 : 1
+                )
+
+                if let displayIndex = displayIndices[pane.id] {
+                    let labelSize = min(16, max(10, min(tile.width, tile.height) * 0.34))
+                    let label = context.resolve(
+                        Text("\(displayIndex)")
+                            .font(.system(size: labelSize, weight: .bold, design: .rounded))
+                            .foregroundStyle(
+                                selected ? accent : TerminalSelectionSheetPalette.primary
+                            )
+                    )
+                    context.draw(
+                        label,
+                        at: CGPoint(x: tile.midX, y: tile.midY),
+                        anchor: .center
+                    )
                 }
             }
-            let separators = GhosttyPaneSeparatorLayout.segments(for: separatorPanes)
-            let separatorLineWidth: CGFloat = 1
-            let focusedSeparatorLineWidth: CGFloat = 2
-            let origin = CGPoint.zero
-
-            for separator in separators {
-                let frame = separator.frame(
-                    origin: origin,
-                    cellSize: layout.cellSize,
-                    lineWidth: separatorLineWidth
-                )
-                context.fill(
-                    Path(frame),
-                    with: .color(Color.white.opacity(0.22))
-                )
-            }
-
-            for separator in separators {
-                guard let range = separator.focusedRange(
-                    focusedPaneID: selectedPaneID,
-                    paneCount: separatorPanes.count
-                ) else { continue }
-                let frame = separator.frame(
-                    origin: origin,
-                    cellSize: layout.cellSize,
-                    lineWidth: focusedSeparatorLineWidth,
-                    range: range
-                )
-                context.fill(Path(frame), with: .color(accent))
+        }
+        .frame(width: Self.contentSize(for: size).width, height: Self.contentSize(for: size).height)
+        .overlay(alignment: .topLeading) {
+            if let layout {
+                ForEach(panes) { pane in
+                    if let frame = layout.frame(for: pane.id) {
+                        let tile = frame.insetBy(dx: Self.tileInset, dy: Self.tileInset)
+                        Button {
+                            onSelect(pane.id)
+                        } label: {
+                            Color.clear
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .frame(width: tile.width, height: tile.height)
+                        .offset(x: tile.minX, y: tile.minY)
+                    }
+                }
             }
         }
-        .frame(width: layout.size.width, height: layout.size.height)
+        .padding(Self.contentInset)
+        .frame(width: size.width, height: size.height)
+        .background(
+            Color.black.opacity(0.18),
+            in: RoundedRectangle(cornerRadius: Self.outerCornerRadius, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: Self.outerCornerRadius, style: .continuous)
+                .strokeBorder(TerminalSelectionSheetPalette.stroke, lineWidth: 1)
+        }
+        .accessibilityIdentifier("terminal.panes.topology")
         .accessibilityHidden(true)
     }
 }

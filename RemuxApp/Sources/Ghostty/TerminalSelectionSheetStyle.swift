@@ -30,14 +30,27 @@ enum TerminalSelectionSheetLayout {
     static let actionBarHeight: CGFloat = 44
     static let actionsBottomPadding: CGFloat = 8
 
+    static var fixedChromeHeight: CGFloat {
+        headerTopPadding
+            + headerHeight
+            + headerBottomPadding
+            + contextHeight
+            + contextToContentSpacing
+            + contentToActionsSpacing
+            + actionBarHeight
+            + actionsBottomPadding
+    }
+
+    static func maximumContentHeight(availableHeight: CGFloat) -> CGFloat {
+        guard availableHeight.isFinite else { return 0 }
+        return max(0, availableHeight - fixedChromeHeight)
+    }
+
     /// The `.height()` detent excludes the bottom safe area (verified by
     /// measurement: adding it produced exactly one safe-area of slack), so
     /// the sum covers only the content rows the scaffold lays out.
-    static func sheetHeight(gridHeight: CGFloat) -> CGFloat {
-        headerTopPadding + headerHeight + headerBottomPadding
-            + contextHeight + contextToContentSpacing
-            + gridHeight
-            + contentToActionsSpacing + actionBarHeight + actionsBottomPadding
+    static func sheetHeight(contentHeight: CGFloat) -> CGFloat {
+        fixedChromeHeight + max(0, contentHeight)
     }
 }
 
@@ -85,22 +98,6 @@ struct TerminalSelectionSheetCloseButton: View {
         }
         .accessibilityLabel("Close \(title)")
         .accessibilityIdentifier(accessibilityIdentifier)
-    }
-}
-
-struct TerminalSelectionTileCheckmark: View {
-    let chromeStyle: GhosttyTerminalChromeStyle
-
-    var body: some View {
-        Image(systemName: "checkmark")
-            .font(.system(size: 10, weight: .bold))
-            .foregroundStyle(chromeStyle.accentForeground)
-            .frame(width: 22, height: 22)
-            .background(chromeStyle.accent, in: Circle())
-            .overlay {
-                Circle().strokeBorder(Color.white.opacity(0.24), lineWidth: 0.5)
-            }
-            .accessibilityHidden(true)
     }
 }
 
@@ -251,12 +248,6 @@ extension View {
                             : TerminalSelectionSheetPalette.stroke,
                         lineWidth: isSelected ? 1.25 : 1
                     )
-            }
-            .overlay(alignment: .topTrailing) {
-                if isSelected {
-                    TerminalSelectionTileCheckmark(chromeStyle: chromeStyle)
-                        .padding(6)
-                }
             }
     }
 
