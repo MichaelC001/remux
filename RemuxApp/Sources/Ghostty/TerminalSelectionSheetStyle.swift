@@ -58,9 +58,9 @@ struct TerminalSelectionSheetContextLabel: View {
     }
 }
 
-struct CompactCircularChromeButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
+extension View {
+    func compactCircularChromeButtonLabel() -> some View {
+        self
             .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(TerminalSelectionSheetPalette.primary)
             .frame(width: 36, height: 36)
@@ -81,8 +81,8 @@ struct TerminalSelectionSheetCloseButton: View {
             action()
         } label: {
             Image(systemName: "xmark")
+                .compactCircularChromeButtonLabel()
         }
-        .buttonStyle(CompactCircularChromeButtonStyle())
         .accessibilityLabel("Close \(title)")
         .accessibilityIdentifier(accessibilityIdentifier)
     }

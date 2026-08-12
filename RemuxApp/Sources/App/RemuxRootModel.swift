@@ -1036,8 +1036,8 @@ final class RemuxRootModel: ObservableObject {
               let server = library.server(id: serverID) else {
             return
         }
-        let workspace = library.workspaces.first {
-            $0.serverID == serverID && $0.sessionName == sessionName
+        let workspace = library.workspaces(for: serverID).first {
+            $0.sessionName == sessionName
         } ?? SavedWorkspace(serverID: serverID, sessionName: sessionName)
         await connect(server: server, workspace: workspace)
     }

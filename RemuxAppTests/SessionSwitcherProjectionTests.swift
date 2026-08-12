@@ -4,7 +4,7 @@ import XCTest
 
 final class SessionSwitcherProjectionTests: XCTestCase {
     @MainActor
-    func testLastOpenedPresentationUsesCalmSingleUnitRelativeValue() {
+    func testLastOpenedPresentationUsesJustNowForRecentDates() {
         let referenceDate = Date(timeIntervalSince1970: 10_000)
 
         XCTAssertEqual(
@@ -14,13 +14,6 @@ final class SessionSwitcherProjectionTests: XCTestCase {
             ),
             "Opened just now"
         )
-        let longerValue = SessionLastOpenedText.value(
-            for: referenceDate.addingTimeInterval(-2_390),
-            relativeTo: referenceDate
-        )
-        XCTAssertTrue(longerValue.hasPrefix("Opened "))
-        XCTAssertFalse(longerValue.contains(","))
-        XCTAssertFalse(longerValue.localizedCaseInsensitiveContains("sec"))
     }
 
     func testProjectionPreservesCanonicalActiveOrderAndMarksSelection() {

@@ -3558,9 +3558,9 @@ final class RemuxAppUITests: XCTestCase {
             .matching(identifier: "terminal.sessions.recent-session")
             .matching(NSPredicate(format: "label CONTAINS[c] %@", sessionName))
             .firstMatch
-        let sessionList = app.descendants(matching: .any)["terminal.sessions.list"]
-        for _ in 0..<8 where !recentRow.exists || !recentRow.isHittable {
-            sessionList.swipeUp()
+        let deadline = Date().addingTimeInterval(5)
+        while !recentRow.isHittable, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         }
         XCTAssertTrue(
             recentRow.isHittable,

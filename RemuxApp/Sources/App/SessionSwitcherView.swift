@@ -294,8 +294,8 @@ struct SessionSwitcherView: View {
                     Image(systemName: "arrow.clockwise")
                 }
             }
+            .compactCircularChromeButtonLabel()
         }
-        .buttonStyle(CompactCircularChromeButtonStyle())
         .disabled(isRefreshing)
         .accessibilityLabel(isRefreshing ? "Refreshing Sessions" : "Refresh Sessions")
         .accessibilityIdentifier("terminal.sessions.refresh")
