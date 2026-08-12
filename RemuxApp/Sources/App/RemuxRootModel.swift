@@ -1255,8 +1255,12 @@ final class RemuxRootModel: ObservableObject {
                 in: activeSessions
             ) {
                 let serverID = session.target.server.id
-                tmuxSessionDiscoveryStates[serverID] = tmuxSessionDiscoveryState(for: serverID)
+                let discoveryState = tmuxSessionDiscoveryState(for: serverID)
+                tmuxSessionDiscoveryStates[serverID] = discoveryState
                     .confirmingExistingSession(named: session.target.workspace.sessionName)
+                if discoveryState.phase == .idle || discoveryState.phase == .failed {
+                    refreshTmuxSessions(for: serverID)
+                }
             }
         case .missingSession, .staleInstance, .applied,
              .automaticReconnectStarted, .automaticReconnectSkipped:

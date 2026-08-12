@@ -194,6 +194,55 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(retryCount, 2)
     }
 
+    func testConnectedRuntimeRetriesFailedDiscoveryForItsServer() async throws {
+        enum DiscoveryFailure: Error {
+            case unavailable
+        }
+
+        let pair = makePasswordBackedServer()
+        let workspace = SavedWorkspace(serverID: pair.server.id, sessionName: "main")
+        let discoverer = RecordingTmuxSessionDiscoverer(
+            results: [
+                .failure(DiscoveryFailure.unavailable),
+                .success(["main", "ops"]),
+            ]
+        )
+        let harness = makeHarness(
+            servers: [pair.server],
+            workspaces: [workspace],
+            identities: [pair.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
+        await harness.model.load()
+
+        let didFail = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: pair.server.id).phase == .failed
+        }
+        XCTAssertTrue(didFail)
+
+        await harness.model.connect(to: workspace.id)
+        let instanceID = try XCTUnwrap(harness.model.activeSessions.first?.instanceID)
+        _ = harness.model.handleTerminalRuntimeStateUpdate(
+            TerminalRuntimeStateUpdate(
+                workspaceID: workspace.id,
+                instanceID: instanceID,
+                state: .connected,
+                source: .readiness
+            )
+        )
+
+        let didRetry = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: pair.server.id).sessionNames
+                == ["main", "ops"]
+        }
+        XCTAssertTrue(didRetry)
+        let discoveryCount = await discoverer.targets().count
+        XCTAssertEqual(discoveryCount, 2)
+    }
+
     func testCancelledCurrentTmuxRefreshReturnsToIdleAndCanRetry() async throws {
         let pair = makePasswordBackedServer()
         let discoverer = RecordingTmuxSessionDiscoverer(
