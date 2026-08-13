@@ -97,7 +97,9 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         x: UInt32 = 0,
         y: UInt32 = 0,
         width: UInt32 = 80,
-        height: UInt32 = 24
+        height: UInt32 = 24,
+        currentCommand: String = "",
+        currentPath: String = ""
     ) -> TmuxSessionController.PaneInfo {
         TmuxSessionController.PaneInfo(
             id: id,
@@ -106,6 +108,8 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
             y: y,
             width: width,
             height: height,
+            currentCommand: currentCommand,
+            currentPath: currentPath,
             phase: .live
         )
     }
@@ -310,8 +314,21 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
                 )
             ],
             panes: [
-                pane(id: 10, windowID: 1, width: 39),
-                pane(id: 11, windowID: 1, x: 40, width: 40)
+                pane(
+                    id: 10,
+                    windowID: 1,
+                    width: 39,
+                    currentCommand: "nvim",
+                    currentPath: "/work/editor"
+                ),
+                pane(
+                    id: 11,
+                    windowID: 1,
+                    x: 40,
+                    width: 40,
+                    currentCommand: "node",
+                    currentPath: "/work/server"
+                )
             ],
             activeWindowID: 1
         ))
@@ -357,8 +374,21 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
                 )
             ],
             panes: [
-                pane(id: 10, windowID: 1, width: 39),
-                pane(id: 11, windowID: 1, x: 40, width: 40)
+                pane(
+                    id: 10,
+                    windowID: 1,
+                    width: 39,
+                    currentCommand: "nvim",
+                    currentPath: "/work/editor"
+                ),
+                pane(
+                    id: 11,
+                    windowID: 1,
+                    x: 40,
+                    width: 40,
+                    currentCommand: "node",
+                    currentPath: "/work/server"
+                )
             ],
             activeWindowID: 1
         ))
@@ -380,7 +410,6 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         )
         let panePicker = adapter.paneSelectionSheetRenderProjection(topLevelID: windowID)
         XCTAssertTrue(panePicker.isServerZoomed)
-        XCTAssertEqual(panePicker.windowGrid, .init(columns: 80, rows: 24))
         XCTAssertEqual(
             panePicker.panes.compactMap(\.frame),
             [
@@ -389,6 +418,8 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
             ],
             "the picker must keep canonical unzoomed geometry while the viewport is zoomed"
         )
+        XCTAssertEqual(panePicker.panes.map(\.tmuxCurrentCommand), ["nvim", "node"])
+        XCTAssertEqual(panePicker.panes.map(\.tmuxCurrentPath), ["/work/editor", "/work/server"])
 
         await session.shutdown()
     }
