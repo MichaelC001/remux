@@ -493,14 +493,22 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 completeKeyboardDidHide()
             }
             .sheet(item: selectionSheetBinding) { sheet in
+                let navigationBarHeight = TerminalSelectionSheetLayout.nativeNavigationBarHeight(
+                    width: screenProxy.size.width
+                )
+                let maximumContentHeight = TerminalSelectionSheetLayout.maximumContentHeight(
+                    availableHeight: screenProxy.size.height,
+                    navigationBarHeight: navigationBarHeight
+                )
                 let contentHeight = selectionSheetContentHeight(
                     for: sheet,
-                    availableHeight: screenProxy.size.height
+                    maximumContentHeight: maximumContentHeight
                 )
                 selectionSheetContent(sheet, contentHeight: contentHeight)
                     .presentationDetents(
                         [.height(TerminalSelectionSheetLayout.sheetHeight(
-                            contentHeight: contentHeight
+                            contentHeight: contentHeight,
+                            navigationBarHeight: navigationBarHeight
                         ))]
                     )
                     .presentationContentInteraction(.scrolls)
@@ -2077,11 +2085,8 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func selectionSheetContentHeight(
         for sheet: GhosttySurfaceSelectionSheet,
-        availableHeight: CGFloat
+        maximumContentHeight: CGFloat
     ) -> CGFloat {
-        let maximumContentHeight = TerminalSelectionSheetLayout.maximumContentHeight(
-            availableHeight: availableHeight
-        )
         switch sheet {
         case .windows:
             return PanePreviewLayout.gridIdealHeight(

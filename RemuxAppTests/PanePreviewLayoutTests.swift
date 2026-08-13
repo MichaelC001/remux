@@ -23,8 +23,10 @@ final class PanePreviewLayoutTests: XCTestCase {
 
     func testBothPickersUseTheSameLandscapeContentBudget() {
         let availableHeight: CGFloat = 393
+        let navigationBarHeight: CGFloat = 44
         let maximumContentHeight = TerminalSelectionSheetLayout.maximumContentHeight(
-            availableHeight: availableHeight
+            availableHeight: availableHeight,
+            navigationBarHeight: navigationBarHeight
         )
         let windowHeight = PanePreviewLayout.gridIdealHeight(
             itemCount: 100,
@@ -38,17 +40,25 @@ final class PanePreviewLayoutTests: XCTestCase {
         ).visibleContentHeight
 
         XCTAssertEqual(
-            maximumContentHeight + TerminalSelectionSheetLayout.fixedChromeHeight,
+            maximumContentHeight + TerminalSelectionSheetLayout.fixedChromeHeight(
+                navigationBarHeight: navigationBarHeight
+            ),
             availableHeight
         )
         XCTAssertEqual(windowHeight, maximumContentHeight)
         XCTAssertEqual(paneHeight, maximumContentHeight)
         XCTAssertEqual(
-            TerminalSelectionSheetLayout.sheetHeight(contentHeight: windowHeight),
+            TerminalSelectionSheetLayout.sheetHeight(
+                contentHeight: windowHeight,
+                navigationBarHeight: navigationBarHeight
+            ),
             availableHeight
         )
         XCTAssertEqual(
-            TerminalSelectionSheetLayout.sheetHeight(contentHeight: paneHeight),
+            TerminalSelectionSheetLayout.sheetHeight(
+                contentHeight: paneHeight,
+                navigationBarHeight: navigationBarHeight
+            ),
             availableHeight
         )
     }
