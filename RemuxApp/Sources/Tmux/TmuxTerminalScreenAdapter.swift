@@ -277,7 +277,9 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
                     visibleFrame: window.zoomed
                         ? (isFocused ? fullWindowFrame : nil)
                         : normalFrame,
-                    isFocused: isFocused
+                    isFocused: isFocused,
+                    tmuxCurrentCommand: pane.currentCommand,
+                    tmuxCurrentPath: pane.currentPath
                 )
             }
 
@@ -821,6 +823,11 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
 
     func claimActiveTmuxViewportIfNeeded() {
         controller?.claimActiveViewportIfNeeded()
+    }
+
+    func refreshTmuxPaneMetadata(inTopLevel id: UUID) {
+        guard let windowID = identities.windowID(for: id) else { return }
+        controller?.requestRefreshWindowPaneMetadata(windowID: windowID)
     }
 
     func focusTmuxPane(_ id: UUID) -> GhosttyTmuxModelActionOutcome {

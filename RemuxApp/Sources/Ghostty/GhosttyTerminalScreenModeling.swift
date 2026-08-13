@@ -130,6 +130,8 @@ protocol GhosttyTmuxActionModeling: ObservableObject {
 
     func claimActiveTmuxViewportIfNeeded()
 
+    func refreshTmuxPaneMetadata(inTopLevel id: UUID)
+
     @discardableResult
     func focusTmuxPane(_ id: UUID) -> GhosttyTmuxModelActionOutcome
 
