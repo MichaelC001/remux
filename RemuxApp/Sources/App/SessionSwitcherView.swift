@@ -702,8 +702,6 @@ private struct AvailableSessionsBrowserView: View {
 
     var body: some View {
         List {
-            refreshRow
-
             if let failureMessage {
                 Label(failureMessage, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(TerminalSelectionSheetPalette.secondary)
@@ -743,6 +741,26 @@ private struct AvailableSessionsBrowserView: View {
         .navigationTitle("Available Sessions")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Haptic.tap()
+                    onRefresh()
+                } label: {
+                    if isRefreshing {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+                .disabled(isRefreshing)
+                .accessibilityLabel(
+                    isRefreshing ? "Refreshing Sessions" : "Refresh Sessions"
+                )
+                .accessibilityIdentifier("terminal.sessions.available-refresh")
+            }
+        }
         .searchable(
             text: $query,
             placement: .navigationBarDrawer(displayMode: .always),
@@ -750,33 +768,6 @@ private struct AvailableSessionsBrowserView: View {
         )
         .searchPresentationToolbarBehavior(.avoidHidingContent)
         .accessibilityIdentifier("terminal.sessions.available-browser-view")
-    }
-
-    private var refreshRow: some View {
-        Button {
-            Haptic.tap()
-            onRefresh()
-        } label: {
-            Label {
-                Text(isRefreshing ? "Checking Available Sessions…" : "Refresh Available Sessions")
-            } icon: {
-                if isRefreshing {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Image(systemName: "arrow.clockwise")
-                }
-            }
-            .font(.subheadline.weight(.medium))
-            .foregroundStyle(TerminalSelectionSheetPalette.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(isRefreshing)
-        .sessionSwitcherListRow(
-            accessibilityIdentifier: "terminal.sessions.available-refresh"
-        )
     }
 
     private var matchingSessions: [AvailableSessionSwitcherItem] {
