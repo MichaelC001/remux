@@ -646,6 +646,56 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         XCTAssertEqual(harness.recorder.takeStrings(), ["refresh-client -C 100x40\n"])
     }
 
+    func testClientSizeBeforeStartBecomesLatestInitialGrid() async throws {
+        let runtime = try GhosttyKitRuntime()
+        let recorder = ControllerOutboundRecorder()
+        let attaching = expectation(description: "controller started attaching")
+        let controller = TmuxSessionController(
+            callbacks: .init(
+                onState: { state in
+                    if state == .attaching { attaching.fulfill() }
+                },
+                onRequestFailed: { request in
+                    XCTFail("unexpected request failure: \(request)")
+                }
+            )
+        )
+        addTeardownBlock {
+            _ = runtime
+            await withCheckedContinuation { continuation in
+                controller.shutdown { continuation.resume() }
+            }
+        }
+        controller.setOutboundSink { recorder.append($0) }
+        controller.setClientSize(cols: 83, rows: 44, claimActiveViewport: true)
+        controller.setClientSize(cols: 100, rows: 45, claimActiveViewport: true)
+        await drain(controller)
+
+        XCTAssertTrue(recorder.takeStrings().isEmpty)
+
+        try await withCheckedThrowingContinuation { continuation in
+            controller.start(initialSize: .init(cols: 83, rows: 44)) { result in
+                continuation.resume(with: result)
+            }
+        }
+        await fulfillment(of: [attaching], timeout: 1)
+        controller.pump(Data(
+            "%begin 1 1 0\n%end 1 1 0\n%session-changed $42 main\n".utf8
+        ))
+        await drain(controller)
+
+        XCTAssertEqual(
+            recorder.takeStrings(),
+            [
+                "display-message -p '#{version}'\n"
+                    + "refresh-client -C 100x45\n"
+                    + "list-windows -F '#{session_id} #{window_id} #{window_active} "
+                    + "#{pane_id} #{window_width} #{window_height} #{window_layout} "
+                    + "#{window_visible_layout} #{window_name}'\n"
+            ]
+        )
+    }
+
     func testClientSizeRevertPublishesEachDistinctSize() async throws {
         let harness = try await readyController(
             listWindowsBody: Self.onePaneWindow,
