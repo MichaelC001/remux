@@ -178,7 +178,7 @@ protocol GhosttyTmuxActionModeling: ObservableObject {
 protocol GhosttyTmuxSelectionModeling: ObservableObject {
     func makePanePreviewSession(
         leafIDs: [UUID],
-        previewAvailableWidth: CGFloat
+        pixelBudget: GhosttyPanePreviewSession.PixelBudget
     ) -> GhosttyPanePreviewSession
 
     // MARK: Selection sheets

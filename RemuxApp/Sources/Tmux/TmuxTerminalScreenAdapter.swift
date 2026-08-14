@@ -559,21 +559,21 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
 
     func makePanePreviewSession(
         leafIDs: [UUID],
-        previewAvailableWidth: CGFloat
+        pixelBudget: GhosttyPanePreviewSession.PixelBudget
     ) -> GhosttyPanePreviewSession {
         return newPanePreviewSession(
             leafIDs: leafIDs,
-            previewAvailableWidth: previewAvailableWidth
+            pixelBudget: pixelBudget
         )
     }
 
     private func newPanePreviewSession(
         leafIDs: [UUID],
-        previewAvailableWidth: CGFloat
+        pixelBudget: GhosttyPanePreviewSession.PixelBudget
     ) -> GhosttyPanePreviewSession {
         GhosttyPanePreviewSession(
             leafIDs: leafIDs,
-            previewAvailableWidth: previewAvailableWidth,
+            pixelBudget: pixelBudget,
             client: GhosttyPanePreviewSession.PreviewClient(
                 capture: { [weak self] leafID, budget in
                     guard let self,

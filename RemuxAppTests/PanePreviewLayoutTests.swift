@@ -3,17 +3,32 @@ import XCTest
 @testable import Remux
 
 final class PanePreviewLayoutTests: XCTestCase {
-    func testWindowGridUsesTwoColumnTileBudget() {
-        let metrics = PanePreviewLayout.windowMetrics(availableWidth: 361)
+    func testPortraitWindowGridUsesTwoColumnPortraitCards() {
+        let metrics = PanePreviewLayout.windowMetrics(
+            availableSize: CGSize(width: 393, height: 852)
+        )
 
         XCTAssertEqual(metrics.columnCount, 2)
         XCTAssertEqual(metrics.tilePointSize, CGSize(width: 175, height: 193))
         XCTAssertEqual(metrics.capturePointSize, CGSize(width: 159, height: 120))
     }
 
-    func testWindowPhysicalPixelBudgetTracksWindowGridMetrics() {
+    func testLandscapeWindowGridUsesThreeColumnFourByThreeCards() {
+        let metrics = PanePreviewLayout.windowMetrics(
+            availableSize: CGSize(width: 852, height: 393)
+        )
+
+        XCTAssertEqual(metrics.columnCount, 3)
+        XCTAssertEqual(metrics.tilePointSize, CGSize(width: 266, height: 200))
+        XCTAssertEqual(metrics.capturePointSize, CGSize(width: 250, height: 188))
+    }
+
+    func testWindowPhysicalPixelBudgetUsesResolvedMetrics() {
+        let metrics = PanePreviewLayout.windowMetrics(
+            availableSize: CGSize(width: 393, height: 852)
+        )
         let budget = PanePreviewLayout.windowPhysicalPixelBudget(
-            availableWidth: 361,
+            metrics: metrics,
             scale: 3
         )
 
@@ -21,7 +36,7 @@ final class PanePreviewLayoutTests: XCTestCase {
         XCTAssertEqual(budget.height, 360)
     }
 
-    func testBothPickersUseTheSameLandscapeContentBudget() {
+    func testLandscapeWindowGridUsesAvailableContentBudget() {
         let availableHeight: CGFloat = 393
         let navigationBarHeight: CGFloat = 44
         let maximumContentHeight = TerminalSelectionSheetLayout.maximumContentHeight(
@@ -30,7 +45,9 @@ final class PanePreviewLayoutTests: XCTestCase {
         )
         let windowHeight = PanePreviewLayout.gridIdealHeight(
             itemCount: 100,
-            metrics: PanePreviewLayout.windowMetrics(availableWidth: 361),
+            metrics: PanePreviewLayout.windowMetrics(
+                availableSize: CGSize(width: 852, height: availableHeight)
+            ),
             maximumContentHeight: maximumContentHeight
         )
         XCTAssertEqual(
@@ -50,7 +67,9 @@ final class PanePreviewLayoutTests: XCTestCase {
     }
 
     func testWindowGridPreservesItsPartialNextRowAffordanceWithinTheBudget() {
-        let metrics = PanePreviewLayout.windowMetrics(availableWidth: 361)
+        let metrics = PanePreviewLayout.windowMetrics(
+            availableSize: CGSize(width: 393, height: 852)
+        )
         let expectedHeight = metrics.tilePointSize.height
             + metrics.gridSpacing
             + metrics.tilePointSize.height * 0.5

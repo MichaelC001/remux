@@ -6,7 +6,7 @@ enum GhosttySurfaceSelectionSheet: Identifiable {
 
     var id: String {
         switch self {
-        case .windows(_):
+        case .windows:
             "windows"
         case .panes(let topLevelID):
             "panes-\(topLevelID.uuidString)"
@@ -15,7 +15,7 @@ enum GhosttySurfaceSelectionSheet: Identifiable {
 
     var paneTopLevelIDForTopologyValidation: UUID? {
         switch self {
-        case .windows(_):
+        case .windows:
             nil
         case .panes(let topLevelID):
             topLevelID
@@ -32,6 +32,7 @@ struct GhosttyWindowSelectionSheet: View {
 
     let projection: GhosttyWindowSelectionSheetRenderProjection
     let sessionName: String
+    let layout: PanePreviewLayout.Metrics
     let contentHeight: CGFloat
     let commandFailureMessage: String?
     let onCreateWindow: (() -> Void)?
@@ -39,8 +40,6 @@ struct GhosttyWindowSelectionSheet: View {
     let onRemoveWindow: (UUID) -> Void
 
     var body: some View {
-        let layout = PanePreviewLayout.windowMetricsForCurrentScreen()
-
         NavigationStack {
             TerminalSelectionSheetContent(
                 context: "\(sessionName) · \(projection.windows.count) \(projection.windows.count == 1 ? "window" : "windows")"
@@ -53,7 +52,11 @@ struct GhosttyWindowSelectionSheet: View {
                 }
                 .frame(height: contentHeight)
                 .accessibilityIdentifier("terminal.windows.scroll")
-                .contentMargins(.horizontal, 16, for: .scrollContent)
+                .contentMargins(
+                    .horizontal,
+                    TerminalSelectionSheetLayout.horizontalContentPadding,
+                    for: .scrollContent
+                )
             } actions: {
                 TerminalSelectionSheetActionButton(
                     title: "New Window",
@@ -217,7 +220,7 @@ struct GhosttyPaneSelectionSheet: View {
     @State private var pendingContextAction: GhosttyPaneRemovalRequest?
 
     let projection: GhosttyPaneSelectionSheetRenderProjection
-    let contentHeight: CGFloat
+    let topologySize: CGSize
     let commandFailureMessage: String?
     let onSplitPane: (() -> Void)?
     let onStackPane: (() -> Void)?
@@ -231,7 +234,10 @@ struct GhosttyPaneSelectionSheet: View {
                 context: "\(projection.paneCount) \(projection.paneCount == 1 ? "pane" : "panes")"
             ) {
                 panePicker
-                    .padding(.horizontal, 16)
+                    .padding(
+                        .horizontal,
+                        TerminalSelectionSheetLayout.horizontalContentPadding
+                    )
             } actions: {
                 HStack(spacing: 0) {
                     GhosttyPaneSheetActionButton(
@@ -316,11 +322,7 @@ struct GhosttyPaneSelectionSheet: View {
     }
 
     private var panePicker: some View {
-        let topologySize = PaneTopologyLayout.size(
-            availableWidth: PanePreviewLayout.currentSheetContentWidth(),
-            maximumHeight: contentHeight
-        )
-        return GhosttyPaneTopologyDiagram(
+        GhosttyPaneTopologyDiagram(
             panes: projection.panes,
             selectedPaneID: projection.selectedPaneID,
             size: topologySize,
