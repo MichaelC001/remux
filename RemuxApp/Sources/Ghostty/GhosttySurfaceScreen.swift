@@ -432,7 +432,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             isComposerPresented: isActiveComposerPresented,
                             onShowSessions: onShowSessions,
                             onShowLibrary: onShowLibrary,
-                            onShowWindows: showWindows,
+                            onShowWindows: {
+                                showWindows(availableSize: screenProxy.size)
+                            },
                             onShowPanes: showPanes,
                             onOpenComposer: openComposer,
                             onToggleKeyboard: toggleKeyboardChrome,
@@ -493,6 +495,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 completeKeyboardDidHide()
             }
             .sheet(item: selectionSheetBinding) { sheet in
+                let windowLayout = PanePreviewLayout.windowMetrics(
+                    availableSize: screenProxy.size
+                )
                 let navigationBarHeight = TerminalSelectionSheetLayout.nativeNavigationBarHeight(
                     width: screenProxy.size.width
                 )
@@ -500,11 +505,24 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                     availableHeight: screenProxy.size.height,
                     navigationBarHeight: navigationBarHeight
                 )
+                let paneTopologySize = PaneTopologyLayout.size(
+                    availableWidth: TerminalSelectionSheetLayout.contentWidth(
+                        availableWidth: screenProxy.size.width
+                    ),
+                    maximumHeight: maximumContentHeight
+                )
                 let contentHeight = selectionSheetContentHeight(
                     for: sheet,
+                    windowLayout: windowLayout,
+                    paneTopologySize: paneTopologySize,
                     maximumContentHeight: maximumContentHeight
                 )
-                selectionSheetContent(sheet, contentHeight: contentHeight)
+                selectionSheetContent(
+                    sheet,
+                    windowLayout: windowLayout,
+                    paneTopologySize: paneTopologySize,
+                    contentHeight: contentHeight
+                )
                     .presentationDetents(
                         [.height(TerminalSelectionSheetLayout.sheetHeight(
                             contentHeight: contentHeight,
@@ -1393,22 +1411,31 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         }
     }
 
-    private func showWindows() {
+    private func showWindows(availableSize: CGSize) {
         guard !composer.isSubmitting else { return }
         model.claimActiveTmuxViewportIfNeeded()
         guard let projection = model.windowSheetPresentationProjection() else { return }
         GhosttyRuntimeTrace.flowEventIfActive("tmux.newWindow", event: "ui.showWindows")
+        let layout = PanePreviewLayout.windowMetrics(availableSize: availableSize)
         applySelectionSheetPresentation(
-            .windows(
-                makeWindowPreviewSession(leafIDs: projection.previewLeafIDs)
-            )
+            .windows(makeWindowPreviewSession(
+                leafIDs: projection.previewLeafIDs,
+                layout: layout
+            ))
         )
     }
 
-    private func makeWindowPreviewSession(leafIDs: [UUID]) -> GhosttyPanePreviewSession {
-        model.makePanePreviewSession(
+    private func makeWindowPreviewSession(
+        leafIDs: [UUID],
+        layout: PanePreviewLayout.Metrics
+    ) -> GhosttyPanePreviewSession {
+        let dimensions = PanePreviewLayout.windowPhysicalPixelBudget(
+            metrics: layout,
+            scale: displayScale
+        )
+        return model.makePanePreviewSession(
             leafIDs: leafIDs,
-            previewAvailableWidth: PanePreviewLayout.currentSheetContentWidth()
+            pixelBudget: .init(width: dimensions.width, height: dimensions.height)
         )
     }
 
@@ -1426,9 +1453,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func cancelSelectionSheetPreviewSession(_ sheet: GhosttySurfaceSelectionSheet?) {
         switch sheet {
-        case .windows(let session), .panes(_, let session):
+        case .windows(let session):
             session.cancelAll()
-        case .none:
+        case .panes, .none:
             break
         }
     }
@@ -1439,18 +1466,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         guard let projection = model.selectedPaneSheetPresentationProjection() else { return }
         GhosttyRuntimeTrace.flowEventIfActive("tmux.splitPane", event: "ui.showPanes")
 
-        // Carry the preview session in the sheet payload itself so the pane
-        // sheet never renders against a separate optional state that may lag
-        // the presentation transaction.
         applySelectionSheetPresentation(
-            .panes(
-                topLevelID: projection.topLevelID,
-                previews: model.makePanePreviewSession(
-                    leafIDs: projection.previewLeafIDs,
-                    previewAvailableWidth: PanePreviewLayout.currentSheetContentWidth()
-                )
-            )
+            .panes(topLevelID: projection.topLevelID)
         )
+        model.refreshTmuxPaneMetadata(inTopLevel: projection.topLevelID)
     }
 
     private func updateSelectionSheetViewportHold(
@@ -2085,28 +2104,27 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func selectionSheetContentHeight(
         for sheet: GhosttySurfaceSelectionSheet,
+        windowLayout: PanePreviewLayout.Metrics,
+        paneTopologySize: CGSize,
         maximumContentHeight: CGFloat
     ) -> CGFloat {
         switch sheet {
         case .windows:
             return PanePreviewLayout.gridIdealHeight(
                 itemCount: model.windowSelectionSheetRenderProjection().windows.count,
-                metrics: PanePreviewLayout.windowMetricsForCurrentScreen(),
+                metrics: windowLayout,
                 maximumContentHeight: maximumContentHeight
             )
-        case .panes(let topLevelID, _):
-            let projection = model.paneSelectionSheetRenderProjection(topLevelID: topLevelID)
-            return PanePreviewLayout.panePickerMetrics(
-                itemCount: projection.paneCount,
-                availableWidth: PanePreviewLayout.currentSheetContentWidth(),
-                maximumContentHeight: maximumContentHeight
-            ).visibleContentHeight
+        case .panes:
+            return paneTopologySize.height
         }
     }
 
     @ViewBuilder
     private func selectionSheetContent(
         _ sheet: GhosttySurfaceSelectionSheet,
+        windowLayout: PanePreviewLayout.Metrics,
+        paneTopologySize: CGSize,
         contentHeight: CGFloat
     ) -> some View {
         switch sheet {
@@ -2115,6 +2133,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 session: session,
                 projection: model.windowSelectionSheetRenderProjection(),
                 sessionName: presentation.sessionName,
+                layout: windowLayout,
                 contentHeight: contentHeight,
                 commandFailureMessage: selectionSheetCommandFailureMessage,
                 onCreateWindow: createTmuxWindowFromSelectionSheet,
@@ -2122,11 +2141,10 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 onRemoveWindow: closeTmuxWindowFromSelectionSheet
             )
 
-        case .panes(let topLevelID, let session):
+        case .panes(let topLevelID):
             GhosttyPaneSelectionSheet(
-                session: session,
                 projection: model.paneSelectionSheetRenderProjection(topLevelID: topLevelID),
-                contentHeight: contentHeight,
+                topologySize: paneTopologySize,
                 commandFailureMessage: selectionSheetCommandFailureMessage,
                 onSplitPane: {
                     splitFocusedTmuxPaneFromSelectionSheet(
@@ -2301,9 +2319,9 @@ enum GhosttyViewportSizing {
 private extension Optional where Wrapped == GhosttySurfaceSelectionSheet {
     var traceLabel: String {
         switch self {
-        case .some(.windows(_)):
+        case .some(.windows):
             return "windows"
-        case .some(.panes(_, _)):
+        case .some(.panes):
             return "panes"
         case .none:
             return "none"

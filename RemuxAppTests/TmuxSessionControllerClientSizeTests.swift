@@ -113,6 +113,32 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await fulfillment(of: [requestFailure], timeout: 0.05)
     }
 
+    func testWindowPaneMetadataRefreshDrainsOneRequest() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.threePaneZoomedWindow,
+            expectedPaneCount: 3
+        )
+
+        harness.controller.requestRefreshWindowPaneMetadata(windowID: 0)
+        await drain(harness.controller)
+
+        let writes = harness.recorder.takeStrings()
+        XCTAssertEqual(writes.count, 1)
+        XCTAssertFalse(try XCTUnwrap(writes.first).isEmpty)
+    }
+
+    func testWindowPaneMetadataRefreshIgnoresUnknownWindow() async throws {
+        let harness = try await readyController(
+            listWindowsBody: Self.threePaneZoomedWindow,
+            expectedPaneCount: 3
+        )
+
+        harness.controller.requestRefreshWindowPaneMetadata(windowID: 99)
+        await drain(harness.controller)
+
+        XCTAssertTrue(harness.recorder.takeStrings().isEmpty)
+    }
+
     func testShutdownResumesOutstandingPaneCurrentDirectoryQuery() async throws {
         let harness = try await readyController(
             listWindowsBody: Self.threePaneZoomedWindow,

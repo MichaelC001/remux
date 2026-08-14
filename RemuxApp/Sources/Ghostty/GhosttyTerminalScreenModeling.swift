@@ -130,6 +130,8 @@ protocol GhosttyTmuxActionModeling: ObservableObject {
 
     func claimActiveTmuxViewportIfNeeded()
 
+    func refreshTmuxPaneMetadata(inTopLevel id: UUID)
+
     @discardableResult
     func focusTmuxPane(_ id: UUID) -> GhosttyTmuxModelActionOutcome
 
@@ -176,7 +178,7 @@ protocol GhosttyTmuxActionModeling: ObservableObject {
 protocol GhosttyTmuxSelectionModeling: ObservableObject {
     func makePanePreviewSession(
         leafIDs: [UUID],
-        previewAvailableWidth: CGFloat
+        pixelBudget: GhosttyPanePreviewSession.PixelBudget
     ) -> GhosttyPanePreviewSession
 
     // MARK: Selection sheets

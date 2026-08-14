@@ -277,7 +277,9 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
                     visibleFrame: window.zoomed
                         ? (isFocused ? fullWindowFrame : nil)
                         : normalFrame,
-                    isFocused: isFocused
+                    isFocused: isFocused,
+                    tmuxCurrentCommand: pane.currentCommand,
+                    tmuxCurrentPath: pane.currentPath
                 )
             }
 
@@ -557,21 +559,21 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
 
     func makePanePreviewSession(
         leafIDs: [UUID],
-        previewAvailableWidth: CGFloat
+        pixelBudget: GhosttyPanePreviewSession.PixelBudget
     ) -> GhosttyPanePreviewSession {
         return newPanePreviewSession(
             leafIDs: leafIDs,
-            previewAvailableWidth: previewAvailableWidth
+            pixelBudget: pixelBudget
         )
     }
 
     private func newPanePreviewSession(
         leafIDs: [UUID],
-        previewAvailableWidth: CGFloat
+        pixelBudget: GhosttyPanePreviewSession.PixelBudget
     ) -> GhosttyPanePreviewSession {
         GhosttyPanePreviewSession(
             leafIDs: leafIDs,
-            previewAvailableWidth: previewAvailableWidth,
+            pixelBudget: pixelBudget,
             client: GhosttyPanePreviewSession.PreviewClient(
                 capture: { [weak self] leafID, budget in
                     guard let self,
@@ -821,6 +823,11 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
 
     func claimActiveTmuxViewportIfNeeded() {
         controller?.claimActiveViewportIfNeeded()
+    }
+
+    func refreshTmuxPaneMetadata(inTopLevel id: UUID) {
+        guard let windowID = identities.windowID(for: id) else { return }
+        controller?.requestRefreshWindowPaneMetadata(windowID: windowID)
     }
 
     func focusTmuxPane(_ id: UUID) -> GhosttyTmuxModelActionOutcome {

@@ -905,10 +905,7 @@ final class RemuxAppUITests: XCTestCase {
         let paneTiles = panePickerTiles()
         let firstPaneTile = paneTiles[0]
         let secondPaneTile = paneTiles[1]
-        assertPreviewTilesContainRenderedImages(
-            tiles: paneTiles,
-            attachmentName: "agent-tui-pane-previews"
-        )
+        assertPaneTopology(paneCount: 2)
         let selectedPaneTiles = app.buttons
             .matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal.pane.tile."))
             .matching(NSPredicate(format: "selected == true"))
@@ -931,50 +928,11 @@ final class RemuxAppUITests: XCTestCase {
 
         openPanesSheet()
         XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
-        assertPreviewTilesContainRenderedImages(
-            tiles: panePickerTiles(),
-            attachmentName: "visited-agent-tui-pane-previews"
-        )
+        assertPaneTopology(paneCount: 2)
         dismissTopSheetIfPresent()
 
         XCTAssertFalse(app.staticTexts["terminal.status.failed"].exists)
         assertLiveTerminalScreenshotContainsRenderedContent(minNonBackgroundPixels: 30_000)
-    }
-
-    func testLiveVisitedPanePreviewsSurviveThemeChangeWhenConfigured() throws {
-        let sessionName = try liveAgentTUISessionName()
-        try launchLiveSSHAppIfConfigured(traceRuntime: true, sessionNameOverride: sessionName)
-
-        openFirstSavedSession()
-        waitForLiveTerminalReady(timeout: 90)
-
-        for paneIndex in 0..<2 {
-            openPanesSheet()
-            XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
-            panePickerTiles()[paneIndex].tap()
-            waitForLiveTerminalReady(timeout: 30)
-        }
-
-        openHomeFromTerminal()
-        XCTAssertTrue(app.buttons["library.settings"].waitForExistence(timeout: 5))
-        app.buttons["library.settings"].tap()
-        XCTAssertTrue(settingsForm.waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["Mocha"].waitForExistence(timeout: 2))
-        XCTAssertTrue(app.buttons["Latte"].waitForExistence(timeout: 2))
-        app.buttons["Mocha"].tap()
-        app.buttons["Latte"].tap()
-        app.navigationBars["Settings"].buttons.element(boundBy: 0).tap()
-
-        let activeSession = activeSessionRows.firstMatch
-        XCTAssertTrue(activeSession.waitForExistence(timeout: 5))
-        activeSession.tap()
-        waitForLiveTerminalReady(timeout: 30)
-        openPanesSheet()
-        XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
-        assertPreviewTilesContainRenderedImages(
-            tiles: panePickerTiles(),
-            attachmentName: "visited-pane-previews-after-theme-change"
-        )
     }
 
     /// Deliberately synthetic scrollback/throughput stress. This proves lossless
@@ -1030,7 +988,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(activeSessionRows.firstMatch.waitForExistence(timeout: 5))
     }
 
-    func testLiveSSHPreviewSheetsRenderTerminalImagesWhenConfigured() throws {
+    func testLiveSSHSelectionSheetsRenderPaneTopologyAndWindowPreviewsWhenConfigured() throws {
         let sessionName = try generatedLiveLatencySessionName("preview")
         defer {
             cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
@@ -1054,10 +1012,7 @@ final class RemuxAppUITests: XCTestCase {
 
         openPanesSheet()
         XCTAssertTrue(waitForPanePickerTileCount(2, timeout: 10))
-        assertPreviewTilesContainRenderedImages(
-            tiles: panePickerTiles(),
-            attachmentName: "pane-previews"
-        )
+        assertPaneTopology(paneCount: 2, attachmentName: "pane-topology")
         dismissTopSheetIfPresent()
 
         openWindowsSheet()
@@ -1701,6 +1656,7 @@ final class RemuxAppUITests: XCTestCase {
 
         openPanesSheet()
         XCTAssertTrue(waitForPanePickerTileCount(4, timeout: 20))
+        assertPaneTopology(paneCount: 4, attachmentName: "dense-pane-topology")
         let pane4 = panePickerTiles()[3]
 
         pane4.tap()
@@ -3231,6 +3187,37 @@ final class RemuxAppUITests: XCTestCase {
         )
     }
 
+    private func assertPaneTopology(
+        paneCount: Int,
+        attachmentName: String? = nil,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let paneSheet = elementWithIdentifier("terminal.panes.sheet")
+        XCTAssertTrue(paneSheet.waitForExistence(timeout: 5), file: file, line: line)
+
+        let tiles = panePickerTiles()
+        XCTAssertEqual(tiles.count, paneCount, file: file, line: line)
+        var selectedPaneCount = 0
+        for tile in tiles where tile.isSelected {
+            selectedPaneCount += 1
+        }
+        XCTAssertEqual(
+            selectedPaneCount,
+            1,
+            "Exactly one topology pane must be selected.",
+            file: file,
+            line: line
+        )
+
+        if let attachmentName {
+            let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            attachment.name = attachmentName
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+    }
+
     private func previewTileRenderedPixelStats(
         screenshot: XCUIScreenshot,
         tile: XCUIElement
@@ -3693,11 +3680,6 @@ final class RemuxAppUITests: XCTestCase {
 
         if elementWithIdentifier("terminal.windows.scroll").exists {
             elementWithIdentifier("terminal.windows.scroll").swipeUp(velocity: .slow)
-            return
-        }
-
-        if elementWithIdentifier("terminal.panes.scroll").exists {
-            elementWithIdentifier("terminal.panes.scroll").swipeUp(velocity: .slow)
             return
         }
 

@@ -57,6 +57,8 @@ final class TmuxSessionController: @unchecked Sendable {
         let y: UInt32
         let width: UInt32
         let height: UInt32
+        let currentCommand: String
+        let currentPath: String
         let phase: Phase
     }
 
@@ -881,6 +883,28 @@ final class TmuxSessionController: @unchecked Sendable {
         }
     }
 
+    func requestRefreshWindowPaneMetadata(windowID: TmuxWindowID) {
+        queue.async { [self] in
+            preconditionOnWriterQueue()
+            guard let client, outboundSink != nil, !shuttingDown else { return }
+            guard topology?.windows.contains(where: { $0.id == windowID }) == true else {
+                return
+            }
+            let result = ghostty_tmux_client_refresh_window_pane_metadata(
+                client,
+                windowID.rawValue
+            )
+            guard result == GHOSTTY_TMUX_RESULT_OK else {
+                if result == GHOSTTY_TMUX_RESULT_CLIENT_FAILED
+                    || result == GHOSTTY_TMUX_RESULT_CLOSED {
+                    handleClientFailure(result)
+                }
+                return
+            }
+            _ = drainOutbound()
+        }
+    }
+
     func reclaimActiveViewport() {
         queue.async { [self] in
             guard admitActiveViewportClaim(force: true) else { return }
@@ -1614,6 +1638,8 @@ private struct TopologyAccumulator {
                 y: Self.uint32(pane.y),
                 width: Self.uint32(pane.width),
                 height: Self.uint32(pane.height),
+                currentCommand: decodeTmuxString(pane.current_command),
+                currentPath: decodeTmuxString(pane.current_path),
                 phase: pane.phase == GHOSTTY_TMUX_PANE_LIVE ? .live : .hydrating
             ))
         default:

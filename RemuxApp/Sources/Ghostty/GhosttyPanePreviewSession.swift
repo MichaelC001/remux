@@ -64,8 +64,7 @@ final class GhosttyPanePreviewSession: ObservableObject {
     let id = UUID()
     @Published private(set) var imagesByPaneID: [UUID: PreviewState] = [:]
 
-    private let displayScale: CGFloat
-    private let previewAvailableWidth: CGFloat
+    private let pixelBudget: PixelBudget
     private let client: PreviewClient
     private var trackedLeafIDs: [UUID]
     private var refreshTask: Task<Void, Never>?
@@ -76,12 +75,10 @@ final class GhosttyPanePreviewSession: ObservableObject {
 
     init(
         leafIDs: [UUID],
-        scale: CGFloat = PanePreviewLayout.currentScale(),
-        previewAvailableWidth: CGFloat,
+        pixelBudget: PixelBudget,
         client: PreviewClient
     ) {
-        displayScale = scale
-        self.previewAvailableWidth = previewAvailableWidth
+        self.pixelBudget = pixelBudget
         self.client = client
         trackedLeafIDs = Self.unique(leafIDs)
         seedCachedImages(for: trackedLeafIDs)
@@ -119,7 +116,7 @@ final class GhosttyPanePreviewSession: ObservableObject {
         generation &+= 1
         let currentGeneration = generation
         let leafIDs = trackedLeafIDs
-        let budget = pixelBudget()
+        let budget = pixelBudget
         cancelActiveCapture()
         refreshTask?.cancel()
         refreshTask = Task { @MainActor [weak self] in
@@ -166,14 +163,6 @@ final class GhosttyPanePreviewSession: ObservableObject {
                 imagesByPaneID[leafID] = .ready(cached)
             }
         }
-    }
-
-    private func pixelBudget() -> PixelBudget {
-        let dimensions = PanePreviewLayout.windowPhysicalPixelBudget(
-            availableWidth: previewAvailableWidth,
-            scale: displayScale
-        )
-        return PixelBudget(width: dimensions.width, height: dimensions.height)
     }
 
     private static func unique(_ leafIDs: [UUID]) -> [UUID] {

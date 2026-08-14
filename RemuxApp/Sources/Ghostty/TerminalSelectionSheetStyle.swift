@@ -21,6 +21,8 @@ enum TerminalSelectionSheetPalette {
 /// derives its presentation size from this content instead of duplicating
 /// the navigation bar's geometry in detent arithmetic.
 enum TerminalSelectionSheetLayout {
+    static let horizontalContentPadding: CGFloat = 16
+
     /// Standard iPhone sheet detents place root content eight points below
     /// the native navigation bar. Custom-height detents don't inherit that
     /// inset, so fitted selectors supply the same boundary explicitly.
@@ -66,6 +68,11 @@ enum TerminalSelectionSheetLayout {
         fixedChromeHeight(navigationBarHeight: navigationBarHeight)
             + max(0, contentHeight)
     }
+
+    static func contentWidth(availableWidth: CGFloat) -> CGFloat {
+        guard availableWidth.isFinite else { return 1 }
+        return max(1, availableWidth - horizontalContentPadding * 2)
+    }
 }
 
 // Existing non-selector sheets keep their established palette name and styling.
@@ -105,7 +112,10 @@ struct TerminalSelectionSheetContent<Content: View, Actions: View>: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: TerminalSelectionSheetLayout.contextToContentSpacing) {
                 TerminalSelectionSheetContextLabel(text: context)
-                    .padding(.horizontal, 16)
+                    .padding(
+                        .horizontal,
+                        TerminalSelectionSheetLayout.horizontalContentPadding
+                    )
 
                 content
                     .frame(maxWidth: .infinity, alignment: .top)
@@ -113,7 +123,10 @@ struct TerminalSelectionSheetContent<Content: View, Actions: View>: View {
             .frame(maxWidth: .infinity, alignment: .top)
 
             actions
-                .padding(.horizontal, 16)
+                .padding(
+                    .horizontal,
+                    TerminalSelectionSheetLayout.horizontalContentPadding
+                )
                 .frame(maxWidth: .infinity)
                 .frame(height: TerminalSelectionSheetLayout.actionBarHeight)
                 .padding(.top, TerminalSelectionSheetLayout.contentToActionsSpacing)
