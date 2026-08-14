@@ -676,7 +676,7 @@ private struct GhosttyPaneTopologyDiagram: View {
                     accessibilityIdentifier: "terminal.pane.remove.\(pane.id.uuidString)",
                     action: { onRemove(pane) }
                 )
-                .padding(2)
+                .padding(4)
                 .transition(.scale(scale: 0.92).combined(with: .opacity))
             }
         }
@@ -694,7 +694,6 @@ private struct GhosttyPaneTopologyDiagram: View {
                     lineWidth: selected ? 2 : 1
                 )
         }
-        .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
     }
 
     private func directoryName(
