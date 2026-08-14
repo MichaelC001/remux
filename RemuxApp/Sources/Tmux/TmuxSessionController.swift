@@ -258,8 +258,8 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     /// Construct the native client only after transport.start has opened the
-    /// control channel with the same real viewport. The native initial grid is
-    /// immutable and emits the sole startup refresh-client command.
+    /// control channel. A viewport reported while the transport was opening
+    /// becomes the native initial grid and its sole startup refresh-client.
     func start(
         initialSize: ClientSize,
         completion: @escaping @Sendable (Result<Void, StartError>) -> Void
@@ -269,15 +269,16 @@ final class TmuxSessionController: @unchecked Sendable {
                 completion(.failure(.alreadyStarted))
                 return
             }
-            guard let columns = UInt16(exactly: initialSize.cols),
-                  let rows = UInt16(exactly: initialSize.rows),
+            let startupSize = clientSize ?? initialSize
+            guard let columns = UInt16(exactly: startupSize.cols),
+                  let rows = UInt16(exactly: startupSize.rows),
                   columns > 0,
                   rows > 0
             else {
                 completion(.failure(.invalidInitialGrid))
                 return
             }
-            clientSize = initialSize
+            clientSize = startupSize
 
             var config = ghostty_tmux_client_config_new()
             config.userdata = Unmanaged.passUnretained(self).toOpaque()
@@ -760,6 +761,11 @@ final class TmuxSessionController: @unchecked Sendable {
         }
         let nextSize = ClientSize(cols: cols, rows: rows)
         queue.async { [self] in
+            guard !shuttingDown else { return }
+            guard client != nil else {
+                clientSize = nextSize
+                return
+            }
             var admittedWork = false
             if clientSize != nextSize {
                 guard admitCommandOnWriter(

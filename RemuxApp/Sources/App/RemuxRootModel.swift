@@ -1254,6 +1254,7 @@ final class RemuxRootModel: ObservableObject {
                 update.workspaceID,
                 in: activeSessions
             ) {
+                claimActiveTmuxViewportIfSelectedAndActive(for: session)
                 let serverID = session.target.server.id
                 let discoveryState = tmuxSessionDiscoveryState(for: serverID)
                 tmuxSessionDiscoveryStates[serverID] = discoveryState
@@ -1292,6 +1293,17 @@ final class RemuxRootModel: ObservableObject {
         terminalScreenModels[TerminalRuntimeAttemptKey(session: session)]?
             .terminalScreenAdapter
             .reclaimActiveTmuxViewport()
+    }
+
+    private func claimActiveTmuxViewportIfSelectedAndActive(
+        for session: ActiveTerminalSession
+    ) {
+        guard currentAppLifecyclePhase == .active,
+              state == .terminal(session.id)
+        else { return }
+        terminalScreenModels[TerminalRuntimeAttemptKey(session: session)]?
+            .terminalScreenAdapter
+            .claimActiveTmuxViewportIfNeeded()
     }
 
     func disconnectActiveSession(_ id: SavedWorkspace.ID) {
