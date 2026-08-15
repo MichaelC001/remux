@@ -40,6 +40,19 @@ struct GhosttyIOSurfaceFrame: Sendable {
     /// Metal reuses its fixed frame targets, so later draws may overwrite the
     /// same allocation even while another owner holds a CF reference.
     static func read(from layer: CALayer) throws -> Self {
+        try copyPixels(from: layer, sourceRect: nil)
+    }
+
+    /// Copies only the requested pixels from the currently published
+    /// IOSurface.
+    static func read(from layer: CALayer, sourceRect: CGRect) throws -> Self {
+        try copyPixels(from: layer, sourceRect: sourceRect)
+    }
+
+    private static func copyPixels(
+        from layer: CALayer,
+        sourceRect: CGRect?
+    ) throws -> Self {
         guard let surface = iosurface(from: layer) else {
             throw ReadError.invalidGeometry
         }
@@ -62,13 +75,44 @@ struct GhosttyIOSurfaceFrame: Sendable {
         guard pixelFormat == bgraPixelFormat else {
             throw ReadError.unsupportedPixelFormat(pixelFormat)
         }
-        let (byteCount, overflow) = bytesPerRow.multipliedReportingOverflow(by: height)
+        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        let copiedRect: CGRect
+        if let sourceRect {
+            copiedRect = sourceRect.standardized.integral.intersection(bounds)
+            guard !copiedRect.isNull, !copiedRect.isEmpty else {
+                throw ReadError.invalidGeometry
+            }
+        } else {
+            copiedRect = bounds
+        }
+
+        let copiedX = Int(copiedRect.minX)
+        let copiedY = Int(copiedRect.minY)
+        let copiedWidth = Int(copiedRect.width)
+        let copiedHeight = Int(copiedRect.height)
+        let copiedBytesPerRow = copiedWidth * 4
+        let (byteCount, overflow) = copiedBytesPerRow.multipliedReportingOverflow(
+            by: copiedHeight
+        )
         guard !overflow else { throw ReadError.invalidGeometry }
+        var bytes = Data(count: byteCount)
+        bytes.withUnsafeMutableBytes { destination in
+            guard let destinationBase = destination.baseAddress else { return }
+            for row in 0..<copiedHeight {
+                let source = base.advanced(
+                    by: (copiedY + row) * bytesPerRow + copiedX * 4
+                )
+                destinationBase.advanced(by: row * copiedBytesPerRow).copyMemory(
+                    from: source,
+                    byteCount: copiedBytesPerRow
+                )
+            }
+        }
         return Self(
-            width: width,
-            height: height,
-            bytesPerRow: bytesPerRow,
-            bytes: Data(bytes: base, count: byteCount)
+            width: copiedWidth,
+            height: copiedHeight,
+            bytesPerRow: copiedBytesPerRow,
+            bytes: bytes
         )
     }
 
@@ -89,6 +133,22 @@ struct GhosttyIOSurfaceFrame: Sendable {
     }
 
     func sourceRect(
+        centeredOn anchor: CGRect,
+        maxWidth: UInt32,
+        maxHeight: UInt32
+    ) -> CGRect? {
+        Self.sourceRect(
+            width: width,
+            height: height,
+            centeredOn: anchor,
+            maxWidth: maxWidth,
+            maxHeight: maxHeight
+        )
+    }
+
+    static func sourceRect(
+        width: Int,
+        height: Int,
         centeredOn anchor: CGRect,
         maxWidth: UInt32,
         maxHeight: UInt32

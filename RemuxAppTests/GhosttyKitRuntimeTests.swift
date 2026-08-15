@@ -121,6 +121,52 @@ final class GhosttyKitRuntimeTests: XCTestCase {
         XCTAssertGreaterThan(image.height, 0)
     }
 
+    func testHiddenSurfacePublishesRequestedCurrentFrame() async throws {
+        let fixture = try NativeTerminalSurfaceFixture()
+        defer { fixture.close() }
+        let layer = try fixture.createSurface()
+        try fixture.feed("hidden frame\r\n")
+
+        try await awaitPublication(on: layer) {
+            try fixture.requestFrame()
+        }
+
+        let frame = try GhosttyIOSurfaceFrame.read(from: layer)
+        XCTAssertGreaterThan(frame.width, 0)
+        XCTAssertGreaterThan(frame.height, 0)
+
+        try fixture.feed("\n\u{1B}]11;#010203\u{1B}\\")
+        try await awaitPublication(
+            on: layer,
+            matchingBGRPixel: [3, 2, 1]
+        ) {
+            try fixture.requestFrame()
+        }
+        XCTAssertTrue(
+            try GhosttyIOSurfaceFrame.read(from: layer).bgrPixel
+                .isApproximatelyEqual(to: [3, 2, 1])
+        )
+    }
+
+    func testIOSurfaceReadCopiesOnlyRequestedRectangle() async throws {
+        let fixture = try NativeTerminalSurfaceFixture()
+        defer { fixture.close() }
+        let layer = try fixture.createSurface()
+        try await awaitPublication(on: layer) {
+            try fixture.setVisible()
+        }
+
+        let frame = try GhosttyIOSurfaceFrame.read(
+            from: layer,
+            sourceRect: CGRect(x: 10, y: 12, width: 40, height: 30)
+        )
+
+        XCTAssertEqual(frame.width, 40)
+        XCTAssertEqual(frame.height, 30)
+        XCTAssertEqual(frame.bytesPerRow, 160)
+        XCTAssertEqual(frame.bytes.count, 4_800)
+    }
+
     func testPreviewSourceRectCentersOnCursorAndClampsToFrameEdges() throws {
         let frame = GhosttyIOSurfaceFrame(
             width: 1_000,
@@ -447,6 +493,15 @@ private final class NativeTerminalSurfaceFixture {
         try runtime.applyTerminalSettings(settings)
         guard let surface else { throw FixtureError.missingRendererLayer }
         let result = ghostty_terminal_surface_update_config(surface)
+        guard result == GHOSTTY_TERMINAL_SURFACE_RESULT_OK else {
+            throw FixtureError.surface(result)
+        }
+        ghostty_app_tick(runtime.appHandleForTesting)
+    }
+
+    func requestFrame() throws {
+        guard let surface else { throw FixtureError.missingRendererLayer }
+        let result = ghostty_terminal_surface_request_frame(surface)
         guard result == GHOSTTY_TERMINAL_SURFACE_RESULT_OK else {
             throw FixtureError.surface(result)
         }
