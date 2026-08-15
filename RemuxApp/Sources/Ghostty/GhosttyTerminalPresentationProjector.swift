@@ -634,7 +634,7 @@ enum GhosttyTerminalPresentationProjector {
         guard !snapshot.topLevels.isEmpty else { return nil }
 
         return GhosttyWindowSheetPresentationProjection(
-            previewLeafIDs: snapshot.topLevels.compactMap(\.resolvedFocusedLeafID)
+            previewLeafIDs: prioritizedWindowPreviewLeafIDs(snapshot: snapshot)
         )
     }
 
@@ -692,8 +692,19 @@ enum GhosttyTerminalPresentationProjector {
         return GhosttyWindowSelectionSheetRenderProjection(
             windows: windows,
             selectedWindowID: selectedWindowID,
-            previewLeafIDs: windows.compactMap(\.focusedPreviewPaneID)
+            previewLeafIDs: prioritizedWindowPreviewLeafIDs(snapshot: snapshot)
         )
+    }
+
+    private static func prioritizedWindowPreviewLeafIDs(
+        snapshot: GhosttyRuntimeSurfaceTopologySnapshot
+    ) -> [UUID] {
+        let selectedTopLevelID = snapshot.selectedTopLevelID
+        let selected = snapshot.selectedTopLevel?.resolvedFocusedLeafID
+        let remaining = snapshot.topLevels.lazy
+            .filter { $0.id != selectedTopLevelID }
+            .compactMap(\.resolvedFocusedLeafID)
+        return [selected].compactMap { $0 } + remaining
     }
 
     private static func displaySafeWindowName(_ name: String) -> String {

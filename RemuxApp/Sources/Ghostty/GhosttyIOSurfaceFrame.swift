@@ -75,17 +75,24 @@ struct GhosttyIOSurfaceFrame: Sendable {
         guard pixelFormat == bgraPixelFormat else {
             throw ReadError.unsupportedPixelFormat(pixelFormat)
         }
-        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
-        let copiedRect: CGRect
-        if let sourceRect {
-            copiedRect = sourceRect.standardized.integral.intersection(bounds)
-            guard !copiedRect.isNull, !copiedRect.isEmpty else {
-                throw ReadError.invalidGeometry
-            }
-        } else {
-            copiedRect = bounds
+        guard let sourceRect else {
+            let (byteCount, overflow) = bytesPerRow.multipliedReportingOverflow(
+                by: height
+            )
+            guard !overflow else { throw ReadError.invalidGeometry }
+            return Self(
+                width: width,
+                height: height,
+                bytesPerRow: bytesPerRow,
+                bytes: Data(bytes: base, count: byteCount)
+            )
         }
 
+        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        let copiedRect = sourceRect.standardized.integral.intersection(bounds)
+        guard !copiedRect.isNull, !copiedRect.isEmpty else {
+            throw ReadError.invalidGeometry
+        }
         let copiedX = Int(copiedRect.minX)
         let copiedY = Int(copiedRect.minY)
         let copiedWidth = Int(copiedRect.width)
@@ -113,36 +120,6 @@ struct GhosttyIOSurfaceFrame: Sendable {
             height: copiedHeight,
             bytesPerRow: copiedBytesPerRow,
             bytes: bytes
-        )
-    }
-
-    func image(maxWidth: UInt32, maxHeight: UInt32) throws -> CGImage {
-        try makeImage(sourceRect: nil, maxWidth: maxWidth, maxHeight: maxHeight)
-    }
-
-    func image(
-        sourceRect: CGRect,
-        maxWidth: UInt32,
-        maxHeight: UInt32
-    ) throws -> CGImage {
-        try makeImage(
-            sourceRect: sourceRect,
-            maxWidth: maxWidth,
-            maxHeight: maxHeight
-        )
-    }
-
-    func sourceRect(
-        centeredOn anchor: CGRect,
-        maxWidth: UInt32,
-        maxHeight: UInt32
-    ) -> CGRect? {
-        Self.sourceRect(
-            width: width,
-            height: height,
-            centeredOn: anchor,
-            maxWidth: maxWidth,
-            maxHeight: maxHeight
         )
     }
 
@@ -185,14 +162,10 @@ struct GhosttyIOSurfaceFrame: Sendable {
         return CGRect(x: x, y: y, width: integralWidth, height: integralHeight)
     }
 
-    private func makeImage(
-        sourceRect requestedSourceRect: CGRect?,
-        maxWidth: UInt32,
-        maxHeight: UInt32
-    ) throws -> CGImage {
+    func image(maxWidth: UInt32, maxHeight: UInt32) throws -> CGImage {
         guard maxWidth > 0, maxHeight > 0,
               let provider = CGDataProvider(data: bytes as CFData),
-              let fullImage = CGImage(
+              let source = CGImage(
                 width: width,
                 height: height,
                 bitsPerComponent: 8,
@@ -207,18 +180,6 @@ struct GhosttyIOSurfaceFrame: Sendable {
               )
         else { throw ReadError.imageCreationFailed }
 
-        let source: CGImage
-        if let requestedSourceRect {
-            let bounds = CGRect(x: 0, y: 0, width: width, height: height)
-            let sourceRect = requestedSourceRect.standardized.integral.intersection(bounds)
-            guard !sourceRect.isNull, !sourceRect.isEmpty,
-                  let cropped = fullImage.cropping(to: sourceRect)
-            else { throw ReadError.invalidGeometry }
-            source = cropped
-        } else {
-            source = fullImage
-        }
-
         let scale = min(
             1,
             min(
@@ -226,7 +187,7 @@ struct GhosttyIOSurfaceFrame: Sendable {
                 Double(maxHeight) / Double(source.height)
             )
         )
-        guard scale < 1 || requestedSourceRect != nil else { return source }
+        guard scale < 1 else { return source }
 
         let targetWidth = max(1, Int((Double(source.width) * scale).rounded(.down)))
         let targetHeight = max(1, Int((Double(source.height) * scale).rounded(.down)))

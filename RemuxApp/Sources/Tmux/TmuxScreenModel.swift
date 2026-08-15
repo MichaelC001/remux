@@ -332,7 +332,6 @@ final class TmuxScreenModel: ObservableObject {
         try runtime?.applyTerminalSettings(settings)
         currentTerminalSettings = settings
         session?.applyTerminalConfiguration(theme: settings.theme)
-        terminalScreenAdapter.terminalConfigurationDidChange()
         if let lastViewportPointSize, let lastViewportScale {
             prepareInitialViewport(size: lastViewportPointSize, scale: lastViewportScale)
         }

@@ -621,7 +621,7 @@ final class TmuxPaneSurface {
         columns: UInt32,
         rows: UInt32,
         budget: GhosttyPanePreviewSession.PixelBudget
-    ) async -> GhosttyPanePreviewSession.RenderedPreview? {
+    ) async -> CGImage? {
         guard lifecycle == .active,
               framePublicationWait == nil,
               presentationTask == nil,
@@ -631,22 +631,9 @@ final class TmuxPaneSurface {
         else { return nil }
         let current = renderer.control.currentSize()
 
-        let source: GhosttyPanePreviewSession.PreviewSource
-        if current.columns == columns, current.rows == rows {
-            source = .paneGeometry(.init(
-                surfaceID: instanceID.rawValue,
-                columns: columns,
-                rows: rows
-            ))
-        } else if isViewportSized(current) {
-            source = .fullViewport(.init(
-                surfaceID: instanceID.rawValue,
-                pixelWidth: current.width_px,
-                pixelHeight: current.height_px
-            ))
-        } else {
-            return nil
-        }
+        guard (current.columns == columns && current.rows == rows)
+                || isViewportSized(current)
+        else { return nil }
 
         let frame: GhosttyIOSurfaceFrame
         if presented {
@@ -677,7 +664,7 @@ final class TmuxPaneSurface {
         ) else {
             return nil
         }
-        return .init(image: image, source: source)
+        return image
     }
 
     private func rendererDidFail() {

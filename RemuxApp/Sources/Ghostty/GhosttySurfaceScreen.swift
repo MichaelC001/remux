@@ -1417,12 +1417,12 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         guard let projection = model.windowSheetPresentationProjection() else { return }
         GhosttyRuntimeTrace.flowEventIfActive("tmux.newWindow", event: "ui.showWindows")
         let layout = PanePreviewLayout.windowMetrics(availableSize: availableSize)
-        applySelectionSheetPresentation(
-            .windows(makeWindowPreviewSession(
-                leafIDs: projection.previewLeafIDs,
-                layout: layout
-            ))
+        let session = makeWindowPreviewSession(
+            leafIDs: projection.previewLeafIDs,
+            layout: layout
         )
+        applySelectionSheetPresentation(.windows(session))
+        session.startRefreshing()
     }
 
     private func makeWindowPreviewSession(

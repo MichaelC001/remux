@@ -1,63 +1,32 @@
 import CoreGraphics
 import Foundation
 
-/// Picker-scoped cached image state plus one sequential asynchronous capture
-/// task. Native renderer and terminal lifetime remain owned by the tmux
-/// session; this type owns no handles, callbacks, retries, or render queue.
+/// Picker-scoped image state plus one sequential asynchronous capture task.
+/// Native renderer and terminal lifetime remain owned by the tmux session;
+/// this type owns no handles, callbacks, retries, cache, or render queue.
 @MainActor
 final class GhosttyPanePreviewSession: ObservableObject {
-    struct FullViewportProvenance: Equatable {
-        let surfaceID: UUID
-        let pixelWidth: UInt32
-        let pixelHeight: UInt32
-    }
-
-    struct PaneGeometryProvenance: Equatable {
-        let surfaceID: UUID
-        let columns: UInt32
-        let rows: UInt32
-    }
-
-    enum PreviewSource: Equatable {
-        case paneGeometry(PaneGeometryProvenance)
-        case fullViewport(FullViewportProvenance)
-    }
-
-    struct RenderedPreview {
-        let image: CGImage
-        let source: PreviewSource
-    }
-
     struct PixelBudget: Equatable, Sendable {
         let width: UInt32
         let height: UInt32
     }
 
     struct PreviewClient {
-        let capture: @MainActor (UUID, PixelBudget) async -> RenderedPreview?
+        let capture: @MainActor (UUID, PixelBudget) async -> CGImage?
         let cancelCapture: @MainActor (UUID) -> Void
-        let cachedPreview: @MainActor (UUID) -> RenderedPreview?
-        let shouldRefreshCachedImage: @MainActor (UUID) -> Bool
-        let cacheRenderedPreview: @MainActor (UUID, RenderedPreview) -> Void
 
         init(
-            capture: @escaping @MainActor (UUID, PixelBudget) async -> RenderedPreview?,
-            cancelCapture: @escaping @MainActor (UUID) -> Void = { _ in },
-            cachedPreview: @escaping @MainActor (UUID) -> RenderedPreview? = { _ in nil },
-            shouldRefreshCachedImage: @escaping @MainActor (UUID) -> Bool = { _ in true },
-            cacheRenderedPreview: @escaping @MainActor (UUID, RenderedPreview) -> Void = { _, _ in }
+            capture: @escaping @MainActor (UUID, PixelBudget) async -> CGImage?,
+            cancelCapture: @escaping @MainActor (UUID) -> Void = { _ in }
         ) {
             self.capture = capture
             self.cancelCapture = cancelCapture
-            self.cachedPreview = cachedPreview
-            self.shouldRefreshCachedImage = shouldRefreshCachedImage
-            self.cacheRenderedPreview = cacheRenderedPreview
         }
     }
 
     enum PreviewState {
         case pending
-        case ready(RenderedPreview)
+        case ready(CGImage)
         case failed
     }
 
@@ -81,7 +50,6 @@ final class GhosttyPanePreviewSession: ObservableObject {
         self.pixelBudget = pixelBudget
         self.client = client
         trackedLeafIDs = Self.unique(leafIDs)
-        seedCachedImages(for: trackedLeafIDs)
     }
 
     func startRefreshing() {
@@ -98,7 +66,6 @@ final class GhosttyPanePreviewSession: ObservableObject {
             imagesByPaneID.removeValue(forKey: removed)
         }
         trackedLeafIDs = next
-        seedCachedImages(for: next)
         guard didStartRefreshing, !cancelled else { return }
         restartRefresh()
     }
@@ -128,23 +95,21 @@ final class GhosttyPanePreviewSession: ObservableObject {
                       trackedLeafIDs.contains(leafID)
                 else { return }
 
-                let cached = client.cachedPreview(leafID)
-                if let cached { imagesByPaneID[leafID] = .ready(cached) }
-                guard cached == nil || client.shouldRefreshCachedImage(leafID) else { continue }
-                if cached == nil { imagesByPaneID[leafID] = .pending }
+                if Self.isReady(imagesByPaneID[leafID]) { continue }
+
+                imagesByPaneID[leafID] = .pending
 
                 activeCaptureLeafID = leafID
-                let preview = await client.capture(leafID, budget)
+                let image = await client.capture(leafID, budget)
                 if activeCaptureLeafID == leafID { activeCaptureLeafID = nil }
                 guard !Task.isCancelled,
                       !cancelled,
                       generation == currentGeneration,
                       trackedLeafIDs.contains(leafID)
                 else { return }
-                if let preview {
-                    client.cacheRenderedPreview(leafID, preview)
-                    imagesByPaneID[leafID] = .ready(preview)
-                } else if cached == nil {
+                if let image {
+                    imagesByPaneID[leafID] = .ready(image)
+                } else {
                     imagesByPaneID[leafID] = .failed
                 }
             }
@@ -157,16 +122,13 @@ final class GhosttyPanePreviewSession: ObservableObject {
         client.cancelCapture(leafID)
     }
 
-    private func seedCachedImages(for leafIDs: [UUID]) {
-        for leafID in leafIDs where imagesByPaneID[leafID] == nil {
-            if let cached = client.cachedPreview(leafID) {
-                imagesByPaneID[leafID] = .ready(cached)
-            }
-        }
-    }
-
     private static func unique(_ leafIDs: [UUID]) -> [UUID] {
         var seen: Set<UUID> = []
         return leafIDs.filter { seen.insert($0).inserted }
+    }
+
+    private static func isReady(_ state: PreviewState?) -> Bool {
+        if case .ready? = state { return true }
+        return false
     }
 }
