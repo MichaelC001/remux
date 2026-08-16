@@ -971,8 +971,11 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     }
 
     func windowSheetPresentationProjection() -> GhosttyWindowSheetPresentationProjection? {
-        GhosttyTerminalPresentationProjector.windowSheetPresentationProjection(
+        guard let projection = GhosttyTerminalPresentationProjector.windowSheetPresentationProjection(
             snapshot: topologySnapshot
+        ) else { return nil }
+        return GhosttyWindowSheetPresentationProjection(
+            previewLeafIDs: capturablePreviewLeafIDs(projection.previewLeafIDs)
         )
     }
 
@@ -999,9 +1002,22 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
     }
 
     func windowSelectionSheetRenderProjection() -> GhosttyWindowSelectionSheetRenderProjection {
-        GhosttyTerminalPresentationProjector.windowSelectionSheetRenderProjection(
+        let projection = GhosttyTerminalPresentationProjector.windowSelectionSheetRenderProjection(
             snapshot: topologySnapshot
         )
+        return GhosttyWindowSelectionSheetRenderProjection(
+            windows: projection.windows,
+            selectedWindowID: projection.selectedWindowID,
+            previewLeafIDs: capturablePreviewLeafIDs(projection.previewLeafIDs)
+        )
+    }
+
+    private func capturablePreviewLeafIDs(_ prioritizedLeafIDs: [UUID]) -> [UUID] {
+        guard let session else { return [] }
+        return prioritizedLeafIDs.filter { leafID in
+            guard let paneID = identities.paneID(for: leafID) else { return false }
+            return session.surfacesByPaneID[paneID] != nil
+        }
     }
 
     func paneSelectionSheetRenderProjection(

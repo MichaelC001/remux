@@ -451,8 +451,16 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
             "the first emitted topology must project immediately, not lag one update behind"
         )
         XCTAssertEqual(first.windows.map(\.displayName), ["editor", "logs"])
-        let firstPaneSurfaceID = try XCTUnwrap(first.previewLeafIDs.first)
+        let firstPaneSurfaceID = try XCTUnwrap(first.windows.first?.focusedPreviewPaneID)
         XCTAssertEqual(adapter.tmuxPaneID(for: firstPaneSurfaceID), 10)
+        XCTAssertTrue(
+            first.previewLeafIDs.isEmpty,
+            "topology cards must not submit captures before their local surfaces exist"
+        )
+        XCTAssertTrue(
+            try XCTUnwrap(adapter.windowSheetPresentationProjection()).previewLeafIDs.isEmpty,
+            "initial presentation must not submit captures before local surfaces exist"
+        )
 
         let oneWindow = TmuxSessionController.TopologySnapshot(
             sessionName: "fresh-test",
@@ -473,7 +481,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         await session.shutdown()
     }
 
-    func testNameOnlyTopologyUpdatePreservesSurfaceIdentityAndPreviewTarget() async throws {
+    func testNameOnlyTopologyUpdatePreservesSurfaceIdentityAndCardTarget() async throws {
         let runtime = try GhosttyKitRuntime()
         let session = makeSession(runtime: runtime)
         let adapter = TmuxTerminalScreenAdapter()
@@ -492,7 +500,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         session.handleTopology(initial)
         let before = adapter.windowSelectionSheetRenderProjection()
         let beforeWindowID = try XCTUnwrap(before.windows.first?.id)
-        let beforePaneID = try XCTUnwrap(before.previewLeafIDs.first)
+        let beforePaneID = try XCTUnwrap(before.windows.first?.focusedPreviewPaneID)
 
         let renamed = TmuxSessionController.TopologySnapshot(
             sessionName: "rename-test",
@@ -505,7 +513,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
 
         XCTAssertEqual(after.windows.first?.displayName, "déploy-漢字")
         XCTAssertEqual(after.windows.first?.id, beforeWindowID)
-        XCTAssertEqual(after.previewLeafIDs.first, beforePaneID)
+        XCTAssertEqual(after.windows.first?.focusedPreviewPaneID, beforePaneID)
 
         await session.shutdown()
     }

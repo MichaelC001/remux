@@ -86,6 +86,8 @@ struct GhosttyWindowSelectionSheet: View {
         }
         .onChange(of: projection.previewLeafIDs) { _, newValue in
             session.reconcile(leafIDs: newValue)
+        }
+        .onChange(of: projection.windows.map(\.id)) { _, newValue in
             if let pendingContextAction, !newValue.contains(pendingContextAction.id) {
                 self.pendingContextAction = nil
             }

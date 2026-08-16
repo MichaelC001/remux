@@ -39,8 +39,8 @@ final class GhosttyPanePreviewSession: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private var didStartRefreshing = false
     private var cancelled = false
-    private var generation: UInt64 = 0
     private var activeCaptureLeafID: UUID?
+    private var activeCaptureIsValid = false
 
     init(
         leafIDs: [UUID],
@@ -55,7 +55,7 @@ final class GhosttyPanePreviewSession: ObservableObject {
     func startRefreshing() {
         guard !didStartRefreshing, !cancelled else { return }
         didStartRefreshing = true
-        restartRefresh()
+        startRefreshIfNeeded()
     }
 
     func reconcile(leafIDs: [UUID]) {
@@ -67,46 +67,46 @@ final class GhosttyPanePreviewSession: ObservableObject {
         }
         trackedLeafIDs = next
         guard didStartRefreshing, !cancelled else { return }
-        restartRefresh()
+        if let activeCaptureLeafID, !nextSet.contains(activeCaptureLeafID) {
+            cancelActiveCapture()
+        }
+        startRefreshIfNeeded()
     }
 
     func cancelAll() {
         guard !cancelled else { return }
         cancelled = true
-        generation &+= 1
         cancelActiveCapture()
         refreshTask?.cancel()
         refreshTask = nil
     }
 
-    private func restartRefresh() {
-        generation &+= 1
-        let currentGeneration = generation
-        let leafIDs = trackedLeafIDs
-        let budget = pixelBudget
-        cancelActiveCapture()
-        refreshTask?.cancel()
+    private func startRefreshIfNeeded() {
+        guard refreshTask == nil,
+              didStartRefreshing,
+              !cancelled,
+              nextCaptureLeafID != nil
+        else { return }
+
         refreshTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            for leafID in leafIDs {
-                guard !Task.isCancelled,
-                      !cancelled,
-                      generation == currentGeneration,
-                      trackedLeafIDs.contains(leafID)
-                else { return }
-
-                if Self.isReady(imagesByPaneID[leafID]) { continue }
-
+            defer { refreshTask = nil }
+            while let leafID = nextCaptureLeafID {
+                guard !Task.isCancelled, !cancelled else { return }
                 imagesByPaneID[leafID] = .pending
-
                 activeCaptureLeafID = leafID
-                let image = await client.capture(leafID, budget)
-                if activeCaptureLeafID == leafID { activeCaptureLeafID = nil }
-                guard !Task.isCancelled,
-                      !cancelled,
-                      generation == currentGeneration,
-                      trackedLeafIDs.contains(leafID)
-                else { return }
+                activeCaptureIsValid = true
+                let image = await client.capture(leafID, pixelBudget)
+                let captureIsValid = activeCaptureLeafID == leafID
+                    && activeCaptureIsValid
+                if activeCaptureLeafID == leafID {
+                    activeCaptureLeafID = nil
+                    activeCaptureIsValid = false
+                }
+                guard !Task.isCancelled, !cancelled else { return }
+                guard captureIsValid, trackedLeafIDs.contains(leafID) else {
+                    continue
+                }
                 if let image {
                     imagesByPaneID[leafID] = .ready(image)
                 } else {
@@ -118,17 +118,16 @@ final class GhosttyPanePreviewSession: ObservableObject {
 
     private func cancelActiveCapture() {
         guard let leafID = activeCaptureLeafID else { return }
-        activeCaptureLeafID = nil
+        activeCaptureIsValid = false
         client.cancelCapture(leafID)
+    }
+
+    private var nextCaptureLeafID: UUID? {
+        trackedLeafIDs.first { imagesByPaneID[$0] == nil }
     }
 
     private static func unique(_ leafIDs: [UUID]) -> [UUID] {
         var seen: Set<UUID> = []
         return leafIDs.filter { seen.insert($0).inserted }
-    }
-
-    private static func isReady(_ state: PreviewState?) -> Bool {
-        if case .ready? = state { return true }
-        return false
     }
 }

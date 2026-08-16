@@ -84,6 +84,37 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         assertReady(session.imagesByPaneID[addedPaneID], image: addedPreview)
     }
 
+    func testReconcileDoesNotReplaceRetainedActiveCapture() async throws {
+        let active = UUID()
+        let removed = UUID()
+        let harness = CaptureHarness()
+        let session = GhosttyPanePreviewSession(
+            leafIDs: [active, removed],
+            pixelBudget: .init(width: 320, height: 240),
+            client: .init(
+                capture: {
+                    await harness.capture(paneID: $0, budget: $1)
+                },
+                cancelCapture: { harness.cancel(paneID: $0) }
+            )
+        )
+
+        session.startRefreshing()
+        try await waitUntil { harness.requests.map(\.paneID) == [active] }
+        session.reconcile(leafIDs: [active])
+
+        XCTAssertEqual(harness.requests.map(\.paneID), [active])
+        XCTAssertTrue(harness.cancelledPaneIDs.isEmpty)
+
+        let preview = try preview(marker: 1)
+        harness.resolve(paneID: active, with: preview)
+        try await waitUntil {
+            if case .ready? = session.imagesByPaneID[active] { return true }
+            return false
+        }
+        assertReady(session.imagesByPaneID[active], image: preview)
+    }
+
     func testColdFailurePublishesFailedState() async throws {
         let paneID = UUID()
         let harness = CaptureHarness()
@@ -151,13 +182,15 @@ final class GhosttyPanePreviewSessionTests: XCTestCase {
         session.startRefreshing()
         try await waitUntil { harness.requests.map(\.paneID) == [removed] }
         session.reconcile(leafIDs: [current])
-        try await waitUntil { harness.requests.map(\.paneID) == [removed, current] }
 
         XCTAssertEqual(harness.cancelledPaneIDs, [removed])
+        XCTAssertEqual(harness.requests.map(\.paneID), [removed])
         XCTAssertNil(session.imagesByPaneID[removed])
-        assertPending(session.imagesByPaneID[current])
 
         harness.resolve(paneID: removed, with: try preview(marker: 1))
+        try await waitUntil { harness.requests.map(\.paneID) == [removed, current] }
+        assertPending(session.imagesByPaneID[current])
+
         let currentPreview = try preview(marker: 2)
         harness.resolve(paneID: current, with: currentPreview)
         try await waitUntil {
