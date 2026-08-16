@@ -80,15 +80,14 @@ struct GhosttyWindowSelectionSheet: View {
                 }
             }
         }
-        .task(id: session.id) {
+        .onAppear {
             session.reconcile(leafIDs: projection.previewLeafIDs)
-            await Task.yield()
-            guard !Task.isCancelled else { return }
             GhosttyRuntimeTrace.perf("panePreview.presentation activate kind=windows")
-            session.startRefreshing()
         }
         .onChange(of: projection.previewLeafIDs) { _, newValue in
             session.reconcile(leafIDs: newValue)
+        }
+        .onChange(of: projection.windows.map(\.id)) { _, newValue in
             if let pendingContextAction, !newValue.contains(pendingContextAction.id) {
                 self.pendingContextAction = nil
             }
@@ -458,11 +457,11 @@ private enum GhosttySelectionContextActionPalette {
 }
 
 private struct GhosttyRenderedPreviewSurface: View {
-    let preview: GhosttyPanePreviewSession.RenderedPreview
+    let image: CGImage
     let size: CGSize
 
     var body: some View {
-        Image(decorative: preview.image, scale: PanePreviewLayout.currentScale())
+        Image(decorative: image, scale: PanePreviewLayout.currentScale())
             .resizable()
             .aspectRatio(contentMode: .fill)
             .frame(width: size.width, height: size.height)
@@ -518,9 +517,9 @@ private struct GhosttyWindowSelectionTile: View {
     @ViewBuilder
     private var previewSurface: some View {
         switch previewState {
-        case .ready(let preview):
+        case .ready(let image):
             GhosttyRenderedPreviewSurface(
-                preview: preview,
+                image: image,
                 size: layout.tilePointSize
             )
 
