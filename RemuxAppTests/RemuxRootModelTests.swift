@@ -106,6 +106,46 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(discoveredServerIDs, [first.server.id, second.server.id])
     }
 
+    func testDiscoveryHostKeyChallengeCanBeTrustedAndRetried() async throws {
+        let pair = makePasswordBackedServer()
+        let challenge = makeHostKeyChallenge(
+            serverID: pair.server.id,
+            host: pair.server.host
+        )
+        let discoverer = RecordingTmuxSessionDiscoverer(
+            results: [
+                .failure(TrustedHostStoreError.hostKeyTrustRequired(challenge)),
+                .success(["main", "ops"]),
+            ]
+        )
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
+
+        await harness.model.load()
+
+        let didRequireTrust = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: pair.server.id).hostKeyChallenge
+                == challenge
+        }
+        XCTAssertTrue(didRequireTrust)
+
+        harness.model.trustTmuxSessionDiscoveryHostKey(challenge)
+
+        let didRetry = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: pair.server.id)
+                == TmuxSessionDiscoveryState.idle.finishingRefresh(with: ["main", "ops"])
+        }
+        XCTAssertTrue(didRetry)
+        let discoveryCount = await discoverer.targets().count
+        XCTAssertEqual(discoveryCount, 2)
+    }
+
     func testDiscoveryRefreshRetainsLastSuccessfulSnapshotOnFailure() {
         let loaded = TmuxSessionDiscoveryState.idle.finishingRefresh(with: ["main"])
 

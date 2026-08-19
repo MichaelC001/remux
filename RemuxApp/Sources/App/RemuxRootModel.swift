@@ -114,11 +114,13 @@ struct TmuxSessionDiscoveryState: Equatable {
 
     static let idle = TmuxSessionDiscoveryState(
         phase: .idle,
-        lastSuccessfulSessionNames: nil
+        lastSuccessfulSessionNames: nil,
+        hostKeyChallenge: nil
     )
 
     let phase: Phase
     let lastSuccessfulSessionNames: [String]?
+    let hostKeyChallenge: SSHHostKeyTrustChallenge?
 
     var sessionNames: [String] {
         lastSuccessfulSessionNames ?? []
@@ -131,21 +133,24 @@ struct TmuxSessionDiscoveryState: Equatable {
     func startingRefresh() -> Self {
         Self(
             phase: .loading,
-            lastSuccessfulSessionNames: lastSuccessfulSessionNames
+            lastSuccessfulSessionNames: lastSuccessfulSessionNames,
+            hostKeyChallenge: nil
         )
     }
 
     func finishingRefresh(with sessionNames: [String]) -> Self {
         Self(
             phase: .loaded,
-            lastSuccessfulSessionNames: sessionNames
+            lastSuccessfulSessionNames: sessionNames,
+            hostKeyChallenge: nil
         )
     }
 
-    func failingRefresh() -> Self {
+    func failingRefresh(hostKeyChallenge: SSHHostKeyTrustChallenge? = nil) -> Self {
         Self(
             phase: .failed,
-            lastSuccessfulSessionNames: lastSuccessfulSessionNames
+            lastSuccessfulSessionNames: lastSuccessfulSessionNames,
+            hostKeyChallenge: hostKeyChallenge
         )
     }
 
@@ -153,7 +158,8 @@ struct TmuxSessionDiscoveryState: Equatable {
         guard let lastSuccessfulSessionNames else { return .idle }
         return Self(
             phase: .loaded,
-            lastSuccessfulSessionNames: lastSuccessfulSessionNames
+            lastSuccessfulSessionNames: lastSuccessfulSessionNames,
+            hostKeyChallenge: nil
         )
     }
 
@@ -165,7 +171,8 @@ struct TmuxSessionDiscoveryState: Equatable {
         lastSuccessfulSessionNames.append(sessionName)
         return Self(
             phase: phase,
-            lastSuccessfulSessionNames: lastSuccessfulSessionNames
+            lastSuccessfulSessionNames: lastSuccessfulSessionNames,
+            hostKeyChallenge: hostKeyChallenge
         )
     }
 }
@@ -1120,6 +1127,28 @@ final class RemuxRootModel: ObservableObject {
         tmuxSessionRefreshes[serverID] = TmuxSessionRefresh(id: refreshID, task: task)
     }
 
+    func refreshTmuxSessionsAndWait(for serverID: SavedServer.ID) async {
+        refreshTmuxSessions(for: serverID)
+        guard let refresh = tmuxSessionRefreshes[serverID] else { return }
+        await refresh.task.value
+    }
+
+    func trustTmuxSessionDiscoveryHostKey(_ challenge: SSHHostKeyTrustChallenge) {
+        guard library.server(id: challenge.serverID) != nil,
+              tmuxSessionDiscoveryState(for: challenge.serverID).hostKeyChallenge == challenge else {
+            return
+        }
+
+        do {
+            try dependencies.trustedHostStore.trustHostKey(challenge)
+            refreshTmuxSessions(for: challenge.serverID)
+        } catch {
+            tmuxSessionDiscoveryStates[challenge.serverID] = tmuxSessionDiscoveryState(
+                for: challenge.serverID
+            ).failingRefresh()
+        }
+    }
+
     func showActiveSession(_ id: SavedWorkspace.ID) {
         GhosttyRuntimeTrace.flowEvent(
             sessionShowFlowID(id),
@@ -1645,6 +1674,10 @@ final class RemuxRootModel: ObservableObject {
             tmuxSessionDiscoveryStates[server.id] = tmuxSessionDiscoveryState(for: server.id)
                 .cancellingRefresh()
             return
+        } catch TrustedHostStoreError.hostKeyTrustRequired(let challenge) {
+            guard isCurrentTmuxSessionRefresh(server, refreshID: refreshID) else { return }
+            tmuxSessionDiscoveryStates[server.id] = tmuxSessionDiscoveryState(for: server.id)
+                .failingRefresh(hostKeyChallenge: challenge)
         } catch {
             guard isCurrentTmuxSessionRefresh(server, refreshID: refreshID) else { return }
             // Discovery is auxiliary to an already-running terminal. Keep its

@@ -138,6 +138,10 @@ final class SessionSwitcherProjectionTests: XCTestCase {
         XCTAssertEqual(projection.inlineAvailableSessions.count, 3)
         XCTAssertEqual(projection.hiddenAvailableSessionCount, 2)
         XCTAssertEqual(
+            projection.availableSessionNames(on: server.id),
+            projection.availableSessions.map(\.id.sessionName)
+        )
+        XCTAssertEqual(
             projection.inlineAvailableSessions.map(\.id.sessionName),
             Array(projection.availableSessions.prefix(3)).map(\.id.sessionName)
         )

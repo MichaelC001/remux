@@ -406,6 +406,18 @@ private struct RemuxWorkspaceShell: View {
                     traceSessionOpenTap(workspaceID)
                     Task { await model.connect(to: workspaceID) }
                 },
+                onConnectAvailableSession: { serverID, sessionName in
+                    Task {
+                        await model.connectToDiscoveredSession(
+                            named: sessionName,
+                            on: serverID
+                        )
+                    }
+                },
+                onRefreshServerSessions: { serverID in
+                    await model.refreshTmuxSessionsAndWait(for: serverID)
+                },
+                onTrustDiscoveryHostKey: model.trustTmuxSessionDiscoveryHostKey,
                 onShowActiveSession: { workspaceID in
                     GhosttyRuntimeTrace.flowBegin(
                         sessionShowFlowID(workspaceID),
@@ -596,6 +608,9 @@ private struct ConnectionLibraryView: View {
     let onEditServer: (SavedServer.ID) -> Void
     let onEditWorkspace: (SavedServer.ID, SavedWorkspace.ID) -> Void
     let onConnect: (SavedWorkspace.ID) -> Void
+    let onConnectAvailableSession: (SavedServer.ID, String) -> Void
+    let onRefreshServerSessions: (SavedServer.ID) async -> Void
+    let onTrustDiscoveryHostKey: (SSHHostKeyTrustChallenge) -> Void
     let onShowActiveSession: (SavedWorkspace.ID) -> Void
     let onDisconnectActiveSession: (SavedWorkspace.ID) -> Void
     let onDeleteServer: (SavedServer.ID) -> Void
@@ -886,11 +901,22 @@ private struct ConnectionLibraryView: View {
         }
     }
 
+    private func availableSessionNames(for serverID: SavedServer.ID) -> [String] {
+        SessionSwitcherProjection(
+            snapshot: snapshot,
+            activeSessions: activeSessions,
+            discoveryStates: discoveryStates,
+            selectedSessionID: nil
+        ).availableSessionNames(on: serverID)
+    }
+
     private func serverDetail(for server: SavedServer) -> some View {
         ServerDetailView(
             server: server,
             workspaces: visibleWorkspaces(for: server.id),
             activeSessions: activeSessions.filter { $0.target.server.id == server.id },
+            discoveryState: discoveryStates[server.id] ?? .idle,
+            availableSessionNames: availableSessionNames(for: server.id),
             onAddWorkspace: { serverID in
                 beginNewWorkspace(
                     for: serverID,
@@ -900,6 +926,9 @@ private struct ConnectionLibraryView: View {
             onEditServer: onEditServer,
             onEditWorkspace: onEditWorkspace,
             onConnect: onConnect,
+            onConnectAvailableSession: onConnectAvailableSession,
+            onRefreshSessions: onRefreshServerSessions,
+            onTrustHostKey: onTrustDiscoveryHostKey,
             onDeleteWorkspace: onDeleteWorkspace,
             terminalTheme: terminalSettings.theme
         )
@@ -1077,15 +1106,26 @@ private extension UIColor {
 }
 
 private struct ServerDetailView: View {
+    private static let collapsedWorkspaceCount = 3
+    private static let maximumInlineAvailableSessionCount = 3
+
     let server: SavedServer
     let workspaces: [SavedWorkspace]
     let activeSessions: [ActiveTerminalSession]
+    let discoveryState: TmuxSessionDiscoveryState
+    let availableSessionNames: [String]
     let onAddWorkspace: (SavedServer.ID) -> Void
     let onEditServer: (SavedServer.ID) -> Void
     let onEditWorkspace: (SavedServer.ID, SavedWorkspace.ID) -> Void
     let onConnect: (SavedWorkspace.ID) -> Void
+    let onConnectAvailableSession: (SavedServer.ID, String) -> Void
+    let onRefreshSessions: (SavedServer.ID) async -> Void
+    let onTrustHostKey: (SSHHostKeyTrustChallenge) -> Void
     let onDeleteWorkspace: (SavedWorkspace.ID) -> Void
     let terminalTheme: TerminalTheme
+
+    @State private var isReviewingHostKey = false
+    @State private var showsAllWorkspaces = false
 
     var body: some View {
         List {
@@ -1135,7 +1175,7 @@ private struct ServerDetailView: View {
                     }
                     .accessibilityIdentifier("library.server.new-session")
                 } else {
-                    ForEach(workspaces) { workspace in
+                    ForEach(visibleWorkspaces) { workspace in
                         Button {
                             onConnect(workspace.id)
                         } label: {
@@ -1160,13 +1200,36 @@ private struct ServerDetailView: View {
                             .tint(.red)
                         }
                     }
+
+                    if workspaces.count > Self.collapsedWorkspaceCount {
+                        Button {
+                            withAnimation(.snappy) {
+                                showsAllWorkspaces.toggle()
+                            }
+                        } label: {
+                            DisclosureRowLabel(
+                                title: showsAllWorkspaces ? "Show fewer" : "Show more",
+                                systemImage: showsAllWorkspaces ? "chevron.up" : "chevron.down"
+                            )
+                        }
+                        .accessibilityIdentifier("library.server.sessions.toggle")
+                    }
                 }
             }
             .libraryHomeListRowSurface()
+
+            availableSessionsSection
         }
         .listStyle(.insetGrouped)
         .libraryHomeGroupedScrollBackground()
         .libraryHomeChrome(theme: terminalTheme)
+        .refreshable {
+            await onRefreshSessions(server.id)
+        }
+        .task(id: server.id) {
+            guard discoveryState.phase == .idle else { return }
+            await onRefreshSessions(server.id)
+        }
         .navigationTitle(server.displayName)
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("library.server.detail")
@@ -1189,6 +1252,18 @@ private struct ServerDetailView: View {
                 .accessibilityIdentifier("library.server.new-session")
             }
         }
+        .alert(
+            "Trust This Server?",
+            isPresented: $isReviewingHostKey,
+            presenting: discoveryState.hostKeyChallenge
+        ) { challenge in
+            Button("Cancel", role: .cancel) {}
+            Button(challenge.kind == .changed ? "Update Trust" : "Trust Server") {
+                onTrustHostKey(challenge)
+            }
+        } message: { challenge in
+            Text(hostKeyTrustMessage(for: challenge))
+        }
     }
 
     private var activeWorkspaceIDs: Set<SavedWorkspace.ID> {
@@ -1197,6 +1272,181 @@ private struct ServerDetailView: View {
 
     private func activeSession(for workspaceID: SavedWorkspace.ID) -> ActiveTerminalSession? {
         activeSessions.first { $0.id == workspaceID }
+    }
+
+    private var visibleWorkspaces: [SavedWorkspace] {
+        guard !showsAllWorkspaces else { return workspaces }
+        return Array(workspaces.prefix(Self.collapsedWorkspaceCount))
+    }
+
+    private var inlineAvailableSessionNames: [String] {
+        Array(availableSessionNames.prefix(Self.maximumInlineAvailableSessionCount))
+    }
+
+    @ViewBuilder
+    private var availableSessionsSection: some View {
+        Section {
+            if discoveryState.isLoading || discoveryState.phase == .idle {
+                HStack(spacing: 12) {
+                    ProgressView()
+                    Text("Checking sessions…")
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityIdentifier("library.server.available.loading")
+            }
+
+            if discoveryState.phase == .failed {
+                discoveryFailureRow
+            }
+
+            ForEach(inlineAvailableSessionNames, id: \.self) { sessionName in
+                Button {
+                    onConnectAvailableSession(server.id, sessionName)
+                } label: {
+                    AvailableServerSessionRow(sessionName: sessionName)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("library.server.available.session")
+            }
+
+            if availableSessionNames.count > Self.maximumInlineAvailableSessionCount {
+                NavigationLink {
+                    ServerAvailableSessionsView(
+                        sessionNames: availableSessionNames,
+                        terminalTheme: terminalTheme,
+                        onSelect: { sessionName in
+                            onConnectAvailableSession(server.id, sessionName)
+                        }
+                    )
+                } label: {
+                    DisclosureRowLabel(
+                        title: "View all \(availableSessionNames.count)",
+                        systemImage: "magnifyingglass"
+                    )
+                }
+                .accessibilityIdentifier("library.server.available.view-all")
+            } else if discoveryState.phase == .loaded,
+                      availableSessionNames.isEmpty {
+                Text("No other sessions found")
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("library.server.available.empty")
+            }
+        } header: {
+            LibraryHomeSectionHeader("Available on Server")
+        } footer: {
+            if !availableSessionNames.isEmpty {
+                Text("Select a session to add it to Remux.")
+            }
+        }
+        .libraryHomeListRowSurface()
+    }
+
+    @ViewBuilder
+    private var discoveryFailureRow: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(
+                discoveryState.hostKeyChallenge == nil
+                    ? "Couldn’t check sessions"
+                    : "Trust the SSH host key to check sessions",
+                systemImage: "exclamationmark.triangle"
+            )
+            .foregroundStyle(.secondary)
+
+            if discoveryState.hostKeyChallenge != nil {
+                Button("Review SSH Host Key") {
+                    isReviewingHostKey = true
+                }
+                .accessibilityIdentifier("library.server.available.review-host-key")
+            } else {
+                Button("Retry") {
+                    Task { await onRefreshSessions(server.id) }
+                }
+                .accessibilityIdentifier("library.server.available.retry")
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func hostKeyTrustMessage(for challenge: SSHHostKeyTrustChallenge) -> String {
+        let fingerprint = challenge.receivedKeyFingerprint ?? "Fingerprint unavailable"
+        if challenge.kind == .changed {
+            return "The SSH host key for \(challenge.host) changed. Update trust only if this fingerprint is correct:\n\n\(fingerprint)"
+        }
+        return "Trust only if this fingerprint matches \(challenge.host):\n\n\(fingerprint)"
+    }
+}
+
+private struct AvailableServerSessionRow: View {
+    let sessionName: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "terminal")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(LibraryHomePalette.rowIconForeground)
+                .frame(width: 30, height: 30)
+                .background(
+                    LibraryHomePalette.rowIconSurface,
+                    in: RoundedRectangle(cornerRadius: 7)
+                )
+
+            Text(sessionName)
+                .font(.headline)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Spacer(minLength: 8)
+        }
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(sessionName)
+        .accessibilityHint("Add this session to Remux")
+        .accessibilityAddTraits(.isButton)
+    }
+}
+
+private struct ServerAvailableSessionsView: View {
+    let sessionNames: [String]
+    let terminalTheme: TerminalTheme
+    let onSelect: (String) -> Void
+
+    @State private var query = ""
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(filteredSessionNames, id: \.self) { sessionName in
+                    Button {
+                        onSelect(sessionName)
+                    } label: {
+                        AvailableServerSessionRow(sessionName: sessionName)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("library.server.available.result")
+                }
+
+                if filteredSessionNames.isEmpty {
+                    ContentUnavailableView.search(text: query)
+                        .listRowSeparator(.hidden)
+                }
+            }
+            .libraryHomeListRowSurface()
+        }
+        .listStyle(.insetGrouped)
+        .libraryHomeGroupedScrollBackground()
+        .libraryHomeChrome(theme: terminalTheme)
+        .navigationTitle("Available Sessions")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $query, prompt: "Search sessions")
+    }
+
+    private var filteredSessionNames: [String] {
+        guard !query.isEmpty else { return sessionNames }
+        return sessionNames.filter {
+            $0.localizedCaseInsensitiveContains(query)
+        }
     }
 }
 

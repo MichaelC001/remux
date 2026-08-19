@@ -40,6 +40,12 @@ struct SessionSwitcherProjection: Equatable {
         availableSessions.count - inlineAvailableSessions.count
     }
 
+    func availableSessionNames(on serverID: SavedServer.ID) -> [String] {
+        availableSessions.compactMap { session in
+            session.id.serverID == serverID ? session.id.sessionName : nil
+        }
+    }
+
     init(
         snapshot: ConnectionLibrarySnapshot,
         activeSessions: [ActiveTerminalSession],
