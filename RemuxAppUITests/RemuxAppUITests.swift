@@ -676,6 +676,34 @@ final class RemuxAppUITests: XCTestCase {
         assertLiveTerminalScreenshotContainsRenderedContent(minNonBackgroundPixels: 30_000)
     }
 
+    func testLiveNewSessionBackReturnsToPresentingSessionSheetWhenConfigured() throws {
+        let sessionName = try generatedLiveLatencySessionName("new-session-navigation")
+        defer {
+            cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
+        }
+
+        try launchLiveSSHAppIfConfigured(sessionNameOverride: sessionName)
+        openFirstSavedSession()
+        waitForLiveTerminalReady(timeout: 60)
+        openSessionSwitcherFromTerminal()
+
+        let sessionSheet = app.otherElements["terminal.sessions.sheet"]
+        XCTAssertTrue(sessionSheet.waitForExistence(timeout: 5))
+        app.buttons["terminal.sessions.new"].tap()
+        XCTAssertTrue(app.textFields["connection.session"].waitForExistence(timeout: 2))
+        attachScreenshot(named: "live-new-session-in-session-sheet")
+
+        let backButton = app.navigationBars["New Session"].buttons["Sessions"]
+        XCTAssertTrue(backButton.waitForExistence(timeout: 2))
+        backButton.tap()
+        XCTAssertTrue(sessionSheet.waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["terminal.sessions.new"].isHittable)
+        attachScreenshot(named: "live-session-sheet-after-new-session-back")
+
+        app.buttons["terminal.sessions.close"].tap()
+        XCTAssertTrue(app.otherElements["terminal.input.ready"].waitForExistence(timeout: 2))
+    }
+
     func testLiveSessionSwitcherDiscoversAndResumesSessionsWhenConfigured() throws {
         let primarySessionName = try generatedLiveLatencySessionName("switcher-primary")
         let availableSessionName = try generatedLiveLatencySessionName("switcher-available")
