@@ -147,7 +147,7 @@ struct SessionSwitcherProjection: Equatable {
 }
 
 struct SessionSwitcherView<NewSessionContent: View>: View {
-    private static var collapsedRecentSessionCount: Int { 5 }
+    private static var collapsedRecentSessionCount: Int { 3 }
 
     private enum Route: Hashable {
         case chooseServer
@@ -245,7 +245,7 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
                                 DisclosureRowLabel(
                                     title: showsAllRecentSessions
                                         ? "Show fewer"
-                                        : "View all \(projection.recentSessions.count)",
+                                        : "Show more",
                                     systemImage: showsAllRecentSessions
                                         ? "chevron.up"
                                         : "chevron.down"
