@@ -2,7 +2,6 @@ import SwiftUI
 
 struct SSHPublicKeyInstallSheet: View {
     let onSuccess: (SSHPublicKeyInstallCompletion) -> Void
-    let onCancel: () -> Void
 
     private let target: SSHPublicKeyInstallTarget
     private let setupSessionID: UUID
@@ -27,13 +26,11 @@ struct SSHPublicKeyInstallSheet: View {
         onTrustHostKey: @escaping @MainActor (
             SSHHostKeyTrustChallenge
         ) throws -> Void,
-        onSuccess: @escaping (SSHPublicKeyInstallCompletion) -> Void,
-        onCancel: @escaping () -> Void
+        onSuccess: @escaping (SSHPublicKeyInstallCompletion) -> Void
     ) {
         self.target = target
         self.setupSessionID = setupSessionID
         self.onSuccess = onSuccess
-        self.onCancel = onCancel
         _coordinator = StateObject(
             wrappedValue: SSHPublicKeyInstallCoordinator(
                 draft: draft,
@@ -46,23 +43,13 @@ struct SSHPublicKeyInstallSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    phaseContent
-                }
-            }
-            .navigationTitle("Install on Host")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                if !hasTerminalSuccess {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel", action: cancel)
-                            .accessibilityIdentifier("connection.private-key.install-cancel")
-                    }
-                }
+        Form {
+            Section {
+                phaseContent
             }
         }
+        .navigationTitle("Install on Host")
+        .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             start {
                 await coordinator.preflight()
@@ -172,15 +159,6 @@ struct SSHPublicKeyInstallSheet: View {
         }
     }
 
-    private var hasTerminalSuccess: Bool {
-        switch coordinator.phase {
-        case .alreadyInstalled, .installed:
-            true
-        default:
-            false
-        }
-    }
-
     private func complete(_ success: SSHPublicKeyInstallSuccess) {
         guard !didComplete else { return }
         didComplete = true
@@ -250,10 +228,4 @@ struct SSHPublicKeyInstallSheet: View {
         }
     }
 
-    private func cancel() {
-        operationTask?.cancel()
-        operationTask = nil
-        coordinator.cancel()
-        onCancel()
-    }
 }

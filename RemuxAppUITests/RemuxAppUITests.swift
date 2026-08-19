@@ -37,12 +37,12 @@ final class RemuxAppUITests: XCTestCase {
         add(attachment)
     }
 
-    func testCreatesSSHServerAndOpensTerminalWithSimulatorTransport() {
+    func testCreatesSSHServerThenStartsFirstSessionWithSimulatorTransport() {
         launchSimulatorApp()
         openConnectionSetup()
         fillConnectionForm()
 
-        saveConnectionAndWaitForTerminal()
+        saveServerAndStartSession()
         _ = waitForTerminalHomeButton()
     }
 
@@ -52,7 +52,7 @@ final class RemuxAppUITests: XCTestCase {
         launchSimulatorApp()
         openConnectionSetup()
         fillConnectionForm()
-        saveConnectionAndWaitForTerminal()
+        saveServerAndStartSession()
         _ = waitForTerminalHomeButton()
 
         let composerToggle = app.buttons["terminal.composer.toggle"]
@@ -186,7 +186,7 @@ final class RemuxAppUITests: XCTestCase {
         launchSimulatorApp()
         openConnectionSetup()
         fillConnectionForm()
-        saveConnectionAndWaitForTerminal()
+        saveServerAndStartSession()
         _ = waitForTerminalHomeButton()
 
         let terminal = app.otherElements["terminal.screen"]
@@ -239,7 +239,7 @@ final class RemuxAppUITests: XCTestCase {
         launchSimulatorApp()
         openConnectionSetup()
         fillConnectionForm()
-        saveConnectionAndWaitForTerminal()
+        saveServerAndStartSession()
         _ = waitForTerminalHomeButton()
 
         let composerToggle = app.buttons["terminal.composer.toggle"]
@@ -273,7 +273,7 @@ final class RemuxAppUITests: XCTestCase {
         launchSimulatorApp()
         openConnectionSetup()
         fillConnectionForm()
-        saveConnectionAndWaitForTerminal()
+        saveServerAndStartSession()
         _ = waitForTerminalHomeButton()
         waitForLiveTerminalInputReady(timeout: 10)
 
@@ -395,7 +395,7 @@ final class RemuxAppUITests: XCTestCase {
         launchSimulatorApp()
         openConnectionSetup()
         fillConnectionForm()
-        saveConnectionAndWaitForTerminal()
+        saveServerAndStartSession()
         _ = waitForTerminalHomeButton()
         waitForLiveTerminalInputReady(timeout: 10)
 
@@ -438,7 +438,7 @@ final class RemuxAppUITests: XCTestCase {
         launchSimulatorApp()
         openConnectionSetup()
         fillConnectionForm()
-        saveConnectionAndWaitForTerminal()
+        saveServerAndStartSession()
         _ = waitForTerminalHomeButton()
         waitForLiveTerminalInputReady(timeout: 10)
 
@@ -517,7 +517,7 @@ final class RemuxAppUITests: XCTestCase {
         openConnectionSetup()
         fillConnectionForm()
 
-        saveConnectionAndWaitForTerminal()
+        saveServerAndStartSession()
         openHomeFromTerminal()
 
         let firstOpenSession = activeSessionRows.firstMatch
@@ -3346,12 +3346,6 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(password.waitForExistence(timeout: 2))
         password.typeText("demo-password")
 
-        app.swipeUp()
-        let sessionName = app.textFields["connection.session"]
-        XCTAssertTrue(sessionName.waitForExistence(timeout: 2))
-        sessionName.tap()
-        sessionName.typeText("base")
-
         XCTAssertTrue(app.buttons["connection.save"].waitForExistence(timeout: 2))
     }
 
@@ -3372,6 +3366,27 @@ final class RemuxAppUITests: XCTestCase {
         app.buttons["connection.save"].tap()
         XCTAssertTrue(app.otherElements["terminal.screen"].waitForExistence(timeout: 10))
         dismissPasswordManagerPromptIfPresent()
+    }
+
+    private func saveServerAndStartSession() {
+        app.buttons["connection.save"].tap()
+        dismissPasswordManagerPromptIfPresent()
+
+        let serverDetail = app.descendants(matching: .any)["library.server.detail"]
+        XCTAssertTrue(serverDetail.waitForExistence(timeout: 5))
+        let newSessionButtons = app.buttons.matching(identifier: "library.server.new-session")
+        XCTAssertTrue(newSessionButtons.firstMatch.waitForExistence(timeout: 2))
+        guard let newSessionButton = hittableElements(in: newSessionButtons).first else {
+            XCTFail("Missing hittable New Session button on the server detail screen.")
+            return
+        }
+        newSessionButton.tap()
+
+        let sessionName = app.textFields["connection.session"]
+        XCTAssertTrue(sessionName.waitForExistence(timeout: 2))
+        sessionName.tap()
+        sessionName.typeText("base")
+        saveConnectionAndWaitForTerminal()
     }
 
     private func openHomeFromTerminal() {

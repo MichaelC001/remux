@@ -140,12 +140,13 @@ struct SessionSwitcherProjection: Equatable {
     }
 }
 
-struct SessionSwitcherView: View {
-    private static let collapsedRecentSessionCount = 5
+struct SessionSwitcherView<NewSessionContent: View>: View {
+    private static var collapsedRecentSessionCount: Int { 5 }
 
     private enum Route: Hashable {
         case chooseServer
         case availableSessions
+        case newSession
     }
 
     @Environment(\.dismiss) private var dismiss
@@ -158,7 +159,10 @@ struct SessionSwitcherView: View {
     let onResumeSession: (SavedWorkspace.ID) -> Void
     let onResumeAvailableSession: (SavedServer.ID, String) -> Void
     let onDisconnectSession: (SavedWorkspace.ID) -> Void
+    let isCreatingSession: Bool
     let onCreateSession: (SavedServer.ID) -> Void
+    let onCancelCreateSession: () -> Void
+    let newSessionContent: () -> NewSessionContent
     let onRefresh: () -> Void
     let discoveryStates: [SavedServer.ID: TmuxSessionDiscoveryState]
 
@@ -189,9 +193,17 @@ struct SessionSwitcherView: View {
                             onRefresh: onRefresh,
                             onSelect: resumeAvailableSession
                         )
+                    case .newSession:
+                        newSessionContent()
                     }
                 }
         }
+        .onChange(of: path) { previousPath, path in
+            guard previousPath.contains(.newSession),
+                  !path.contains(.newSession) else { return }
+            onCancelCreateSession()
+        }
+        .interactiveDismissDisabled(isCreatingSession)
         .presentationDetents([.medium, .large])
         .presentationContentInteraction(.resizes)
         .presentationDragIndicator(.visible)
@@ -448,8 +460,8 @@ struct SessionSwitcherView: View {
     }
 
     private func beginNewSession(_ serverID: SavedServer.ID) {
-        dismiss()
         onCreateSession(serverID)
+        path.append(.newSession)
     }
 
     private var serverDiscoveryStates: [(SavedServer, TmuxSessionDiscoveryState)] {
