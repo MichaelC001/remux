@@ -74,10 +74,12 @@ struct SSHPublicKeyInstallSheet: View {
             hostTrustTitle,
             isPresented: hostTrustIsPresented
         ) {
-            Button(hostTrustActionTitle) {
-                confirmHostTrust()
+            if coordinator.pendingTrust?.challenge.receivedKeyFingerprint != nil {
+                Button(hostTrustActionTitle) {
+                    confirmHostTrust()
+                }
+                .accessibilityIdentifier("connection.private-key.host-trust-confirm")
             }
-            .accessibilityIdentifier("connection.private-key.host-trust-confirm")
 
             Button("Cancel", role: .cancel) {
                 coordinator.rejectHostTrust()
@@ -207,9 +209,10 @@ struct SSHPublicKeyInstallSheet: View {
             return ""
         }
 
-        let verification = challenge.receivedKeyFingerprint.map {
-            "Received \(challenge.receivedKeyType) \($0)"
-        } ?? "Received \(challenge.receivedKeyType)"
+        guard let fingerprint = challenge.receivedKeyFingerprint else {
+            return "Remux couldn’t verify the SSH host key for \(challenge.host), so trust is unavailable."
+        }
+        let verification = "Received \(challenge.receivedKeyType) \(fingerprint)"
 
         switch challenge.kind {
         case .unknown:

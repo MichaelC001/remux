@@ -264,12 +264,14 @@ private struct RemuxWorkspaceShell: View {
             Button("Cancel", role: .cancel) {
                 model.dismissSetupSubmissionIssue(issue)
             }
-            Button(challenge.kind == .changed ? "Update Trust" : "Trust Server") {
-                if model.trustNewServerHostKey(
-                    challenge,
-                    setupSessionID: setupSessionID
-                ) {
-                    saveConnectionSetupSheet()
+            if challenge.receivedKeyFingerprint != nil {
+                Button(challenge.kind == .changed ? "Update Trust" : "Trust Server") {
+                    if model.trustNewServerHostKey(
+                        challenge,
+                        setupSessionID: setupSessionID
+                    ) {
+                        saveConnectionSetupSheet()
+                    }
                 }
             }
         case .verificationFailed, .saveFailed:
@@ -1345,8 +1347,10 @@ private struct ServerDetailView: View {
             presenting: discoveryState.hostKeyChallenge
         ) { challenge in
             Button("Cancel", role: .cancel) {}
-            Button(challenge.kind == .changed ? "Update Trust" : "Trust Server") {
-                onTrustHostKey(challenge)
+            if challenge.receivedKeyFingerprint != nil {
+                Button(challenge.kind == .changed ? "Update Trust" : "Trust Server") {
+                    onTrustHostKey(challenge)
+                }
             }
         } message: { challenge in
             Text(sshHostKeyTrustMessage(for: challenge))
@@ -1457,7 +1461,9 @@ private struct ServerDetailView: View {
 }
 
 private func sshHostKeyTrustMessage(for challenge: SSHHostKeyTrustChallenge) -> String {
-    let fingerprint = challenge.receivedKeyFingerprint ?? "Fingerprint unavailable"
+    guard let fingerprint = challenge.receivedKeyFingerprint else {
+        return "Remux couldn’t verify the SSH host key for \(challenge.host), so trust is unavailable."
+    }
     if challenge.kind == .changed {
         return "The SSH host key for \(challenge.host) changed. Update trust only if this fingerprint is correct:\n\n\(fingerprint)"
     }

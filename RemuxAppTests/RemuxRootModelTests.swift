@@ -642,7 +642,7 @@ final class RemuxRootModelTests: XCTestCase {
             serverID: pair.server.id,
             host: "replacement.example.test",
             trustedIdentity: originalIdentity,
-            receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+            receivedOpenSSHPublicKey: "ssh-ed25519 cmVwbGFjZW1lbnQtaG9zdC1rZXk="
         )
 
         await harness.model.beginEditServer(serverID: pair.server.id)
@@ -727,7 +727,7 @@ final class RemuxRootModelTests: XCTestCase {
                 serverID: pair.server.id,
                 host: "replacement.example.test",
                 trustedIdentity: originalIdentity,
-                receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+                receivedOpenSSHPublicKey: "ssh-ed25519 cmVwbGFjZW1lbnQtaG9zdC1rZXk="
             ),
             setupSessionID: setupSessionID
         )
@@ -749,7 +749,7 @@ final class RemuxRootModelTests: XCTestCase {
                     serverID: pair.server.id,
                     host: "stale.example.test",
                     trustedIdentity: originalIdentity,
-                    receivedOpenSSHPublicKey: "ssh-ed25519 stale-host-key"
+                    receivedOpenSSHPublicKey: "ssh-ed25519 c3RhbGUtaG9zdC1rZXk="
                 ),
                 setupSessionID: setupSessionID
             )
@@ -805,7 +805,7 @@ final class RemuxRootModelTests: XCTestCase {
                 serverID: pair.server.id,
                 host: "replacement.example.test",
                 trustedIdentity: originalIdentity,
-                receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+                receivedOpenSSHPublicKey: "ssh-ed25519 cmVwbGFjZW1lbnQtaG9zdC1rZXk="
             ),
             setupSessionID: harness.model.setupSessionID
         )
@@ -893,7 +893,7 @@ final class RemuxRootModelTests: XCTestCase {
                 serverID: pair.server.id,
                 host: "replacement.example.test",
                 trustedIdentity: originalIdentity,
-                receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+                receivedOpenSSHPublicKey: "ssh-ed25519 cmVwbGFjZW1lbnQtaG9zdC1rZXk="
             ),
             setupSessionID: harness.model.setupSessionID
         )
@@ -982,7 +982,7 @@ final class RemuxRootModelTests: XCTestCase {
             serverID: pair.server.id,
             host: "replacement.example.test",
             trustedIdentity: originalIdentity,
-            receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+            receivedOpenSSHPublicKey: "ssh-ed25519 cmVwbGFjZW1lbnQtaG9zdC1rZXk="
         )
 
         await harness.model.beginEditServer(serverID: pair.server.id)
@@ -1028,7 +1028,7 @@ final class RemuxRootModelTests: XCTestCase {
             serverID: pair.server.id,
             host: "replacement.example.test",
             trustedIdentity: originalIdentity,
-            receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+            receivedOpenSSHPublicKey: "ssh-ed25519 cmVwbGFjZW1lbnQtaG9zdC1rZXk="
         )
         try harness.model.trustSetupHostKey(
             replacementChallenge,
@@ -1095,7 +1095,7 @@ final class RemuxRootModelTests: XCTestCase {
             serverID: pair.server.id,
             host: "replacement.example.test",
             trustedIdentity: originalIdentity,
-            receivedOpenSSHPublicKey: "ssh-ed25519 replacement-host-key"
+            receivedOpenSSHPublicKey: "ssh-ed25519 cmVwbGFjZW1lbnQtaG9zdC1rZXk="
         )
         try harness.model.trustSetupHostKey(
             replacementChallenge,
@@ -1165,7 +1165,7 @@ final class RemuxRootModelTests: XCTestCase {
             serverID: pair.server.id,
             host: "new-workspace.example.test",
             trustedIdentity: originalIdentity,
-            receivedOpenSSHPublicKey: "ssh-ed25519 new-workspace-host-key"
+            receivedOpenSSHPublicKey: "ssh-ed25519 bmV3LXdvcmtzcGFjZS1ob3N0LWtleQ=="
         )
         try harness.model.trustSetupHostKey(
             newWorkspaceChallenge,
@@ -1184,7 +1184,7 @@ final class RemuxRootModelTests: XCTestCase {
             serverID: pair.server.id,
             host: "edit-workspace.example.test",
             trustedIdentity: newWorkspaceIdentity,
-            receivedOpenSSHPublicKey: "ssh-ed25519 edit-workspace-host-key"
+            receivedOpenSSHPublicKey: "ssh-ed25519 ZWRpdC13b3Jrc3BhY2UtaG9zdC1rZXk="
         )
         try harness.model.trustSetupHostKey(
             editWorkspaceChallenge,
@@ -3099,7 +3099,7 @@ final class RemuxRootModelTests: XCTestCase {
             trustedKeyType: "ssh-ed25519",
             trustedOpenSSHPublicKey: "ssh-ed25519 trusted",
             receivedKeyType: "ecdsa-sha2-nistp256",
-            receivedOpenSSHPublicKey: "ecdsa-sha2-nistp256 received"
+            receivedOpenSSHPublicKey: "ecdsa-sha2-nistp256 cmVjZWl2ZWQ="
         )
         let reason = TerminalDisconnectReason(
             kind: .hostKey,
@@ -3121,7 +3121,10 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(identities.count, 1)
         XCTAssertEqual(identities[0].serverID, server.id)
         XCTAssertEqual(identities[0].keyType, "ecdsa-sha2-nistp256")
-        XCTAssertEqual(identities[0].openSSHPublicKey, "ecdsa-sha2-nistp256 received")
+        XCTAssertEqual(
+            identities[0].openSSHPublicKey,
+            "ecdsa-sha2-nistp256 cmVjZWl2ZWQ="
+        )
 
         let session = try XCTUnwrap(harness.model.activeSessions.first)
         XCTAssertNotEqual(session.instanceID, oldSession.instanceID)
@@ -3704,7 +3707,7 @@ final class RemuxRootModelTests: XCTestCase {
             trustedKeyType: nil,
             trustedOpenSSHPublicKey: nil,
             receivedKeyType: "ssh-ed25519",
-            receivedOpenSSHPublicKey: "ssh-ed25519 setup-host-key"
+            receivedOpenSSHPublicKey: "ssh-ed25519 c2V0dXAtaG9zdC1rZXk="
         )
     }
 
