@@ -394,7 +394,7 @@ private struct RemuxWorkspaceShell: View {
                 onAddServer: model.beginNewServer,
                 onAddWorkspace: { serverID, showsServerSummary in
                     connectionSetupSheetShowsServerSummary = showsServerSummary
-                    model.beginNewWorkspace(for: serverID)
+                    _ = model.beginNewWorkspace(for: serverID)
                 },
                 onEditServer: { serverID in
                     Task { await model.beginEditServer(serverID: serverID) }
@@ -620,13 +620,20 @@ private struct ConnectionLibraryView: View {
     @State private var showsAllRecentSessions = false
 
     var body: some View {
+        let sessionProjection = SessionSwitcherProjection(
+            snapshot: snapshot,
+            activeSessions: activeSessions,
+            discoveryStates: discoveryStates,
+            selectedSessionID: nil
+        )
+
         Group {
             if snapshot.servers.isEmpty {
                 LibraryEmptyState(onAddServer: onAddServer)
             } else {
                 List {
                     activeSessionsSection
-                    serversSection
+                    serversSection(sessionProjection: sessionProjection)
                     recentSessionsSection
                 }
                 .listStyle(.insetGrouped)
@@ -663,7 +670,10 @@ private struct ConnectionLibraryView: View {
         .navigationDestination(isPresented: presentedServerIsActive) {
             if let presentedServerID,
                let server = snapshot.server(id: presentedServerID) {
-                serverDetail(for: server)
+                serverDetail(
+                    for: server,
+                    availableSessionNames: sessionProjection.availableSessionNames(on: server.id)
+                )
             }
         }
     }
@@ -780,14 +790,19 @@ private struct ConnectionLibraryView: View {
         }
     }
 
-    private var serversSection: some View {
+    private func serversSection(
+        sessionProjection: SessionSwitcherProjection
+    ) -> some View {
         Section {
             ForEach(snapshot.servers) { server in
                 let workspaces = visibleWorkspaces(for: server.id)
                 let latest = workspaces.first
 
                 NavigationLink {
-                    serverDetail(for: server)
+                    serverDetail(
+                        for: server,
+                        availableSessionNames: sessionProjection.availableSessionNames(on: server.id)
+                    )
                 } label: {
                     ServerLibraryRow(
                         server: server,
@@ -901,22 +916,16 @@ private struct ConnectionLibraryView: View {
         }
     }
 
-    private func availableSessionNames(for serverID: SavedServer.ID) -> [String] {
-        SessionSwitcherProjection(
-            snapshot: snapshot,
-            activeSessions: activeSessions,
-            discoveryStates: discoveryStates,
-            selectedSessionID: nil
-        ).availableSessionNames(on: serverID)
-    }
-
-    private func serverDetail(for server: SavedServer) -> some View {
+    private func serverDetail(
+        for server: SavedServer,
+        availableSessionNames: [String]
+    ) -> some View {
         ServerDetailView(
             server: server,
             workspaces: visibleWorkspaces(for: server.id),
             activeSessions: activeSessions.filter { $0.target.server.id == server.id },
             discoveryState: discoveryStates[server.id] ?? .idle,
-            availableSessionNames: availableSessionNames(for: server.id),
+            availableSessionNames: availableSessionNames,
             onAddWorkspace: { serverID in
                 beginNewWorkspace(
                     for: serverID,
@@ -1173,7 +1182,7 @@ private struct ServerDetailView: View {
                         Label("New Session", systemImage: "plus")
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .accessibilityIdentifier("library.server.new-session")
+                    .accessibilityIdentifier("library.server.new-session.empty")
                 } else {
                     ForEach(visibleWorkspaces) { workspace in
                         Button {
@@ -1249,7 +1258,7 @@ private struct ServerDetailView: View {
                     Image(systemName: "plus")
                 }
                 .accessibilityLabel("New Session")
-                .accessibilityIdentifier("library.server.new-session")
+                .accessibilityIdentifier("library.server.new-session.toolbar")
             }
         }
         .alert(

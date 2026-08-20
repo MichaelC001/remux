@@ -388,9 +388,10 @@ final class RemuxRootModel: ObservableObject {
         )
     }
 
-    func beginNewWorkspace(for serverID: SavedServer.ID) {
-        guard activeSetupAction == nil, currentSetupID == nil else { return }
-        guard let server = library.server(id: serverID) else { return }
+    @discardableResult
+    func beginNewWorkspace(for serverID: SavedServer.ID) -> Bool {
+        guard activeSetupAction == nil, currentSetupID == nil else { return false }
+        guard let server = library.server(id: serverID) else { return false }
 
         currentSetupID = UUID()
         editServerTrustSnapshot = nil
@@ -403,6 +404,7 @@ final class RemuxRootModel: ObservableObject {
             draft: TmuxConnectionDraft(server: server, workspace: workspace),
             mode: .newWorkspace(serverID)
         )
+        return true
     }
 
     func beginEditServer(serverID: SavedServer.ID) async {
@@ -634,14 +636,19 @@ final class RemuxRootModel: ObservableObject {
             return nil
 
         case .editWorkspace(let serverID, let workspaceID):
-            await saveWorkspace(setup, serverID: serverID, workspaceID: workspaceID)
+            await saveWorkspace(
+                setup,
+                serverID: serverID,
+                workspaceID: workspaceID,
+                action: action
+            )
             return nil
 
         case .newServer:
             return await saveNewServer(setup, action: action)
 
         case .newWorkspace(let serverID):
-            await saveNewWorkspaceAndConnect(setup, serverID: serverID)
+            await saveNewWorkspaceAndConnect(setup, serverID: serverID, action: action)
             return nil
         }
     }
@@ -915,8 +922,10 @@ final class RemuxRootModel: ObservableObject {
 
     private func saveNewWorkspaceAndConnect(
         _ setup: ConnectionSetupState,
-        serverID: SavedServer.ID
+        serverID: SavedServer.ID,
+        action: SetupAction
     ) async {
+        guard isCurrentSetupAction(action) else { return }
         switch TmuxConnectionDraftValidator.validateWorkspace(
             setup.draft,
             serverID: serverID,
@@ -928,7 +937,7 @@ final class RemuxRootModel: ObservableObject {
         case .valid(let submission):
             do {
                 guard let server = library.server(id: serverID) else {
-                    finishSetupSession(setupSessionID)
+                    finishSetupSession(action.setupID)
                     if state == .library {
                         scheduleLibrarySSHPrewarm(snapshot: library)
                     }
@@ -941,7 +950,7 @@ final class RemuxRootModel: ObservableObject {
 
                 let sshAuth = try await resolveSSHAuth(for: server)
 
-                finishSetupSession(setupSessionID)
+                finishSetupSession(action.setupID)
                 activate(
                     server: server,
                     workspace: submission.workspace,
@@ -956,8 +965,10 @@ final class RemuxRootModel: ObservableObject {
     private func saveWorkspace(
         _ setup: ConnectionSetupState,
         serverID: SavedServer.ID,
-        workspaceID: SavedWorkspace.ID
+        workspaceID: SavedWorkspace.ID,
+        action: SetupAction
     ) async {
+        guard isCurrentSetupAction(action) else { return }
         switch TmuxConnectionDraftValidator.validateWorkspace(
             setup.draft,
             serverID: serverID,
@@ -981,7 +992,7 @@ final class RemuxRootModel: ObservableObject {
                     workspace,
                     in: &activeSessions
                 )
-                finishSetupSession(setupSessionID)
+                finishSetupSession(action.setupID)
                 scheduleLibrarySSHPrewarm(snapshot: library)
             } catch {
                 transitionToFailed(error)

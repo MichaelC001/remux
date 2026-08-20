@@ -166,7 +166,7 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
     let onResumeAvailableSession: (SavedServer.ID, String) -> Void
     let onDisconnectSession: (SavedWorkspace.ID) -> Void
     let isCreatingSession: Bool
-    let onCreateSession: (SavedServer.ID) -> Void
+    let onCreateSession: (SavedServer.ID) -> Bool
     let onCancelCreateSession: () -> Void
     let newSessionContent: () -> NewSessionContent
     let onRefresh: () -> Void
@@ -466,7 +466,7 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
     }
 
     private func beginNewSession(_ serverID: SavedServer.ID) {
-        onCreateSession(serverID)
+        guard onCreateSession(serverID) else { return }
         path.append(.newSession)
     }
 

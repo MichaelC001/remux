@@ -1628,7 +1628,7 @@ final class RemuxRootModelTests: XCTestCase {
         await harness.model.load()
         await harness.model.showLibrary()
 
-        harness.model.beginNewWorkspace(for: server.id)
+        XCTAssertTrue(harness.model.beginNewWorkspace(for: server.id))
 
         guard let setup = harness.model.connectionSetup else {
             XCTFail("expected setup state")
@@ -1642,6 +1642,21 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(setup.draft.sessionName, "")
         XCTAssertEqual(setup.validation, .empty)
         XCTAssertEqual(setup.mode, .newWorkspace(server.id))
+    }
+
+    func testBeginNewWorkspaceReportsFailureWhileAnotherSetupOwnsTheModel() async throws {
+        let passwordBackedServer = makePasswordBackedServer()
+        let harness = makeHarness(
+            servers: [passwordBackedServer.server],
+            identities: [passwordBackedServer.identity]
+        )
+        await harness.model.load()
+        harness.model.beginNewServer()
+
+        XCTAssertFalse(
+            harness.model.beginNewWorkspace(for: passwordBackedServer.server.id)
+        )
+        XCTAssertEqual(harness.model.connectionSetup?.mode, .newServer)
     }
 
     func testBeginNewWorkspaceDoesNotGenerateSessionNameFromExistingWorkspaces() async throws {

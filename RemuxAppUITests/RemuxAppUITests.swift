@@ -3402,12 +3402,8 @@ final class RemuxAppUITests: XCTestCase {
 
         let serverDetail = app.descendants(matching: .any)["library.server.detail"]
         XCTAssertTrue(serverDetail.waitForExistence(timeout: 5))
-        let newSessionButtons = app.buttons.matching(identifier: "library.server.new-session")
-        XCTAssertTrue(newSessionButtons.firstMatch.waitForExistence(timeout: 2))
-        guard let newSessionButton = hittableElements(in: newSessionButtons).first else {
-            XCTFail("Missing hittable New Session button on the server detail screen.")
-            return
-        }
+        let newSessionButton = app.buttons["library.server.new-session.empty"]
+        XCTAssertTrue(newSessionButton.waitForExistence(timeout: 2))
         newSessionButton.tap()
 
         let sessionName = app.textFields["connection.session"]
@@ -3546,7 +3542,7 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func openNewSessionFromLibrary() {
-        let detailButton = app.buttons["library.server.new-session"]
+        let detailButton = app.buttons["library.server.new-session.toolbar"]
         if detailButton.waitForExistence(timeout: 1) {
             detailButton.tap()
             return
@@ -3554,7 +3550,7 @@ final class RemuxAppUITests: XCTestCase {
 
         openFirstServerDetail()
 
-        let serverButton = app.buttons["library.server.new-session"]
+        let serverButton = app.buttons["library.server.new-session.toolbar"]
         XCTAssertTrue(serverButton.waitForExistence(timeout: 2))
         if serverButton.isHittable {
             serverButton.tap()
