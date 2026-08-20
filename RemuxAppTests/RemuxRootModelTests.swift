@@ -1339,6 +1339,65 @@ final class RemuxRootModelTests: XCTestCase {
         )
     }
 
+    func testNewServerPersistenceFailureKeepsDraftAndTrustUntilCancel() async throws {
+        let discoverer = RecordingTmuxSessionDiscoverer(results: [])
+        let harness = makeHarness(
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        await harness.model.load()
+        harness.model.beginNewServer()
+        let serverID = try setupDraft(from: harness.model).serverID
+        let challenge = makeHostKeyChallenge(
+            serverID: serverID,
+            host: "server.example.com"
+        )
+        await discoverer.appendResults([
+            .failure(TrustedHostStoreError.hostKeyTrustRequired(challenge)),
+            .success(["base"]),
+        ])
+        harness.model.updateDraft { draft in
+            draft.displayName = "Example Server"
+            draft.host = challenge.host
+            draft.port = "22"
+            draft.username = "demo"
+            draft.password = "demo-password"
+        }
+        let submittedDraft = try setupDraft(from: harness.model)
+
+        _ = await harness.model.saveAndConnect()
+        XCTAssertTrue(
+            harness.model.trustNewServerHostKey(
+                challenge,
+                setupSessionID: harness.model.setupSessionID
+            )
+        )
+        await harness.profileRepository.failNextSaveServer(
+            with: ConnectionProfileRepositoryError.missingServer(serverID)
+        )
+
+        let saveResult = await harness.model.saveAndConnect()
+
+        XCTAssertNil(saveResult)
+        XCTAssertEqual(harness.model.state, .library)
+        XCTAssertEqual(harness.model.connectionSetup?.draft, submittedDraft)
+        XCTAssertEqual(harness.model.connectionSetup?.submissionIssue, .saveFailed)
+        let snapshot = try await harness.profileRepository.loadSnapshot()
+        let credentials = await harness.credentialStore.credentialsSnapshot()
+        XCTAssertEqual(snapshot, .empty)
+        XCTAssertEqual(credentials, [:])
+        XCTAssertEqual(
+            try loadTrustedHostIdentities(root: harness.trustedHostRoot).map(\.serverID),
+            [serverID]
+        )
+
+        harness.model.cancelSetup()
+
+        XCTAssertNil(harness.model.connectionSetup)
+        XCTAssertEqual(try loadTrustedHostIdentities(root: harness.trustedHostRoot), [])
+    }
+
     func testLoadWithSavedProfileShowsLibraryInsteadOfAutoOpeningTerminal() async throws {
         let server = SavedServer(
             displayName: "Build Host",

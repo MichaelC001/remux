@@ -247,6 +247,7 @@ final class RemuxRootModel: ObservableObject {
         enum SubmissionIssue: Equatable {
             case hostKeyTrustRequired(SSHHostKeyTrustChallenge)
             case verificationFailed(String)
+            case saveFailed
         }
 
         var draft: TmuxConnectionDraft
@@ -744,6 +745,7 @@ final class RemuxRootModel: ObservableObject {
                     server,
                     identityCredential: identityCredential,
                     discoveredSessionNames: sessionNames,
+                    setup: setup,
                     action: action
                 )
             } catch TrustedHostStoreError.hostKeyTrustRequired(let challenge) {
@@ -768,6 +770,7 @@ final class RemuxRootModel: ObservableObject {
         _ server: SavedServer,
         identityCredential: SSHIdentityCredentialPair,
         discoveredSessionNames: [String],
+        setup: ConnectionSetupState,
         action: SetupAction
     ) async -> SavedServer.ID? {
         let identity = identityCredential.identity
@@ -806,6 +809,13 @@ final class RemuxRootModel: ObservableObject {
             }
             if !savedServer {
                 await cleanupCreatedCredential(identity, savedCredential: savedCredential)
+                guard isCurrentSetupAction(action) else { return nil }
+                NSLog(
+                    "Remux new-server persistence failed before server save: %@",
+                    String(describing: error)
+                )
+                connectionSetup = setupWithSubmissionIssue(.saveFailed, from: setup)
+                return nil
             }
             transitionToFailed(error)
             return nil

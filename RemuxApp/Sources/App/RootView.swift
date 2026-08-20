@@ -249,6 +249,8 @@ private struct RemuxWorkspaceShell: View {
             "Trust This Server?"
         case .verificationFailed, nil:
             "Couldn’t Add Server"
+        case .saveFailed:
+            "Server Wasn’t Saved"
         }
     }
 
@@ -270,7 +272,7 @@ private struct RemuxWorkspaceShell: View {
                     saveConnectionSetupSheet()
                 }
             }
-        case .verificationFailed:
+        case .verificationFailed, .saveFailed:
             Button("OK", role: .cancel) {
                 model.dismissSetupSubmissionIssue(issue)
             }
@@ -285,6 +287,8 @@ private struct RemuxWorkspaceShell: View {
             sshHostKeyTrustMessage(for: challenge)
         case .verificationFailed(let message):
             message
+        case .saveFailed:
+            "Your details are still here. Try again."
         }
     }
 
