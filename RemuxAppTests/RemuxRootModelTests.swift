@@ -1202,7 +1202,12 @@ final class RemuxRootModelTests: XCTestCase {
     }
 
     func testSaveNewServerPersistsNoWorkspaceAndReturnsToLibrary() async throws {
-        let harness = makeHarness()
+        let discoverer = RecordingTmuxSessionDiscoverer(results: [.success(["base", "ops"])])
+        let harness = makeHarness(
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
         await harness.model.load()
         harness.model.beginNewServer()
         harness.model.updateDraft { draft in
@@ -1230,6 +1235,108 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(identity.name, "Example Server")
         XCTAssertEqual(identity.authenticationKind, .password)
         XCTAssertEqual(savedCredential, .password("demo-password"))
+        XCTAssertEqual(
+            harness.model.tmuxSessionDiscoveryState(for: serverID).sessionNames,
+            ["base", "ops"]
+        )
+        let verifiedTargets = await discoverer.targets()
+        let verifiedTarget = try XCTUnwrap(verifiedTargets.first)
+        XCTAssertEqual(verifiedTarget.server, server)
+        XCTAssertEqual(verifiedTarget.sshAuth.username, "demo")
+        XCTAssertEqual(verifiedTarget.sshAuth.credential, .password("demo-password"))
+    }
+
+    func testNewServerVerificationFailureKeepsDraftWithoutPersistingProfile() async throws {
+        let discoverer = RecordingTmuxSessionDiscoverer(
+            results: [
+                .failure(
+                    TmuxSessionDiscoveryError.remoteExit(
+                        status: 127,
+                        stderr: SSHTmuxControlCommandBuilder.tmuxNotFoundMarker
+                    )
+                ),
+            ]
+        )
+        let harness = makeHarness(
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        await harness.model.load()
+        harness.model.beginNewServer()
+        harness.model.updateDraft { draft in
+            draft.displayName = "Example Server"
+            draft.host = "server.example.com"
+            draft.port = "22"
+            draft.username = "demo"
+            draft.password = "demo-password"
+        }
+
+        let savedServerID = await harness.model.saveAndConnect()
+        XCTAssertNil(savedServerID)
+
+        let setup = try XCTUnwrap(harness.model.connectionSetup)
+        XCTAssertEqual(setup.draft.displayName, "Example Server")
+        XCTAssertEqual(
+            setup.submissionIssue,
+            .verificationFailed("Install tmux on this server or update Executable Path.")
+        )
+        let snapshot = try await harness.profileRepository.loadSnapshot()
+        let credentials = await harness.credentialStore.credentialsSnapshot()
+        XCTAssertEqual(snapshot, .empty)
+        XCTAssertEqual(credentials, [:])
+    }
+
+    func testNewServerHostKeyTrustRetriesVerificationBeforePersistence() async throws {
+        let discoverer = RecordingTmuxSessionDiscoverer(results: [])
+        let harness = makeHarness(
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        await harness.model.load()
+        harness.model.beginNewServer()
+        let serverID = try setupDraft(from: harness.model).serverID
+        let challenge = makeHostKeyChallenge(
+            serverID: serverID,
+            host: "server.example.com"
+        )
+        await discoverer.appendResults([
+            .failure(TrustedHostStoreError.hostKeyTrustRequired(challenge)),
+            .success(["base"]),
+        ])
+        harness.model.updateDraft { draft in
+            draft.displayName = "Example Server"
+            draft.host = challenge.host
+            draft.port = "22"
+            draft.username = "demo"
+            draft.password = "demo-password"
+        }
+
+        let firstSaveResult = await harness.model.saveAndConnect()
+        XCTAssertNil(firstSaveResult)
+        XCTAssertEqual(
+            harness.model.connectionSetup?.submissionIssue,
+            .hostKeyTrustRequired(challenge)
+        )
+        let snapshotBeforeTrust = try await harness.profileRepository.loadSnapshot()
+        XCTAssertEqual(snapshotBeforeTrust, .empty)
+
+        XCTAssertTrue(
+            harness.model.trustNewServerHostKey(
+                challenge,
+                setupSessionID: harness.model.setupSessionID
+            )
+        )
+        let savedServerID = await harness.model.saveAndConnect()
+
+        XCTAssertEqual(savedServerID, serverID)
+        let verifiedTargets = await discoverer.targets()
+        XCTAssertEqual(verifiedTargets.count, 2)
+        XCTAssertEqual(
+            harness.model.tmuxSessionDiscoveryState(for: serverID).sessionNames,
+            ["base"]
+        )
     }
 
     func testLoadWithSavedProfileShowsLibraryInsteadOfAutoOpeningTerminal() async throws {
@@ -3634,6 +3741,10 @@ private actor RecordingTmuxSessionDiscoverer {
     func discover(_ target: TmuxConnectionTarget) throws -> [String] {
         recordedTargets.append(target)
         return try results.removeFirst().get()
+    }
+
+    func appendResults(_ newResults: [Result<[String], Error>]) {
+        results.append(contentsOf: newResults)
     }
 
     func targets() -> [TmuxConnectionTarget] {

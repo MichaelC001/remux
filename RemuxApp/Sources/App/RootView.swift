@@ -211,6 +211,80 @@ private struct RemuxWorkspaceShell: View {
                 model.terminalSettings.theme.terminalChromeColorScheme,
                 chromeStyle: model.terminalSettings.theme.terminalChromeStyle
             )
+            .alert(
+                setupSubmissionIssueTitle(setup.submissionIssue),
+                isPresented: setupSubmissionIssueIsPresented(setup.submissionIssue),
+                presenting: setup.submissionIssue
+            ) { issue in
+                setupSubmissionIssueActions(
+                    issue,
+                    setupSessionID: model.setupSessionID
+                )
+            } message: { issue in
+                Text(setupSubmissionIssueMessage(issue))
+            }
+        }
+    }
+
+    private func setupSubmissionIssueIsPresented(
+        _ issue: RemuxRootModel.ConnectionSetupState.SubmissionIssue?
+    ) -> Binding<Bool> {
+        Binding(
+            get: {
+                guard let issue else { return false }
+                return model.connectionSetup?.submissionIssue == issue
+            },
+            set: { isPresented in
+                guard !isPresented, let issue else { return }
+                model.dismissSetupSubmissionIssue(issue)
+            }
+        )
+    }
+
+    private func setupSubmissionIssueTitle(
+        _ issue: RemuxRootModel.ConnectionSetupState.SubmissionIssue?
+    ) -> String {
+        switch issue {
+        case .hostKeyTrustRequired:
+            "Trust This Server?"
+        case .verificationFailed, nil:
+            "Couldn’t Add Server"
+        }
+    }
+
+    @ViewBuilder
+    private func setupSubmissionIssueActions(
+        _ issue: RemuxRootModel.ConnectionSetupState.SubmissionIssue,
+        setupSessionID: UUID?
+    ) -> some View {
+        switch issue {
+        case .hostKeyTrustRequired(let challenge):
+            Button("Cancel", role: .cancel) {
+                model.dismissSetupSubmissionIssue(issue)
+            }
+            Button(challenge.kind == .changed ? "Update Trust" : "Trust Server") {
+                if model.trustNewServerHostKey(
+                    challenge,
+                    setupSessionID: setupSessionID
+                ) {
+                    saveConnectionSetupSheet()
+                }
+            }
+        case .verificationFailed:
+            Button("OK", role: .cancel) {
+                model.dismissSetupSubmissionIssue(issue)
+            }
+        }
+    }
+
+    private func setupSubmissionIssueMessage(
+        _ issue: RemuxRootModel.ConnectionSetupState.SubmissionIssue
+    ) -> String {
+        switch issue {
+        case .hostKeyTrustRequired(let challenge):
+            sshHostKeyTrustMessage(for: challenge)
+        case .verificationFailed(let message):
+            message
         }
     }
 
@@ -1271,7 +1345,7 @@ private struct ServerDetailView: View {
                 onTrustHostKey(challenge)
             }
         } message: { challenge in
-            Text(hostKeyTrustMessage(for: challenge))
+            Text(sshHostKeyTrustMessage(for: challenge))
         }
     }
 
@@ -1376,13 +1450,14 @@ private struct ServerDetailView: View {
         .padding(.vertical, 2)
     }
 
-    private func hostKeyTrustMessage(for challenge: SSHHostKeyTrustChallenge) -> String {
-        let fingerprint = challenge.receivedKeyFingerprint ?? "Fingerprint unavailable"
-        if challenge.kind == .changed {
-            return "The SSH host key for \(challenge.host) changed. Update trust only if this fingerprint is correct:\n\n\(fingerprint)"
-        }
-        return "Trust only if this fingerprint matches \(challenge.host):\n\n\(fingerprint)"
+}
+
+private func sshHostKeyTrustMessage(for challenge: SSHHostKeyTrustChallenge) -> String {
+    let fingerprint = challenge.receivedKeyFingerprint ?? "Fingerprint unavailable"
+    if challenge.kind == .changed {
+        return "The SSH host key for \(challenge.host) changed. Update trust only if this fingerprint is correct:\n\n\(fingerprint)"
     }
+    return "Trust only if this fingerprint matches \(challenge.host):\n\n\(fingerprint)"
 }
 
 private struct AvailableServerSessionRow: View {
@@ -2079,8 +2154,15 @@ struct ConnectionSetupView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button(primaryActionTitle) {
+                Button {
                     submitIfPossible()
+                } label: {
+                    if isActionInProgress {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Text(primaryActionTitle)
+                    }
                 }
                 .fontWeight(.semibold)
                 .disabled(!canSubmit || isActionInProgress)

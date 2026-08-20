@@ -244,17 +244,25 @@ final class RemuxRootModel: ObservableObject {
     }
 
     struct ConnectionSetupState: Equatable {
+        enum SubmissionIssue: Equatable {
+            case hostKeyTrustRequired(SSHHostKeyTrustChallenge)
+            case verificationFailed(String)
+        }
+
         var draft: TmuxConnectionDraft
         var validation: TmuxConnectionDraftValidation
+        var submissionIssue: SubmissionIssue?
         let mode: SetupMode
 
         init(
             draft: TmuxConnectionDraft,
             validation: TmuxConnectionDraftValidation = .empty,
+            submissionIssue: SubmissionIssue? = nil,
             mode: SetupMode
         ) {
             self.draft = draft
             self.validation = validation
+            self.submissionIssue = submissionIssue
             self.mode = mode
         }
     }
@@ -496,7 +504,47 @@ final class RemuxRootModel: ObservableObject {
         guard activeSetupAction == nil else { return }
         guard var setup = connectionSetup else { return }
         mutation(&setup.draft)
+        setup.submissionIssue = nil
         connectionSetup = setup
+    }
+
+    func dismissSetupSubmissionIssue(
+        _ issue: ConnectionSetupState.SubmissionIssue
+    ) {
+        guard activeSetupAction == nil,
+              var setup = connectionSetup,
+              setup.submissionIssue == issue else {
+            return
+        }
+        setup.submissionIssue = nil
+        connectionSetup = setup
+    }
+
+    @discardableResult
+    func trustNewServerHostKey(
+        _ challenge: SSHHostKeyTrustChallenge,
+        setupSessionID: UUID?
+    ) -> Bool {
+        guard activeSetupAction == nil,
+              let setupSessionID,
+              currentSetupID == setupSessionID,
+              var setup = connectionSetup,
+              setup.mode == .newServer,
+              setup.draft.serverID == challenge.serverID,
+              setup.submissionIssue == .hostKeyTrustRequired(challenge) else {
+            return false
+        }
+
+        do {
+            try dependencies.trustedHostStore.trustHostKey(challenge)
+            setup.submissionIssue = nil
+            connectionSetup = setup
+            return true
+        } catch {
+            setup.submissionIssue = .verificationFailed(error.localizedDescription)
+            connectionSetup = setup
+            return false
+        }
     }
 
     func publicKeyInstallTarget(
@@ -678,41 +726,89 @@ final class RemuxRootModel: ObservableObject {
             }
             let identity = identityCredential.identity
             let server = submission.savedServer(identityID: identity.id)
-            var savedCredential = false
-            var savedIdentity = false
-            var savedServer = false
             do {
-                try await dependencies.credentialStore.saveCredential(
-                    identityCredential.credential,
-                    identityID: identity.id
+                let sshAuth = try resolvedSSHAuth(
+                    from: submission,
+                    identityCredential: identityCredential
                 )
-                savedCredential = true
-                try await dependencies.profileRepository.saveIdentity(identity)
-                savedIdentity = true
-                try await dependencies.profileRepository.saveServer(server)
-                savedServer = true
-                library = try await dependencies.profileRepository.loadSnapshot()
+                let discoveryTarget = target(
+                    server: server,
+                    workspace: SavedWorkspace(serverID: server.id, sessionName: ""),
+                    sshAuth: sshAuth
+                )
+                let sessionNames = try await dependencies.discoverTmuxSessions(
+                    for: discoveryTarget
+                )
                 guard isCurrentSetupAction(action) else { return nil }
-                finishSetupSession(action.setupID)
-                scheduleLibrarySSHPrewarm(snapshot: library)
-                return server.id
+                return await persistVerifiedNewServer(
+                    server,
+                    identityCredential: identityCredential,
+                    discoveredSessionNames: sessionNames,
+                    action: action
+                )
+            } catch TrustedHostStoreError.hostKeyTrustRequired(let challenge) {
+                guard isCurrentSetupAction(action) else { return nil }
+                connectionSetup = setupWithSubmissionIssue(
+                    .hostKeyTrustRequired(challenge),
+                    from: setup
+                )
+                return nil
             } catch {
-                if !savedServer && savedIdentity {
-                    do {
-                        try await dependencies.profileRepository.deleteIdentity(id: identity.id)
-                    } catch {
-                        NSLog(
-                            "Remux new-server identity cleanup failed: %@",
-                            String(describing: error)
-                        )
-                    }
-                }
-                if !savedServer {
-                    await cleanupCreatedCredential(identity, savedCredential: savedCredential)
-                }
-                transitionToFailed(error)
+                guard isCurrentSetupAction(action) else { return nil }
+                connectionSetup = setupWithSubmissionIssue(
+                    .verificationFailed(Self.newServerVerificationMessage(for: error)),
+                    from: setup
+                )
                 return nil
             }
+        }
+    }
+
+    private func persistVerifiedNewServer(
+        _ server: SavedServer,
+        identityCredential: SSHIdentityCredentialPair,
+        discoveredSessionNames: [String],
+        action: SetupAction
+    ) async -> SavedServer.ID? {
+        let identity = identityCredential.identity
+        var savedCredential = false
+        var savedIdentity = false
+        var savedServer = false
+        do {
+            try await dependencies.credentialStore.saveCredential(
+                identityCredential.credential,
+                identityID: identity.id
+            )
+            savedCredential = true
+            try await dependencies.profileRepository.saveIdentity(identity)
+            savedIdentity = true
+            try await dependencies.profileRepository.saveServer(server)
+            savedServer = true
+            library = try await dependencies.profileRepository.loadSnapshot()
+            guard isCurrentSetupAction(action) else { return nil }
+            tmuxSessionDiscoveryStates[server.id] = TmuxSessionDiscoveryState.idle
+                .finishingRefresh(
+                    with: Self.normalizedTmuxSessionNames(discoveredSessionNames)
+                )
+            finishSetupSession(action.setupID)
+            scheduleLibrarySSHPrewarm(snapshot: library)
+            return server.id
+        } catch {
+            if !savedServer && savedIdentity {
+                do {
+                    try await dependencies.profileRepository.deleteIdentity(id: identity.id)
+                } catch {
+                    NSLog(
+                        "Remux new-server identity cleanup failed: %@",
+                        String(describing: error)
+                    )
+                }
+            }
+            if !savedServer {
+                await cleanupCreatedCredential(identity, savedCredential: savedCredential)
+            }
+            transitionToFailed(error)
+            return nil
         }
     }
 
@@ -1006,6 +1102,16 @@ final class RemuxRootModel: ObservableObject {
     ) -> ConnectionSetupState {
         var updated = setup
         updated.validation = validation
+        updated.submissionIssue = nil
+        return updated
+    }
+
+    private func setupWithSubmissionIssue(
+        _ issue: ConnectionSetupState.SubmissionIssue,
+        from setup: ConnectionSetupState
+    ) -> ConnectionSetupState {
+        var updated = setup
+        updated.submissionIssue = issue
         return updated
     }
 
@@ -1504,6 +1610,61 @@ final class RemuxRootModel: ObservableObject {
         try await SSHAuthResolver(
             credentialStore: dependencies.credentialStore
         ).resolve(server: server, in: library)
+    }
+
+    private func resolvedSSHAuth(
+        from draft: ValidatedTmuxServerDraft,
+        identityCredential: SSHIdentityCredentialPair
+    ) throws -> ResolvedSSHAuth {
+        switch identityCredential.credential {
+        case .password(let password):
+            return .password(
+                username: draft.username,
+                password: password,
+                identityID: identityCredential.identity.id,
+                displayLabel: identityCredential.identity.name
+            )
+        case .privateKey(let credential):
+            return try .privateKey(
+                username: draft.username,
+                credential: credential,
+                identityID: identityCredential.identity.id,
+                displayLabel: identityCredential.identity.name
+            )
+        }
+    }
+
+    private static func newServerVerificationMessage(for error: any Error) -> String {
+        if let discoveryError = error as? TmuxSessionDiscoveryError,
+           case .remoteExit(let status, let stderr) = discoveryError {
+            if status == 127,
+               stderr.localizedCaseInsensitiveContains(
+                   SSHTmuxControlCommandBuilder.tmuxNotFoundMarker
+               ) {
+                return "Install tmux on this server or update Executable Path."
+            }
+            if status == 126,
+               stderr.localizedCaseInsensitiveContains(
+                   SSHTmuxControlCommandBuilder.tmuxNotExecutableMarker
+               ) {
+                return "Check the tmux executable and its permissions, then try again."
+            }
+            return discoveryError.localizedDescription
+        }
+
+        let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
+        switch reason.kind {
+        case .serverUnreachable:
+            return "Remux could not reach the server. Check the address, port, network, or VPN."
+        case .authentication:
+            return "The server rejected these credentials. Check the user and authentication details."
+        case .tmuxUnavailable:
+            return reason.message
+        case .hostKey:
+            return "Remux could not verify the SSH host key."
+        case .transportIO, .profile, .remoteExit, .runtime, .userClosed, .unknown:
+            return error.localizedDescription
+        }
     }
 
     private struct SSHIdentityCredentialPair {
