@@ -638,6 +638,7 @@ final class RemuxRootModel: ObservableObject {
 
         switch setup.mode {
         case .newServer:
+            dependencies.closeIdleSSHConnections(forServerID: setup.draft.serverID)
             do {
                 try dependencies.trustedHostStore.deleteIdentity(for: setup.draft.serverID)
             } catch {
