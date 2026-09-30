@@ -322,7 +322,11 @@ final class GhosttyKitRuntimeTests: XCTestCase {
         }
         defer { observation.invalidate() }
         try perform()
-        await fulfillment(of: [publication], timeout: 2)
+        // On a cold simulator shader cache, a process's first frame includes
+        // Metal pipeline compilation (and may queue behind the pipeline warmup
+        // started by ghostty_app_new), which exceeded 2 s with both the
+        // current and the upstream-synced GhosttyKit.
+        await fulfillment(of: [publication], timeout: 10)
     }
 
     private func viewRendererLayer(_ view: UIView) -> CALayer? {
