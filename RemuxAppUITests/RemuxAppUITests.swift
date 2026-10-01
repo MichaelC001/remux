@@ -13,6 +13,7 @@ final class RemuxAppUITests: XCTestCase {
         var privateKeyPEM: String?
         var privateKeyPassphrase: String?
         var sessionName: String?
+        var tmuxExecutablePath: String?
     }
 
     private struct LiveSSHCleanupHarnessError: Error, CustomStringConvertible {
@@ -3061,6 +3062,9 @@ final class RemuxAppUITests: XCTestCase {
         app.launchEnvironment["REMUX_DEBUG_SERVER_HOST"] = configuration.host
         app.launchEnvironment["REMUX_DEBUG_SERVER_PORT"] = configuration.port ?? "22"
         app.launchEnvironment["REMUX_DEBUG_SERVER_USERNAME"] = configuration.username
+        if let tmuxExecutablePath = configuration.tmuxExecutablePath {
+            app.launchEnvironment["REMUX_DEBUG_TMUX_EXECUTABLE_PATH"] = tmuxExecutablePath
+        }
         if let privateKeyPEM = configuration.privateKeyPEM, !privateKeyPEM.isEmpty {
             app.launchEnvironment["REMUX_DEBUG_PRIVATE_KEY"] = privateKeyPEM
             if let passphrase = configuration.privateKeyPassphrase {

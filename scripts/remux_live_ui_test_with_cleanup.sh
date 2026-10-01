@@ -13,6 +13,10 @@ the UI tests record in their cleanup manifest.
 
 This script reads live SSH details from /tmp/remux-live-ssh.json but does not
 store credentials in the repository or print secrets.
+
+An optional "tmuxExecutablePath" in the config is used by both the app and the
+fixture/cleanup commands, e.g. a wrapper that runs `tmux -L <socket> "$@"` so
+live tests never share a tmux server with real sessions.
 USAGE
 }
 
@@ -171,6 +175,12 @@ private_key="$(json_string privateKeyPEM optional)"
 private_key_passphrase="$(json_string privateKeyPassphrase optional)"
 port="$(json_string port optional)"
 port="${port:-22}"
+tmux_executable="$(json_string tmuxExecutablePath optional)"
+if [[ -n "$tmux_executable" && ! "$tmux_executable" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+  printf 'tmuxExecutablePath in %s must be an absolute path of [A-Za-z0-9._/-] characters.\n' "$config" >&2
+  exit 2
+fi
+remote_tmux_env="REMUX_LIVE_TMUX=$tmux_executable"
 
 known_host_lookup="$host"
 if [[ "$port" != "22" ]]; then
@@ -322,10 +332,10 @@ prepare_dense_mixed_fixture() {
       -o ConnectTimeout=10 \
       "${ssh_auth_args[@]}" \
       "$username@$host" \
-      sh -s -- "$session" <<'REMOTE'
+      "$remote_tmux_env" sh -s -- "$session" <<'REMOTE'
 set -eu
 session="$1"
-tmux_bin="$(command -v tmux 2>/dev/null || true)"
+tmux_bin="${REMUX_LIVE_TMUX:-$(command -v tmux 2>/dev/null || true)}"
 if [ -z "$tmux_bin" ] && [ -x /opt/homebrew/bin/tmux ]; then
   tmux_bin=/opt/homebrew/bin/tmux
 fi
@@ -384,7 +394,7 @@ prepare_relative_file_preview_fixture() {
       -o ConnectTimeout=10 \
       "${ssh_auth_args[@]}" \
       "$username@$host" \
-      sh -s -- "$session" <<'REMOTE'
+      "$remote_tmux_env" sh -s -- "$session" <<'REMOTE'
 set -eu
 session="$1"
 fixture_suffix="${session#remux-latency-pv-}"
@@ -394,7 +404,7 @@ html_path="$fixture_dir/index.html"
 css_path="$fixture_dir/preview.css"
 image_path="$fixture_dir/preview.svg"
 script_path="$fixture_dir/preview.js"
-tmux_bin="$(command -v tmux 2>/dev/null || true)"
+tmux_bin="${REMUX_LIVE_TMUX:-$(command -v tmux 2>/dev/null || true)}"
 if [ -z "$tmux_bin" ] && [ -x /opt/homebrew/bin/tmux ]; then
   tmux_bin=/opt/homebrew/bin/tmux
 fi
@@ -509,7 +519,7 @@ cleanup_generated_sessions() {
     [[ -n "$session" ]] || continue
     printf 'Cleaning generated tmux session: %s\n' "$session"
     local remote_command
-    remote_command="session=$session; tmux_bin=\$(command -v tmux 2>/dev/null || true); if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; \"\$tmux_bin\" kill-session -t \"\$session\" 2>/dev/null || true"
+    remote_command="$remote_tmux_env; session=$session; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; \"\$tmux_bin\" kill-session -t \"\$session\" 2>/dev/null || true"
     if [[ "$fixture_name" == "relative-file-preview" && "$session" == "$fixture_session" ]]; then
       remote_command+="; fixture_suffix=\${session#remux-latency-pv-}; fixture_dir=/tmp/rpv-\$fixture_suffix; if [ -f \"\$fixture_dir/server.pid\" ]; then kill \"\$(cat \"\$fixture_dir/server.pid\")\" 2>/dev/null || true; fi; rm -f -- \"\$fixture_dir/README.md\" \"\$fixture_dir/index.html\" \"\$fixture_dir/preview.css\" \"\$fixture_dir/preview.svg\" \"\$fixture_dir/preview.js\" \"\$fixture_dir/server.pid\"; rmdir -- \"\$fixture_dir\" 2>/dev/null || true"
     fi
@@ -570,7 +580,7 @@ verify_tmux_expectations() {
         fi
 
         local remote_command
-        remote_command="session=$session; tmux_bin=\$(command -v tmux 2>/dev/null || true); if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; \"\$tmux_bin\" list-windows -t \"\$session\" -F '#{window_id}' 2>/dev/null | wc -l | tr -d ' '"
+        remote_command="$remote_tmux_env; session=$session; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; \"\$tmux_bin\" list-windows -t \"\$session\" -F '#{window_id}' 2>/dev/null | wc -l | tr -d ' '"
 
         local actual
         if ! actual="$(REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
@@ -611,7 +621,7 @@ verify_tmux_expectations() {
         fi
 
         local remote_command
-        remote_command="session=$session; tmux_bin=\$(command -v tmux 2>/dev/null || true); if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; window_id=\$(\"\$tmux_bin\" list-windows -t \"\$session\" -F '#{window_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$window_id\" ]; then echo 'expected window index not found' >&2; exit 1; fi; \"\$tmux_bin\" list-panes -t \"\$window_id\" -F '#{pane_id}' 2>/dev/null | wc -l | tr -d ' '"
+        remote_command="$remote_tmux_env; session=$session; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; window_id=\$(\"\$tmux_bin\" list-windows -t \"\$session\" -F '#{window_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$window_id\" ]; then echo 'expected window index not found' >&2; exit 1; fi; \"\$tmux_bin\" list-panes -t \"\$window_id\" -F '#{pane_id}' 2>/dev/null | wc -l | tr -d ' '"
 
         local actual
         if ! actual="$(REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
@@ -652,7 +662,7 @@ verify_tmux_expectations() {
         fi
 
         local remote_command
-        remote_command="session=$session; tmux_bin=\$(command -v tmux 2>/dev/null || true); if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; count=0; for window_id in \$(\"\$tmux_bin\" list-windows -t \"\$session\" -F '#{window_id}' 2>/dev/null); do window_count=\$(\"\$tmux_bin\" list-panes -t \"\$window_id\" -F '#{pane_id}' 2>/dev/null | wc -l | tr -d ' '); count=\$((count + window_count)); done; printf '%s\n' \"\$count\""
+        remote_command="$remote_tmux_env; session=$session; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; count=0; for window_id in \$(\"\$tmux_bin\" list-windows -t \"\$session\" -F '#{window_id}' 2>/dev/null); do window_count=\$(\"\$tmux_bin\" list-panes -t \"\$window_id\" -F '#{pane_id}' 2>/dev/null | wc -l | tr -d ' '); count=\$((count + window_count)); done; printf '%s\n' \"\$count\""
 
         local actual
         if ! actual="$(REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
@@ -693,7 +703,7 @@ verify_tmux_expectations() {
         fi
 
         local remote_command
-        remote_command="session=$session; tmux_bin=\$(command -v tmux 2>/dev/null || true); if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; pane_id=\$(\"\$tmux_bin\" list-panes -t \"\$session\" -F '#{pane_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$pane_id\" ]; then echo 'expected pane index not found' >&2; exit 1; fi; \"\$tmux_bin\" display-message -p -t \"\$pane_id\" '#{pane_in_mode}' 2>/dev/null"
+        remote_command="$remote_tmux_env; session=$session; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; pane_id=\$(\"\$tmux_bin\" list-panes -t \"\$session\" -F '#{pane_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$pane_id\" ]; then echo 'expected pane index not found' >&2; exit 1; fi; \"\$tmux_bin\" display-message -p -t \"\$pane_id\" '#{pane_in_mode}' 2>/dev/null"
 
         local actual
         if ! actual="$(REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
@@ -734,7 +744,7 @@ verify_tmux_expectations() {
         fi
 
         local capture_command
-        capture_command="session=$session; marker=$arg2; tmux_bin=\$(command -v tmux 2>/dev/null || true); if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; pane_id=\$(\"\$tmux_bin\" list-panes -t \"\$session\" -F '#{pane_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$pane_id\" ]; then echo 'expected pane index not found' >&2; exit 1; fi; \"\$tmux_bin\" capture-pane -p -e -t \"\$pane_id\" 2>/dev/null | grep -F -- \"\$marker\" >/dev/null"
+        capture_command="$remote_tmux_env; session=$session; marker=$arg2; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; pane_id=\$(\"\$tmux_bin\" list-panes -t \"\$session\" -F '#{pane_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$pane_id\" ]; then echo 'expected pane index not found' >&2; exit 1; fi; \"\$tmux_bin\" capture-pane -p -e -t \"\$pane_id\" 2>/dev/null | grep -F -- \"\$marker\" >/dev/null"
 
         if ! REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
           SSH_ASKPASS="$askpass" \
@@ -768,7 +778,7 @@ verify_tmux_expectations() {
         fi
 
         local capture_command
-        capture_command="session=$session; marker=$arg2; tmux_bin=\$(command -v tmux 2>/dev/null || true); if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; window_id=\$(\"\$tmux_bin\" list-windows -t \"\$session\" -F '#{window_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$window_id\" ]; then echo 'expected window index not found' >&2; exit 1; fi; pane_id=\$(\"\$tmux_bin\" display-message -p -t \"\$window_id\" '#{pane_id}' 2>/dev/null); if [ -z \"\$pane_id\" ]; then echo 'expected window active pane not found' >&2; exit 1; fi; \"\$tmux_bin\" capture-pane -p -e -t \"\$pane_id\" 2>/dev/null | grep -F -- \"\$marker\" >/dev/null"
+        capture_command="$remote_tmux_env; session=$session; marker=$arg2; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; window_id=\$(\"\$tmux_bin\" list-windows -t \"\$session\" -F '#{window_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$window_id\" ]; then echo 'expected window index not found' >&2; exit 1; fi; pane_id=\$(\"\$tmux_bin\" display-message -p -t \"\$window_id\" '#{pane_id}' 2>/dev/null); if [ -z \"\$pane_id\" ]; then echo 'expected window active pane not found' >&2; exit 1; fi; \"\$tmux_bin\" capture-pane -p -e -t \"\$pane_id\" 2>/dev/null | grep -F -- \"\$marker\" >/dev/null"
 
         if ! REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
           SSH_ASKPASS="$askpass" \
@@ -820,14 +830,14 @@ verify_tmux_expectations() {
             -o ConnectTimeout=10 \
             "${ssh_auth_args[@]}" \
             "$username@$host" \
-            sh -s -- "$session" "$window_index" "$pane_index" "$arg2" <<'REMOTE_EXPECTATION'
+            "$remote_tmux_env" sh -s -- "$session" "$window_index" "$pane_index" "$arg2" <<'REMOTE_EXPECTATION'
 set -eu
 session="$1"
 window_index="$2"
 pane_index="$3"
 marker="$4"
 
-tmux_bin="$(command -v tmux 2>/dev/null || true)"
+tmux_bin="${REMUX_LIVE_TMUX:-$(command -v tmux 2>/dev/null || true)}"
 if [ -z "$tmux_bin" ] && [ -x /opt/homebrew/bin/tmux ]; then
   tmux_bin=/opt/homebrew/bin/tmux
 fi
