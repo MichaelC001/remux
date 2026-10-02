@@ -25,6 +25,17 @@ protocol TmuxControlTransportLiveForwardProviding: Sendable {
     var sessionLiveForwardProvider: RemuxSessionLiveForwardProvider { get }
 }
 
+/// The control-mode command Remux sends to end its own tmux client. tmux then
+/// flushes the client's pending output and closes the channel; transports that
+/// emulate tmux finish their inbound stream when they see it.
+enum TmuxControlClientExit {
+    static let command = "detach-client"
+
+    static func isRequested(in data: Data) -> Bool {
+        data.split(separator: UInt8(ascii: "\n")).contains(Data(command.utf8))
+    }
+}
+
 enum TmuxControlTransportCloseDisposition: Equatable, Sendable {
     case reusable
     case invalidated

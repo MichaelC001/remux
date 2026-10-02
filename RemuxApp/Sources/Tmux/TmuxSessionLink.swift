@@ -1,11 +1,17 @@
 import Foundation
 import GhosttyKit
+import NIOConcurrencyHelpers
 
 /// Connects one `TmuxControlTransport` to one `TmuxSessionController`:
 /// inbound SSH bytes feed the client on its writer queue, outbound
 /// wire bytes are written to the SSH channel strictly in order (a
 /// single consumer task drains an ordered stream fed from the writer
 /// queue), and transport loss closes this attachment promptly.
+///
+/// Stopping ends the tmux client gracefully: tmux (through 3.7) never finishes
+/// exiting a control client whose pending output cannot drain, so the link asks
+/// tmux to detach the client and keeps consuming the channel until tmux closes
+/// it, bounded by `clientExitTimeout`.
 ///
 /// Viewport ownership stays in the screen model. The link only passes the
 /// already-known viewport to the SSH attach command's initial `-x -y`.
@@ -14,6 +20,8 @@ actor TmuxSessionLink {
 
     private let transport: any TmuxControlTransport
     private let outboundDrainTimeout: Duration
+    private let clientExitTimeout: Duration
+    private let inbound = InboundRouting()
     private var readTask: Task<Void, Never>?
     private var writeTask: Task<Void, Never>?
     private let outbound: AsyncStream<Data>
@@ -25,11 +33,13 @@ actor TmuxSessionLink {
     init(
         controller: TmuxSessionController,
         transport: any TmuxControlTransport,
-        outboundDrainTimeout: Duration = .seconds(2)
+        outboundDrainTimeout: Duration = .seconds(2),
+        clientExitTimeout: Duration = .seconds(5)
     ) {
         self.controller = controller
         self.transport = transport
         self.outboundDrainTimeout = outboundDrainTimeout
+        self.clientExitTimeout = clientExitTimeout
 
         var continuation: AsyncStream<Data>.Continuation!
         self.outbound = AsyncStream { continuation = $0 }
@@ -81,15 +91,18 @@ actor TmuxSessionLink {
         }
         guard !stopped else { throw LinkError.stopped }
 
-        readTask = Task { [weak self, transport, controller] in
+        readTask = Task { [weak self, transport, controller, inbound] in
             do {
                 for try await data in transport.receivedBytes {
+                    // Once teardown starts, the remaining output only has to
+                    // drain so tmux can finish the client.
+                    guard inbound.feedsController else { continue }
                     controller.pump(data)
                 }
             } catch {
                 // Fall through: any stream end is a transport loss.
             }
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, inbound.feedsController else { return }
             await self?.invalidateTransportAfterReadEnd()
         }
     }
@@ -117,12 +130,30 @@ actor TmuxSessionLink {
         self.readTask = nil
         self.writeTask = nil
 
-        pendingReadTask?.cancel()
-        _ = await pendingReadTask?.result
-        await controller.finishOutbound()
+        inbound.stopFeedingController()
+        let requestedClientExit = await controller.finishOutboundEndingClient()
         outboundContinuation.finish()
         await finishWriteTask(pendingWriteTask)
+        if requestedClientExit, !transportClosed {
+            await waitForInboundEnd(pendingReadTask)
+        }
+        pendingReadTask?.cancel()
+        _ = await pendingReadTask?.result
         await closeTransport(disposition: .reusable)
+    }
+
+    /// tmux closes the channel once the detached client's output has drained.
+    private func waitForInboundEnd(_ readTask: Task<Void, Never>?) async {
+        guard let readTask else { return }
+        let timeout = clientExitTimeout
+        let deadline = Task {
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled else { return }
+            readTask.cancel()
+        }
+        _ = await readTask.result
+        deadline.cancel()
+        _ = await deadline.result
     }
 
     private func finishWriteTask(_ task: Task<Void, Never>?) async {
@@ -163,4 +194,18 @@ actor TmuxSessionLink {
 private enum LinkError: Error {
     case missingInitialViewport
     case stopped
+}
+
+/// Whether inbound bytes still feed the controller. Read by the link's read
+/// task, cleared once when teardown starts.
+private final class InboundRouting: Sendable {
+    private let feeding = NIOLockedValueBox(true)
+
+    var feedsController: Bool {
+        feeding.withLockedValue { $0 }
+    }
+
+    func stopFeedingController() {
+        feeding.withLockedValue { $0 = false }
+    }
 }

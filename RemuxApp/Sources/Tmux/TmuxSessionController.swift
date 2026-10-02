@@ -245,14 +245,27 @@ final class TmuxSessionController: @unchecked Sendable {
         }
     }
 
-    /// Drain every operation already admitted to the writer queue, then close
-    /// the outbound boundary so link teardown cannot discard those bytes.
-    func finishOutbound() async {
+    /// Drain every operation already admitted to the writer queue, ask tmux to
+    /// end this control client, then close the outbound boundary so link
+    /// teardown cannot discard those bytes. Returns whether the request reached
+    /// the sink; tmux then flushes the client's pending output and closes the
+    /// channel.
+    func finishOutboundEndingClient() async -> Bool {
         await withCheckedContinuation { continuation in
             queue.async { [self] in
                 _ = drainOutbound()
+                var requestedClientExit = false
+                if let client, outboundSink != nil, !shuttingDown {
+                    // The reply is never read: the link stops feeding this
+                    // controller once teardown starts.
+                    let (result, _) = enqueueCommandTokenOnWriter(
+                        TmuxControlClientExit.command,
+                        client: client
+                    )
+                    requestedClientExit = result == GHOSTTY_TMUX_RESULT_OK && drainOutbound() > 0
+                }
                 outboundSink = nil
-                continuation.resume()
+                continuation.resume(returning: requestedClientExit)
             }
         }
     }

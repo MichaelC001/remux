@@ -4646,7 +4646,9 @@ private actor RecordingRootTmuxControlTransport: TmuxControlTransport {
     }
 
     func send(_ data: Data) async throws {
-        _ = data
+        if TmuxControlClientExit.isRequested(in: data) {
+            continuation.finish()
+        }
     }
 
     func close(disposition: TmuxControlTransportCloseDisposition) async {
