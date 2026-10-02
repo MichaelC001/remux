@@ -1162,24 +1162,82 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         )
     }
 
-    func testChannelDataRouterForwardsOnlyStdoutAsControlOutput() {
+    func testChannelDataRouterForwardsControlProtocolFromItsFirstLine() {
         let router = SSHTmuxControlChannelDataRouter()
-        let first = Data("%begin 1 0\\n".utf8)
-        let second = Data("%end 1 0\\n".utf8)
+        let first = Data("%begin 1 0\n".utf8)
+        let second = Data("%end 1 0\n".utf8)
 
         XCTAssertEqual(
             router.route(type: .channel, data: first),
-            .stdout(reportFirstOutput: true)
+            .controlOutput(first, isFirst: true)
         )
         XCTAssertEqual(
             router.route(type: .channel, data: second),
-            .stdout(reportFirstOutput: false)
+            .controlOutput(second, isFirst: false)
         )
 
         let diagnostics = router.diagnostics
         XCTAssertEqual(diagnostics?.stdoutByteCount, first.count + second.count)
         XCTAssertEqual(diagnostics?.stderrByteCount, 0)
         XCTAssertEqual(diagnostics?.extendedDataByteCount, 0)
+        XCTAssertNil(diagnostics?.startupOutputPreview)
+    }
+
+    func testChannelDataRouterKeepsOutputBeforeTheProtocolAsStartupOutput() {
+        let router = SSHTmuxControlChannelDataRouter()
+
+        XCTAssertEqual(
+            router.route(type: .channel, data: Data("Welcome 100% to the host\nlast ".utf8)),
+            .startupOutput
+        )
+        XCTAssertEqual(
+            router.route(type: .channel, data: Data("login\n%begin 1 0\n%end".utf8)),
+            .controlOutput(Data("%begin 1 0\n%end".utf8), isFirst: true)
+        )
+        XCTAssertEqual(
+            router.route(type: .channel, data: Data(" 1 0\nlater text\n".utf8)),
+            .controlOutput(Data(" 1 0\nlater text\n".utf8), isFirst: false)
+        )
+
+        XCTAssertEqual(
+            router.diagnostics?.startupOutputPreview,
+            "Welcome 100% to the host\\x0Alast login\\x0A"
+        )
+    }
+
+    func testChannelDataRouterFindsTheProtocolAcrossChunkBoundaries() {
+        let router = SSHTmuxControlChannelDataRouter()
+
+        XCTAssertEqual(router.route(type: .channel, data: Data("motd\n".utf8)), .startupOutput)
+        XCTAssertEqual(
+            router.route(type: .channel, data: Data("%begin 1 0\n".utf8)),
+            .controlOutput(Data("%begin 1 0\n".utf8), isFirst: true)
+        )
+    }
+
+    func testStartupMessagesIncludeLauncherOutputOnAPseudoTerminal() {
+        let router = SSHTmuxControlChannelDataRouter()
+        let marker = "\(SSHTmuxControlCommandBuilder.tmuxNotFoundMarker): tmux\n"
+
+        XCTAssertEqual(router.route(type: .channel, data: Data(marker.utf8)), .startupOutput)
+
+        XCTAssertTrue(
+            router.diagnostics?.messages.contains(SSHTmuxControlCommandBuilder.tmuxNotFoundMarker) == true
+        )
+    }
+
+    func testRawPseudoTerminalRequestUsesRawModes() {
+        let request = RemuxSSHExecSession.rawPseudoTerminalRequest
+        let expected: SSHTerminalModes = SSHTerminalModes([
+            .PARMRK: 0, .ISTRIP: 0, .INLCR: 0, .IGNCR: 0, .ICRNL: 0,
+            .IXON: 0, .IXOFF: 0, .IXANY: 0,
+            .OPOST: 0, .ONLCR: 0,
+            .ECHO: 0, .ECHONL: 0, .ICANON: 0, .ISIG: 0, .IEXTEN: 0,
+            .PARENB: 0, .CS8: 1,
+        ])
+
+        XCTAssertFalse(request.wantReply)
+        XCTAssertEqual(request.terminalModes, expected)
     }
 
     func testChannelDataRouterCapturesStderrWithoutControlOutput() {
@@ -1228,7 +1286,8 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             stderrByteCount: 18,
             extendedDataByteCount: 0,
             stderrPreview: "tmux failed",
-            extendedDataPreview: nil
+            extendedDataPreview: nil,
+            startupOutputPreview: nil
         )
 
         XCTAssertEqual(
@@ -1259,7 +1318,8 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             stderrByteCount: 18,
             extendedDataByteCount: 0,
             stderrPreview: "tmux failed",
-            extendedDataPreview: nil
+            extendedDataPreview: nil,
+            startupOutputPreview: nil
         )
         let completionState = SSHTmuxControlChannelCompletionState()
 
@@ -1284,7 +1344,8 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             stderrByteCount: 18,
             extendedDataByteCount: 0,
             stderrPreview: "tmux failed",
-            extendedDataPreview: nil
+            extendedDataPreview: nil,
+            startupOutputPreview: nil
         )
         let completionState = SSHTmuxControlChannelCompletionState()
 

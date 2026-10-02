@@ -3,13 +3,15 @@ enum TmuxExecutableProblem: Equatable, Sendable {
     case notFound
     case notExecutable
 
-    /// Reads the scripts' exit status and stderr marker.
-    init?(exitStatus: Int, stderr: String) {
+    /// Reads the scripts' exit status and the marker they print on stderr. A
+    /// pty merges stderr into the rest of the output, so `output` is whatever
+    /// stream holds it.
+    init?(exitStatus: Int, output: String) {
         if exitStatus == 127,
-           stderr.localizedCaseInsensitiveContains(SSHTmuxControlCommandBuilder.tmuxNotFoundMarker) {
+           output.localizedCaseInsensitiveContains(SSHTmuxControlCommandBuilder.tmuxNotFoundMarker) {
             self = .notFound
         } else if exitStatus == 126,
-                  stderr.localizedCaseInsensitiveContains(SSHTmuxControlCommandBuilder.tmuxNotExecutableMarker) {
+                  output.localizedCaseInsensitiveContains(SSHTmuxControlCommandBuilder.tmuxNotExecutableMarker) {
             self = .notExecutable
         } else {
             return nil

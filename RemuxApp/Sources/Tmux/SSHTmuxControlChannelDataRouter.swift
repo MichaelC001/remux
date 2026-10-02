@@ -37,6 +37,14 @@ struct SSHTmuxStartupDiagnostics: Equatable, Sendable, CustomStringConvertible {
     let extendedDataByteCount: Int
     let stderrPreview: String?
     let extendedDataPreview: String?
+    /// Output before tmux's first protocol line: login-shell output and, on a
+    /// pseudo-terminal, the launch script's stderr.
+    let startupOutputPreview: String?
+
+    /// Every message the launch could have written, wherever it arrived.
+    var messages: String {
+        [startupOutputPreview, stderrPreview].compactMap { $0 }.joined(separator: "\n")
+    }
 
     var isEmpty: Bool {
         stdoutByteCount == 0 &&
@@ -50,6 +58,9 @@ struct SSHTmuxStartupDiagnostics: Equatable, Sendable, CustomStringConvertible {
             "stderr_bytes=\(stderrByteCount)",
             "extended_bytes=\(extendedDataByteCount)",
         ]
+        if let startupOutputPreview {
+            fields.append("startup_preview=\"\(startupOutputPreview)\"")
+        }
         if let stderrPreview {
             fields.append("stderr_preview=\"\(stderrPreview)\"")
         }
@@ -62,11 +73,16 @@ struct SSHTmuxStartupDiagnostics: Equatable, Sendable, CustomStringConvertible {
 
 private struct SSHTmuxStartupDiagnosticsAccumulator: Equatable, Sendable {
     private var stdout = SSHTmuxBoundedStreamPreview()
+    private var startupOutput = SSHTmuxBoundedStreamPreview()
     private var stderr = SSHTmuxBoundedStreamPreview()
     private var extendedData = SSHTmuxBoundedStreamPreview()
 
     mutating func recordStdout(_ data: Data) {
         stdout.append(data)
+    }
+
+    mutating func recordStartupOutput(_ data: Data) {
+        startupOutput.append(data)
     }
 
     mutating func recordStderr(_ data: Data) {
@@ -83,21 +99,29 @@ private struct SSHTmuxStartupDiagnosticsAccumulator: Equatable, Sendable {
             stderrByteCount: stderr.byteCount,
             extendedDataByteCount: extendedData.byteCount,
             stderrPreview: stderr.preview,
-            extendedDataPreview: extendedData.preview
+            extendedDataPreview: extendedData.preview,
+            startupOutputPreview: startupOutput.preview
         )
         return diagnostics.isEmpty ? nil : diagnostics
     }
 }
 
 enum SSHTmuxControlChannelDataRoute: Equatable, Sendable {
-    case stdout(reportFirstOutput: Bool)
+    /// tmux control-mode bytes. `isFirst` marks the start of the protocol.
+    case controlOutput(Data, isFirst: Bool)
+    /// Stdout before tmux's first protocol line, kept only as diagnostics.
+    case startupOutput
     case stderr
     case extendedData
 }
 
+/// Splits the channel into tmux's control protocol and everything else. The
+/// protocol starts at the first line beginning with `%`; anything earlier on
+/// stdout came from the login shell or the launch script.
 final class SSHTmuxControlChannelDataRouter: @unchecked Sendable {
     private let lock = NIOLock()
-    private var didReportFirstOutput = false
+    private var protocolStarted = false
+    private var atLineStart = true
     private var startupDiagnostics = SSHTmuxStartupDiagnosticsAccumulator()
 
     var diagnostics: SSHTmuxStartupDiagnostics? {
@@ -114,9 +138,16 @@ final class SSHTmuxControlChannelDataRouter: @unchecked Sendable {
             switch type {
             case .channel:
                 startupDiagnostics.recordStdout(data)
-                let reportFirstOutput = !didReportFirstOutput
-                didReportFirstOutput = true
-                return .stdout(reportFirstOutput: reportFirstOutput)
+                if protocolStarted {
+                    return .controlOutput(data, isFirst: false)
+                }
+                guard let start = protocolStart(in: data) else {
+                    startupDiagnostics.recordStartupOutput(data)
+                    return .startupOutput
+                }
+                protocolStarted = true
+                startupDiagnostics.recordStartupOutput(data[..<start])
+                return .controlOutput(Data(data[start...]), isFirst: true)
 
             case .stdErr:
                 startupDiagnostics.recordStderr(data)
@@ -127,5 +158,16 @@ final class SSHTmuxControlChannelDataRouter: @unchecked Sendable {
                 return .extendedData
             }
         }
+    }
+
+    private func protocolStart(in data: Data) -> Data.Index? {
+        for index in data.indices {
+            let byte = data[index]
+            if atLineStart, byte == UInt8(ascii: "%") {
+                return index
+            }
+            atLineStart = byte == UInt8(ascii: "\n")
+        }
+        return nil
     }
 }

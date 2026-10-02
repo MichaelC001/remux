@@ -21,11 +21,11 @@ final class TmuxSessionDiscoveryTests: XCTestCase {
         let notFound = "\(SSHTmuxControlCommandBuilder.tmuxNotFoundMarker): tmux\n"
         let notExecutable = "\(SSHTmuxControlCommandBuilder.tmuxNotExecutableMarker): /opt/tmux\n"
 
-        XCTAssertEqual(TmuxExecutableProblem(exitStatus: 127, stderr: notFound), .notFound)
-        XCTAssertEqual(TmuxExecutableProblem(exitStatus: 126, stderr: notExecutable), .notExecutable)
-        XCTAssertNil(TmuxExecutableProblem(exitStatus: 127, stderr: "sh: other failure\n"))
-        XCTAssertNil(TmuxExecutableProblem(exitStatus: 126, stderr: notFound))
-        XCTAssertNil(TmuxExecutableProblem(exitStatus: 1, stderr: notFound))
+        XCTAssertEqual(TmuxExecutableProblem(exitStatus: 127, output: notFound), .notFound)
+        XCTAssertEqual(TmuxExecutableProblem(exitStatus: 126, output: notExecutable), .notExecutable)
+        XCTAssertNil(TmuxExecutableProblem(exitStatus: 127, output: "sh: other failure\n"))
+        XCTAssertNil(TmuxExecutableProblem(exitStatus: 126, output: notFound))
+        XCTAssertNil(TmuxExecutableProblem(exitStatus: 1, output: notFound))
     }
 
     func testParserPreservesWhitespaceDeduplicatesAndAcceptsCRLF() throws {

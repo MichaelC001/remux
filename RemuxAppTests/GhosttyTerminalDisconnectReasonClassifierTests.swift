@@ -103,6 +103,23 @@ final class GhosttyTerminalDisconnectReasonClassifierTests: XCTestCase {
         }
     }
 
+    func testTmuxUnavailableMarkerOnAPseudoTerminalArrivesAsStartupOutput() {
+        let diagnostics = SSHTmuxStartupDiagnostics(
+            stdoutByteCount: 48,
+            stderrByteCount: 0,
+            extendedDataByteCount: 0,
+            stderrPreview: nil,
+            extendedDataPreview: nil,
+            startupOutputPreview: "\(SSHTmuxControlCommandBuilder.tmuxNotFoundMarker): tmux\\x0A"
+        )
+        let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(
+            SSHTmuxControlTransportError.remoteExit(127, diagnostics: diagnostics)
+        )
+
+        XCTAssertEqual(reason.kind, .tmuxUnavailable)
+        XCTAssertEqual(reason.message, "Install tmux on this server or update Executable Path.")
+    }
+
     func testShellFailuresAreNotReportedAsTmuxUnavailable() {
         for (status, stderr) in [
             (127, "fish: Unknown command: export\\x0A"),
@@ -124,7 +141,8 @@ final class GhosttyTerminalDisconnectReasonClassifierTests: XCTestCase {
             stderrByteCount: stderr.utf8.count,
             extendedDataByteCount: 0,
             stderrPreview: stderr,
-            extendedDataPreview: nil
+            extendedDataPreview: nil,
+            startupOutputPreview: nil
         )
     }
 

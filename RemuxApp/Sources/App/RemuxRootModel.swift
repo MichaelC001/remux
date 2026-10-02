@@ -1988,7 +1988,7 @@ final class RemuxRootModel: ObservableObject {
             // failure inside the sheet rather than replacing the app route.
             var executableProblem: TmuxExecutableProblem?
             if case .remoteExit(let status, let stderr) = error as? TmuxSessionDiscoveryError {
-                executableProblem = TmuxExecutableProblem(exitStatus: status, stderr: stderr)
+                executableProblem = TmuxExecutableProblem(exitStatus: status, output: stderr)
             }
             tmuxSessionDiscoveryStates[server.id] = tmuxSessionDiscoveryState(for: server.id)
                 .failingRefresh(executableProblem: executableProblem)
