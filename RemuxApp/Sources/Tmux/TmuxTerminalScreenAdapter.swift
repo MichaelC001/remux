@@ -87,6 +87,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     private var ownedZoomWindowIDs: Set<TmuxWindowID> = []
     private var pendingZoomOwnershipWindowIDs: Set<TmuxWindowID> = []
     private var pendingOwnedZoomPreservation: (windowID: TmuxWindowID, paneID: TmuxPaneID)?
+    private var didAdoptZoomMarks = false
     private var multipaneZoomDefault = TmuxMultipaneZoomDefaultPolicy()
 
     private var commandFailureMessage: String?
@@ -119,6 +120,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
                 if let topology {
                     self.reconcileZoomOwnership(with: topology)
                     self.applyMultipaneZoomDefaultIfNeeded(to: topology)
+                    self.adoptZoomMarksOnce()
                 } else {
                     self.ownedZoomWindowIDs.removeAll()
                     self.pendingZoomOwnershipWindowIDs.removeAll()
@@ -166,6 +168,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
                     })?.zoomed
                         != true {
                         ownedZoomWindowIDs.remove(preservation.windowID)
+                        controller?.requestForgetZoomMarks(windowIDs: [preservation.windowID])
                     }
                 }
                 self?.presentCommandFailure(for: request)
@@ -186,6 +189,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         ownedZoomWindowIDs.removeAll()
         pendingZoomOwnershipWindowIDs.removeAll()
         pendingOwnedZoomPreservation = nil
+        didAdoptZoomMarks = false
         multipaneZoomDefault.reset()
         activeManagedPaneID = nil
         pendingFocusedPaneID = nil
@@ -863,18 +867,40 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         )
     }
 
-    func prepareForSessionShutdown() {
-        attemptOwnedZoomCleanup()
+    /// The session is ending: undo the zooms Remux made. A runtime replaced by
+    /// a new attempt skips this; the new attempt adopts them from their marks.
+    func releaseZoomOwnership() {
+        var releasedWindowIDs = ownedZoomWindowIDs
+        releasedWindowIDs.formUnion(pendingZoomOwnershipWindowIDs)
+        guard !releasedWindowIDs.isEmpty else { return }
+        controller?.requestReleaseZoom(
+            windowIDs: releasedWindowIDs.sorted { $0.rawValue < $1.rawValue }
+        )
     }
 
-    private func attemptOwnedZoomCleanup() {
-        var cleanupWindowIDs = ownedZoomWindowIDs
-        cleanupWindowIDs.formUnion(pendingZoomOwnershipWindowIDs)
-        guard !cleanupWindowIDs.isEmpty else { return }
-        controller?.requestSetWindowsZoomed(
-            windowIDs: cleanupWindowIDs.sorted { $0.rawValue < $1.rawValue },
-            zoomed: false
+    /// Takes back the zooms this owner made on an earlier attachment (a
+    /// reconnect, a replaced runtime, or an app restart), and forgets marks
+    /// whose zoom is already gone.
+    private func adoptZoomMarksOnce() {
+        guard !didAdoptZoomMarks, let controller else { return }
+        didAdoptZoomMarks = true
+        controller.requestZoomMarks { [weak self] marks in
+            DispatchQueue.main.async {
+                self?.adoptZoomMarks(marks)
+            }
+        }
+    }
+
+    private func adoptZoomMarks(_ marks: [TmuxZoomMark]) {
+        let adoption = TmuxZoomMarkAdoption(
+            marks: marks,
+            zoomedWindowIDs: Set(latestTopology?.windows.filter(\.zoomed).map(\.id) ?? []),
+            zoomingWindowIDs: pendingZoomOwnershipWindowIDs.union(ownedZoomWindowIDs)
         )
+        ownedZoomWindowIDs.formUnion(adoption.adoptedWindowIDs)
+        if !adoption.forgottenWindowIDs.isEmpty {
+            controller?.requestForgetZoomMarks(windowIDs: adoption.forgottenWindowIDs)
+        }
     }
 
     private func reconcileZoomOwnership(
@@ -910,9 +936,19 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         pendingZoomOwnershipWindowIDs.subtract(completedOwnershipWindowIDs)
 
         let preservedWindowID = pendingOwnedZoomPreservation?.windowID
+        let unzoomedWindowIDs = ownedZoomWindowIDs.filter { windowID in
+            windowID != preservedWindowID
+                && topology.windows.first(where: { $0.id == windowID })?.zoomed == false
+        }
         ownedZoomWindowIDs = ownedZoomWindowIDs.filter { windowID in
             windowID == preservedWindowID
                 || topology.windows.first(where: { $0.id == windowID })?.zoomed == true
+        }
+        // The zoom Remux made is gone; a later zoom on these windows is not its own.
+        if !unzoomedWindowIDs.isEmpty {
+            controller?.requestForgetZoomMarks(
+                windowIDs: unzoomedWindowIDs.sorted { $0.rawValue < $1.rawValue }
+            )
         }
     }
 

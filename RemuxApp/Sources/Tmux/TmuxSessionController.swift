@@ -191,8 +191,15 @@ final class TmuxSessionController: @unchecked Sendable {
     }
 
     private struct WindowZoomIntent {
+        enum Change {
+            case zoom
+            case unzoom
+            /// Ends Remux's ownership: unzoom and clear this owner's mark.
+            case release
+        }
+
         let windowIDs: [TmuxWindowID]
-        let desired: Bool
+        let change: Change
         let onZoomSubmitted: @Sendable ([TmuxWindowID]) -> Void
     }
 
@@ -207,11 +214,14 @@ final class TmuxSessionController: @unchecked Sendable {
             @Sendable (Result<String, PaneCurrentDirectoryError>) -> Void
         )
         case trackedInput(@Sendable (Bool) -> Void)
+        case zoomMarks(@Sendable ([TmuxZoomMark]) -> Void)
     }
 
     let queue: DispatchQueue
 
     private let callbacks: Callbacks
+    /// Whose zooms this client marks on their windows; nil records none.
+    private let zoomOwner: TmuxZoomOwner?
     private var client: ghostty_tmux_client_t?
     private var state: SessionState = .detached(nil)
     private var topology: TopologySnapshot?
@@ -229,9 +239,11 @@ final class TmuxSessionController: @unchecked Sendable {
 
     init(
         callbacks: Callbacks,
+        zoomOwner: TmuxZoomOwner? = nil,
         queue: DispatchQueue = DispatchQueue(label: "remux.tmux.session.writer")
     ) {
         self.callbacks = callbacks
+        self.zoomOwner = zoomOwner
         self.queue = queue
     }
 
@@ -574,6 +586,13 @@ final class TmuxSessionController: @unchecked Sendable {
         case .paneCurrentDirectory(let completionHandler):
             completionHandler(paneCurrentDirectoryResult(for: completion))
             return
+        case .zoomMarks(let completionHandler):
+            guard completion.status == GHOSTTY_TMUX_COMMAND_SUCCESS, let zoomOwner else {
+                completionHandler([])
+                return
+            }
+            completionHandler(zoomOwner.marks(fromQueryReply: decodeTmuxString(completion.body)))
+            return
         case .action(let request, let topologyRevisionAtSubmission, let onSuccess):
             handleActionCompletion(
                 completion,
@@ -817,10 +836,21 @@ final class TmuxSessionController: @unchecked Sendable {
         let zoomFlag = zoom ? " -Z" : ""
         queue.async { [self] in
             _ = admitActiveViewportClaimIfNeeded()
-            enqueueOnWriter(
-                command: "split-window \(flags)\(zoomFlag) -t %\(paneID.rawValue)",
+            let split = "split-window \(flags)\(zoomFlag) -t %\(paneID.rawValue)"
+            guard zoom,
+                  let zoomOwner,
+                  let window = window(containing: paneID),
+                  !window.zoomed
+            else {
+                enqueueOnWriter(command: split, request: .splitPane, onSuccess: onZoomCreated)
+                return
+            }
+            // This split creates the window's zoom, so it is Remux's.
+            submitCommandGroupOnWriter(
+                commands: [split, zoomOwner.markIfZoomedCommand(windowID: window.id)],
                 request: .splitPane,
-                onSuccess: onZoomCreated
+                onFirstSuccess: onZoomCreated,
+                drainOutbound: true
             )
         }
     }
@@ -872,9 +902,58 @@ final class TmuxSessionController: @unchecked Sendable {
         queue.async { [self] in
             submitWindowZoom(WindowZoomIntent(
                 windowIDs: windowIDs,
-                desired: zoomed,
+                change: zoomed ? .zoom : .unzoom,
                 onZoomSubmitted: onZoomSubmitted
             ))
+        }
+    }
+
+    /// Ends Remux's ownership of these windows' zoom: unzooms the ones still
+    /// zoomed and clears this owner's marks.
+    func requestReleaseZoom(windowIDs: [TmuxWindowID]) {
+        queue.async { [self] in
+            submitWindowZoom(WindowZoomIntent(
+                windowIDs: windowIDs,
+                change: .release,
+                onZoomSubmitted: { _ in }
+            ))
+        }
+    }
+
+    /// Reads every window's zoom and whether this owner marked it. Completes
+    /// with no marks when the client has no owner or the query fails.
+    func requestZoomMarks(completion: @escaping @Sendable ([TmuxZoomMark]) -> Void) {
+        queue.async { [self] in
+            guard zoomOwner != nil,
+                  let client,
+                  outboundSink != nil,
+                  !shuttingDown
+            else {
+                completion([])
+                return
+            }
+            let (result, token) = enqueueCommandTokenOnWriter(TmuxZoomOwner.marksQuery, client: client)
+            guard result == GHOSTTY_TMUX_RESULT_OK else {
+                completion([])
+                return
+            }
+            requestsByToken[token] = .zoomMarks(completion)
+            _ = drainOutbound()
+        }
+    }
+
+    /// Clears this owner's marks without touching the windows' zoom: the zoom
+    /// Remux made is gone or now belongs to someone else.
+    func requestForgetZoomMarks(windowIDs: [TmuxWindowID]) {
+        queue.async { [self] in
+            guard let zoomOwner, !windowIDs.isEmpty, let client, outboundSink != nil, !shuttingDown else {
+                return
+            }
+            for windowID in windowIDs {
+                // Bookkeeping only: its reply is not tracked.
+                _ = enqueueCommandTokenOnWriter(zoomOwner.clearMarkCommand(windowID: windowID), client: client)
+            }
+            _ = drainOutbound()
         }
     }
 
@@ -955,7 +1034,7 @@ final class TmuxSessionController: @unchecked Sendable {
         deferredWindowZoomIntent = nil
         enqueueWindowsZoom(
             intent.windowIDs,
-            desired: intent.desired,
+            change: intent.change,
             onZoomSubmitted: intent.onZoomSubmitted,
             drainOutbound: true
         )
@@ -983,7 +1062,7 @@ final class TmuxSessionController: @unchecked Sendable {
             self.deferredWindowZoomIntent = nil
             enqueueWindowsZoom(
                 deferredWindowZoomIntent.windowIDs,
-                desired: deferredWindowZoomIntent.desired,
+                change: deferredWindowZoomIntent.change,
                 onZoomSubmitted: deferredWindowZoomIntent.onZoomSubmitted,
                 drainOutbound: false
             )
@@ -1022,6 +1101,13 @@ final class TmuxSessionController: @unchecked Sendable {
         }
     }
 
+    private func window(containing paneID: TmuxPaneID) -> WindowInfo? {
+        guard let topology,
+              let pane = topology.panes.first(where: { $0.id == paneID })
+        else { return nil }
+        return topology.windows.first(where: { $0.id == pane.windowID })
+    }
+
     private func enqueueSetPaneZoomed(
         _ paneID: TmuxPaneID,
         desired: Bool,
@@ -1043,17 +1129,18 @@ final class TmuxSessionController: @unchecked Sendable {
             if claimedViewport, drainOutbound { _ = self.drainOutbound() }
             return
         }
-        guard admitCommandOnWriter(
-            command: "resize-pane -Z -t %\(paneID.rawValue)",
-            request: .zoomPane
-        ) else { return }
+        var commands = ["resize-pane -Z -t %\(paneID.rawValue)"]
+        if desired, let zoomOwner {
+            commands.append(zoomOwner.markIfZoomedCommand(windowID: window.id))
+        }
+        guard admitCommandGroupOnWriter(commands: commands, request: .zoomPane) else { return }
         if desired { onZoomSubmitted(window.id) }
         if drainOutbound { _ = self.drainOutbound() }
     }
 
     private func enqueueWindowsZoom(
         _ windowIDs: [TmuxWindowID],
-        desired: Bool,
+        change: WindowZoomIntent.Change,
         onZoomSubmitted: @Sendable ([TmuxWindowID]) -> Void,
         drainOutbound: Bool
     ) {
@@ -1061,27 +1148,39 @@ final class TmuxSessionController: @unchecked Sendable {
             reportRequestFailure(.zoomPane)
             return
         }
-        let targets = windowIDs.compactMap { windowID -> (TmuxWindowID, String)? in
-            guard let window = topology.windows.first(where: { $0.id == windowID }),
-                  window.zoomed != desired,
-                  let paneID = window.activePaneID
-            else { return nil }
-            let hasSibling = topology.panes.contains {
-                $0.windowID == windowID && $0.id != paneID
+        let targets = windowIDs.compactMap { windowID -> (TmuxWindowID, [String])? in
+            guard let window = topology.windows.first(where: { $0.id == windowID }) else {
+                return nil
             }
-            guard !desired || hasSibling else { return nil }
-            let command = desired
-                ? "resize-pane -Z -t %\(paneID.rawValue)"
-                : "resize-pane -Z -t @\(windowID.rawValue)"
-            return (windowID, command)
+            switch change {
+            case .zoom:
+                guard !window.zoomed,
+                      let paneID = window.activePaneID,
+                      topology.panes.contains(where: { $0.windowID == windowID && $0.id != paneID })
+                else { return nil }
+                var commands = ["resize-pane -Z -t %\(paneID.rawValue)"]
+                if let zoomOwner {
+                    commands.append(zoomOwner.markIfZoomedCommand(windowID: windowID))
+                }
+                return (windowID, commands)
+            case .unzoom:
+                guard window.zoomed else { return nil }
+                return (windowID, ["resize-pane -Z -t @\(windowID.rawValue)"])
+            case .release:
+                var commands = window.zoomed ? ["resize-pane -Z -t @\(windowID.rawValue)"] : []
+                if let zoomOwner {
+                    commands.append(zoomOwner.clearMarkCommand(windowID: windowID))
+                }
+                return commands.isEmpty ? nil : (windowID, commands)
+            }
         }
         guard !targets.isEmpty,
               admitCommandGroupOnWriter(
-                  commands: targets.map(\.1),
+                  commands: targets.flatMap(\.1),
                   request: .zoomPane
               )
         else { return }
-        if desired { onZoomSubmitted(targets.map(\.0)) }
+        if change == .zoom { onZoomSubmitted(targets.map(\.0)) }
         if drainOutbound { _ = self.drainOutbound() }
     }
 
@@ -1454,13 +1553,22 @@ final class TmuxSessionController: @unchecked Sendable {
     private func submitCommandGroupOnWriter(
         commands: [String],
         request: Request,
+        onFirstSuccess: (@Sendable () -> Void)? = nil,
         drainOutbound: Bool
     ) {
-        guard admitCommandGroupOnWriter(commands: commands, request: request) else { return }
+        guard admitCommandGroupOnWriter(
+            commands: commands,
+            request: request,
+            onFirstSuccess: onFirstSuccess
+        ) else { return }
         if drainOutbound { _ = self.drainOutbound() }
     }
 
-    private func admitCommandGroupOnWriter(commands: [String], request: Request) -> Bool {
+    private func admitCommandGroupOnWriter(
+        commands: [String],
+        request: Request,
+        onFirstSuccess: (@Sendable () -> Void)? = nil
+    ) -> Bool {
         preconditionOnWriterQueue()
         guard let client, outboundSink != nil, !shuttingDown else {
             reportRequestFailure(request)
@@ -1484,11 +1592,11 @@ final class TmuxSessionController: @unchecked Sendable {
             reportImmediateFailure(result, request: request)
             return false
         }
-        for token in tokens {
+        for (index, token) in tokens.enumerated() {
             requestsByToken[token] = .action(
                 request,
                 topologyRevisionAtSubmission: topologyRevision,
-                onSuccess: nil
+                onSuccess: index == 0 ? onFirstSuccess : nil
             )
         }
         return true

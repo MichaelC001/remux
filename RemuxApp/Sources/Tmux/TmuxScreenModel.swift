@@ -114,7 +114,8 @@ final class TmuxScreenModel: ObservableObject {
             },
             paneViewTheme: { [weak self, target] in
                 self?.currentTerminalSettings.theme ?? target.terminalSettings.theme
-            }
+            },
+            zoomOwner: TmuxZoomOwner(serverID: target.server.id)
         )
         self.session = session
         terminalScreenAdapter.activate(
@@ -350,13 +351,15 @@ final class TmuxScreenModel: ObservableObject {
         }
     }
 
-    func stop() async {
+    func stop(_ reason: TerminalRuntimeStopReason = .sessionEnded) async {
         guard !stopped else { return }
         stopped = true
         stateObservation = nil
         transportFailureObservation = nil
         presentationObservation = nil
-        terminalScreenAdapter.prepareForSessionShutdown()
+        if reason == .sessionEnded {
+            terminalScreenAdapter.releaseZoomOwnership()
+        }
         terminalScreenAdapter.invalidate()
         if let session {
             await session.shutdown()

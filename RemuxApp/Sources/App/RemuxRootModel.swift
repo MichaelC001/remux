@@ -76,6 +76,14 @@ struct TerminalRuntimeAttemptKey: Hashable, Sendable {
     }
 }
 
+/// Why a runtime attempt stops. Ending the session undoes what Remux left on
+/// the server (its zooms); a replacement leaves it for the new attempt, which
+/// adopts it from the server.
+enum TerminalRuntimeStopReason: Equatable, Sendable {
+    case sessionEnded
+    case replacedByNewAttempt
+}
+
 struct ActiveTerminalScreenEntry: Identifiable {
     let id: SavedWorkspace.ID
     let instanceID: UUID
@@ -2069,7 +2077,7 @@ final class RemuxRootModel: ObservableObject {
         let carriedClientSize = terminalScreenModels.first(where: {
             $0.key.workspaceID == session.id
         })?.value.carriedClientSize
-        stopTerminalScreenModels(workspaceID: session.id)
+        stopTerminalScreenModels(workspaceID: session.id, reason: .replacedByNewAttempt)
         let key = TerminalRuntimeAttemptKey(session: session)
         let transportFactory: TmuxScreenModel.TransportFactory = { [preparedTransportCoordinator] target in
             preparedTransportCoordinator.claimOrCreateTransport(for: target)
@@ -2094,8 +2102,11 @@ final class RemuxRootModel: ObservableObject {
         }
     }
 
-    private func stopTerminalScreenModels(workspaceID: SavedWorkspace.ID) {
-        stopTerminalScreenModels { key, _ in
+    private func stopTerminalScreenModels(
+        workspaceID: SavedWorkspace.ID,
+        reason: TerminalRuntimeStopReason = .sessionEnded
+    ) {
+        stopTerminalScreenModels(reason: reason) { key, _ in
             key.workspaceID == workspaceID
         }
     }
@@ -2113,6 +2124,7 @@ final class RemuxRootModel: ObservableObject {
     }
 
     private func stopTerminalScreenModels(
+        reason: TerminalRuntimeStopReason = .sessionEnded,
         where shouldStop: (TerminalRuntimeAttemptKey, TmuxScreenModel) -> Bool
     ) {
         let removed = terminalScreenModels.filter(shouldStop)
@@ -2123,7 +2135,7 @@ final class RemuxRootModel: ObservableObject {
             // Teardown ordering (surface unregister/free before terminal
             // release, link before controller) is owned by the model; the
             // task retains it until shutdown completes.
-            Task { await model.stop() }
+            Task { await model.stop(reason) }
         }
     }
 
