@@ -2150,10 +2150,12 @@ final class RemuxAppUITests: XCTestCase {
 
         let copy = waitForCopyMenuItem(timeout: 5)
         copy.tap()
-        XCTAssertTrue(
-            waitForPasteboard(equalTo: marker, timeout: 5),
+        XCTAssertEqual(
+            pasteIntoEmptyComposer(),
+            marker,
             "Stationary terminal word selection should copy exactly the selected marker."
         )
+        clearAndCloseComposer()
 
         let link = "http://localhost:3000/dashboard"
         UIPasteboard.general.string = "REMUX_LINK_COPY_SENTINEL"
@@ -2173,8 +2175,9 @@ final class RemuxAppUITests: XCTestCase {
         let linkCopy = waitForCopyMenuItem(timeout: 5)
         attach(name: "live-terminal-exact-link-selected")
         linkCopy.tap()
-        XCTAssertTrue(
-            waitForPasteboard(equalTo: link, timeout: 5),
+        XCTAssertEqual(
+            pasteIntoEmptyComposer(),
+            link,
             "Stationary terminal link selection should copy the entire URL exactly."
         )
     }
@@ -4309,69 +4312,36 @@ final class RemuxAppUITests: XCTestCase {
         return menuItem
     }
 
-    private func waitForPasteboard(
-        equalTo expected: String,
-        timeout: TimeInterval,
-        pollInterval: TimeInterval = 0.1
-    ) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        repeat {
-            if readPasteboardStringAllowingPermission(timeout: 1) == expected {
-                return true
-            }
-            RunLoop.current.run(until: Date().addingTimeInterval(pollInterval))
-        } while Date() < deadline
-
-        return readPasteboardStringAllowingPermission(timeout: 1) == expected
-    }
-
-    private func readPasteboardStringAllowingPermission(timeout: TimeInterval) -> String? {
-        let group = DispatchGroup()
-        let lock = NSLock()
-        var result: String?
-        group.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            let pasteboardString = UIPasteboard.general.string
-            lock.lock()
-            result = pasteboardString
-            lock.unlock()
-            group.leave()
+    /// Pastes into the empty composer through the app's own Paste action and
+    /// returns the draft. The test runner can't check a copy by reading the
+    /// pasteboard: iOS denies its read of an item Remux wrote (PBErrorDomain
+    /// 13) without offering an Allow Paste prompt.
+    private func pasteIntoEmptyComposer(timeout: TimeInterval = 5) -> String? {
+        let field = app.textViews["terminal.composer.field"]
+        if !field.exists {
+            let composerToggle = app.buttons["terminal.composer.toggle"]
+            XCTAssertTrue(composerToggle.waitForExistence(timeout: 10))
+            composerToggle.tap()
         }
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 8))
+        field.press(forDuration: 0.8)
+        waitForSelectionMenuItem("Paste", timeout: timeout).tap()
 
         let deadline = Date().addingTimeInterval(timeout)
-        while group.wait(timeout: .now()) == .timedOut, Date() < deadline {
-            allowPastePermissionIfPresent(timeout: 0.05)
-            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        while Date() < deadline, ((field.value as? String) ?? "").isEmpty {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         }
-        allowPastePermissionIfPresent(timeout: 0.05)
-
-        guard group.wait(timeout: .now()) == .success else {
-            return nil
-        }
-
-        lock.lock()
-        defer { lock.unlock() }
-        return result
+        return field.value as? String
     }
 
-    private func allowPastePermissionIfPresent(timeout: TimeInterval) {
-        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let candidates = [
-            app.buttons["Allow Paste"].firstMatch,
-            springboard.buttons["Allow Paste"].firstMatch,
-        ]
-
-        for candidate in candidates where candidate.exists {
-            candidate.tap()
-            return
+    private func clearAndCloseComposer() {
+        let field = app.textViews["terminal.composer.field"]
+        if let draft = field.value as? String, !draft.isEmpty {
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: draft.count))
         }
-
-        if timeout > 0 {
-            for candidate in candidates where candidate.waitForExistence(timeout: timeout) {
-                candidate.tap()
-                return
-            }
-        }
+        app.buttons["terminal.composer.toggle"].tap()
     }
 
     private func backgroundAndReactivateApp(backgroundDuration: TimeInterval) {
