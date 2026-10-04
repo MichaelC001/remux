@@ -11,6 +11,10 @@ Runs selected Remux live SSH UI tests using /tmp/remux-live-ssh.json and
 remotely removes only the exact allowlisted remux-latency-* tmux sessions that
 the UI tests record in their cleanup manifest.
 
+The tests are built once, then each selected test runs in its own xcodebuild
+invocation with its own tmux fixture, expectation check and cleanup, so no
+test inherits another test's tmux session, windows, panes or running programs.
+
 This script reads live SSH details from /tmp/remux-live-ssh.json but does not
 store credentials in the repository or print secrets.
 
@@ -216,8 +220,7 @@ private_key_file="$work_dir/live_ssh_key"
 log_dir=".local/logs"
 mkdir -p "$log_dir"
 stamp="$(date +%Y%m%d-%H%M%S)-$$"
-log="$log_dir/live-ui-cleanup-${stamp}.log"
-result_bundle="$log_dir/live-ui-cleanup-${stamp}.xcresult"
+build_log="$log_dir/live-ui-cleanup-${stamp}-build.log"
 cleanup_done=0
 
 cleanup_local_files() {
@@ -288,29 +291,6 @@ trap finish_before_remote_cleanup EXIT
 
 fixture_name=""
 fixture_session=""
-for target in "${only_testing[@]}"; do
-  case "$target" in
-    *testLiveSSHTmuxActionCycleWhenConfigured)
-      fixture_session="remux-latency-action-${stamp}"
-      ;;
-    *testLiveWindowNamesAndRenameWhenConfigured)
-      fixture_session="remux-latency-window-names-${stamp}"
-      ;;
-    *testLiveDenseMixedTopologySelectsDeepPaneWhenConfigured)
-      fixture_name="dense-mixed"
-      fixture_session="remux-latency-dense-mixed-${stamp}"
-      ;;
-    *testLiveTerminalRelativeFilePreviewWhenConfigured)
-      fixture_name="relative-file-preview"
-      fixture_session="remux-latency-pv-${stamp}"
-      ;;
-  esac
-done
-
-if [[ -n "$fixture_session" ]]; then
-  printf '%s\n' "$fixture_session" >>"$manifest"
-  printf '%s\n' "$fixture_session" >"$fixture_session_file"
-fi
 
 prepare_dense_mixed_fixture() {
   local session="$1"
@@ -493,15 +473,6 @@ PREVIEW_SVG
   "ls -1 README.md; while IFS= read -r token; do printf '\\033[2J\\033[H%s\\n' \"\$token\"; done"
 REMOTE
 }
-
-if [[ "$fixture_name" == "dense-mixed" ]]; then
-  prepare_dense_mixed_fixture "$fixture_session"
-  printf '%s\n' "$fixture_name" >"$fixture_name_file"
-fi
-if [[ "$fixture_name" == "relative-file-preview" ]]; then
-  prepare_relative_file_preview_fixture "$fixture_session"
-  printf '%s\n' "$fixture_name" >"$fixture_name_file"
-fi
 
 cleanup_generated_sessions() {
   local status=0
@@ -903,27 +874,22 @@ finish() {
 }
 trap finish EXIT
 
-declare -a xcode_args=(
-  test
+declare -a common_args=(
   -project Remux.xcodeproj
   -scheme RemuxUIOnly
   -configuration "$configuration"
   -destination "$destination"
-  -resultBundlePath "$result_bundle"
 )
-
-for target in "${only_testing[@]}"; do
-  xcode_args+=("-only-testing:$target")
-done
-
 if [[ -n "$derived_data_path" ]]; then
-  xcode_args+=(-derivedDataPath "$derived_data_path")
+  common_args+=(-derivedDataPath "$derived_data_path")
 fi
+
+declare -a build_args=(build-for-testing "${common_args[@]}")
 if [[ "$configuration" == "Release" ]]; then
-  xcode_args+=('SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) REMUX_LIVE_UI_TESTING')
+  build_args+=('SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) REMUX_LIVE_UI_TESTING')
 fi
 if [[ -n "$development_team" ]]; then
-  xcode_args+=(
+  build_args+=(
     "DEVELOPMENT_TEAM=$development_team"
     CODE_SIGN_STYLE=Automatic
     -allowProvisioningUpdates
@@ -931,43 +897,113 @@ if [[ -n "$development_team" ]]; then
 fi
 
 set +e
-REMUX_TRACE_LATENCY="${REMUX_TRACE_LATENCY:-1}" \
-REMUX_TRACE_PERF="${REMUX_TRACE_PERF:-1}" \
-GHOSTTY_TRACE_SURFACE_INIT="${GHOSTTY_TRACE_SURFACE_INIT:-1}" \
-REMUX_LIVE_GENERATED_SESSION_MANIFEST="$manifest" \
-REMUX_LIVE_TMUX_EXPECTATION_MANIFEST="$expectations" \
-REMUX_LIVE_PREPARED_FIXTURE="$fixture_name" \
-REMUX_LIVE_SESSION_NAME_OVERRIDE="$fixture_session" \
-REMUX_LIVE_EXPECTED_HOST_KEY="$expected_host_key" \
-REMUX_LIVE_SSH_CONFIGURATION_BASE64="$live_ssh_configuration_base64" \
-xcodebuild "${xcode_args[@]}" 2>&1 | tee "$log"
-xcode_status=$?
+xcodebuild "${build_args[@]}" 2>&1 | tee "$build_log"
+build_status=$?
 set -e
-
-verify_status=0
-if [[ "$xcode_status" -eq 0 ]]; then
-  if [[ -n "$fixture_name" && ! -s "$expectations" ]]; then
-    printf 'prepared fixture test recorded no tmux expectations; treating as failed instead of passed/skipped.\n' >&2
-    verify_status=1
-  else
-    verify_tmux_expectations
-    verify_status=$?
-  fi
+if [[ "$build_status" -ne 0 ]]; then
+  printf 'live UI test build log: %s\n' "$build_log"
+  exit "$build_status"
 fi
 
-cleanup_generated_sessions
-cleanup_status=$?
-cleanup_done=1
+# Each test gets its own fixture, session override, cleanup manifest and tmux
+# expectations, and its expectations are verified before the next test can
+# change the server.
+overall_status=0
+declare -a results=()
+index=0
+for target in "${only_testing[@]}"; do
+  index=$((index + 1))
+  test_stamp="${stamp}-${index}"
+  log="$log_dir/live-ui-cleanup-${test_stamp}.log"
+  result_bundle="$log_dir/live-ui-cleanup-${test_stamp}.xcresult"
+
+  rm -f "$manifest"
+  rm -f "$expectations"
+  rm -f "$fixture_name_file"
+  rm -f "$fixture_session_file"
+  fixture_name=""
+  fixture_session=""
+  case "$target" in
+    *testLiveSSHTmuxActionCycleWhenConfigured)
+      fixture_session="remux-latency-action-${test_stamp}"
+      ;;
+    *testLiveWindowNamesAndRenameWhenConfigured)
+      fixture_session="remux-latency-window-names-${test_stamp}"
+      ;;
+    *testLiveDenseMixedTopologySelectsDeepPaneWhenConfigured)
+      fixture_name="dense-mixed"
+      fixture_session="remux-latency-dense-mixed-${test_stamp}"
+      ;;
+    *testLiveTerminalRelativeFilePreviewWhenConfigured)
+      fixture_name="relative-file-preview"
+      fixture_session="remux-latency-pv-${test_stamp}"
+      ;;
+  esac
+
+  cleanup_done=0
+  if [[ -n "$fixture_session" ]]; then
+    printf '%s\n' "$fixture_session" >>"$manifest"
+    printf '%s\n' "$fixture_session" >"$fixture_session_file"
+  fi
+  if [[ "$fixture_name" == "dense-mixed" ]]; then
+    prepare_dense_mixed_fixture "$fixture_session"
+    printf '%s\n' "$fixture_name" >"$fixture_name_file"
+  fi
+  if [[ "$fixture_name" == "relative-file-preview" ]]; then
+    prepare_relative_file_preview_fixture "$fixture_session"
+    printf '%s\n' "$fixture_name" >"$fixture_name_file"
+  fi
+
+  set +e
+  REMUX_TRACE_LATENCY="${REMUX_TRACE_LATENCY:-1}" \
+  REMUX_TRACE_PERF="${REMUX_TRACE_PERF:-1}" \
+  GHOSTTY_TRACE_SURFACE_INIT="${GHOSTTY_TRACE_SURFACE_INIT:-1}" \
+  REMUX_LIVE_GENERATED_SESSION_MANIFEST="$manifest" \
+  REMUX_LIVE_TMUX_EXPECTATION_MANIFEST="$expectations" \
+  REMUX_LIVE_PREPARED_FIXTURE="$fixture_name" \
+  REMUX_LIVE_SESSION_NAME_OVERRIDE="$fixture_session" \
+  REMUX_LIVE_EXPECTED_HOST_KEY="$expected_host_key" \
+  REMUX_LIVE_SSH_CONFIGURATION_BASE64="$live_ssh_configuration_base64" \
+  xcodebuild test-without-building "${common_args[@]}" \
+    "-only-testing:$target" \
+    -resultBundlePath "$result_bundle" 2>&1 | tee "$log"
+  xcode_status=$?
+  set -e
+
+  verify_status=0
+  if [[ "$xcode_status" -eq 0 ]]; then
+    if [[ -n "$fixture_name" && ! -s "$expectations" ]]; then
+      printf 'prepared fixture test recorded no tmux expectations; treating as failed instead of passed/skipped.\n' >&2
+      verify_status=1
+    else
+      verify_tmux_expectations || verify_status=$?
+    fi
+  fi
+
+  cleanup_status=0
+  cleanup_generated_sessions || cleanup_status=$?
+  cleanup_done=1
+
+  test_status="$xcode_status"
+  if [[ "$test_status" -eq 0 ]]; then
+    test_status="$verify_status"
+  fi
+  if [[ "$test_status" -eq 0 ]]; then
+    test_status="$cleanup_status"
+  fi
+  if [[ "$test_status" -eq 0 ]]; then
+    results+=("passed $target ($log)")
+  else
+    results+=("failed ($test_status) $target ($log)")
+    if [[ "$overall_status" -eq 0 ]]; then
+      overall_status="$test_status"
+    fi
+  fi
+done
+
 trap - EXIT
 cleanup_local_files
 
-printf 'live UI test log: %s\n' "$log"
-printf 'live UI test result bundle: %s\n' "$result_bundle"
-
-if [[ "$xcode_status" -ne 0 ]]; then
-  exit "$xcode_status"
-fi
-if [[ "$verify_status" -ne 0 ]]; then
-  exit "$verify_status"
-fi
-exit "$cleanup_status"
+printf 'live UI test build log: %s\n' "$build_log"
+printf 'live UI test result: %s\n' "${results[@]}"
+exit "$overall_status"
