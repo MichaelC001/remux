@@ -4059,17 +4059,28 @@ final class RemuxAppUITests: XCTestCase {
     private func dismissPasswordManagerPromptIfPresent() {
         let appNotNowButton = app.buttons["Not Now"]
         if appNotNowButton.waitForExistence(timeout: 1) {
-            appNotNowButton.tap()
+            declinePasswordManagerPrompt(appNotNowButton)
             return
         }
 
         app.tap()
         if appNotNowButton.waitForExistence(timeout: 1) {
-            appNotNowButton.tap()
+            declinePasswordManagerPrompt(appNotNowButton)
             return
         }
 
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.32, dy: 0.63)).tap()
+    }
+
+    /// The Save Password prompt ignores a tap that arrives while it is still
+    /// appearing, then stays up and covers the app.
+    private func declinePasswordManagerPrompt(_ notNow: XCUIElement) {
+        XCTAssertTrue(waitForElementToSettle(notNow), "The Save Password prompt kept moving.")
+        notNow.tap()
+        XCTAssertTrue(
+            waitForElementToDisappear(notNow, timeout: 3),
+            "The Save Password prompt stayed up."
+        )
     }
 
     private func installSystemPromptMonitor() {
