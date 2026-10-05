@@ -271,21 +271,28 @@ rm -f "$harness_file"
 rm -f "$fixture_name_file"
 rm -f "$fixture_session_file"
 rm -f "$expected_host_key_file"
-printf 'pid=%s\nstartedAt=%s\n' "$$" "$(date +%s)" >"$harness_file"
-for name in \
-  REMUX_LIVE_AGENT_TUI_SESSION \
-  REMUX_PROFILE_PANE_SWITCH_COUNT \
-  REMUX_TRACE_FLOWS \
-  REMUX_TRACE_TMUX_VIEWPORT \
-  REMUX_TRACE_LATENCY \
-  REMUX_TRACE_PERF \
-  GHOSTTY_TRACE_SURFACE_INIT \
-  GHOSTTY_TRACE_FRAME_COMPLETION
-do
-  if declare -p "$name" >/dev/null 2>&1; then
-    printf '%s=%s\n' "$name" "${!name}" >>"$harness_file"
-  fi
-done
+
+# The UI tests treat a marker older than 30 minutes as stale, so it is
+# rewritten before each test rather than once for the whole run.
+write_harness_marker() {
+  printf 'pid=%s\nstartedAt=%s\n' "$$" "$(date +%s)" >"$harness_file"
+  for name in \
+    REMUX_LIVE_AGENT_TUI_SESSION \
+    REMUX_PROFILE_PANE_SWITCH_COUNT \
+    REMUX_TRACE_FLOWS \
+    REMUX_TRACE_TMUX_VIEWPORT \
+    REMUX_TRACE_LATENCY \
+    REMUX_TRACE_PERF \
+    GHOSTTY_TRACE_SURFACE_INIT \
+    GHOSTTY_TRACE_FRAME_COMPLETION
+  do
+    if declare -p "$name" >/dev/null 2>&1; then
+      printf '%s=%s\n' "$name" "${!name}" >>"$harness_file"
+    fi
+  done
+}
+
+write_harness_marker
 printf '%s\n' "$expected_host_key" >"$expected_host_key_file"
 trap finish_before_remote_cleanup EXIT
 
@@ -917,6 +924,7 @@ for target in "${only_testing[@]}"; do
   log="$log_dir/live-ui-cleanup-${test_stamp}.log"
   result_bundle="$log_dir/live-ui-cleanup-${test_stamp}.xcresult"
 
+  write_harness_marker
   rm -f "$manifest"
   rm -f "$expectations"
   rm -f "$fixture_name_file"
