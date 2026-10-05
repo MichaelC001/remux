@@ -1050,6 +1050,7 @@ marker_refresh_pid=$!
 # finished, so later tests never see an earlier test's sessions.
 finished_test_pattern="^Test Case '-\[[^ ]+ ([A-Za-z0-9_]+)\]' (passed|failed|skipped)"
 
+# No failure diagnostics: collecting them takes up to ten minutes per failure.
 set +e
 REMUX_TRACE_LATENCY="${REMUX_TRACE_LATENCY:-1}" \
 REMUX_TRACE_PERF="${REMUX_TRACE_PERF:-1}" \
@@ -1058,6 +1059,7 @@ REMUX_LIVE_EXPECTED_HOST_KEY="$expected_host_key" \
 REMUX_LIVE_SSH_CONFIGURATION_BASE64="$live_ssh_configuration_base64" \
 xcodebuild test-without-building "${common_args[@]}" \
   "${test_args[@]}" \
+  -collect-test-diagnostics never \
   -resultBundlePath "$result_bundle" 2>&1 |
   tee "$log" |
   {
