@@ -963,8 +963,11 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertEqual(control.label, "Control")
         XCTAssertEqual(arrowUp.label, "Up Arrow")
 
+        // The harness checks these markers in the pane's scrollback after the
+        // test, where the typed commands also remain, so each command builds
+        // its marker at run time and its own text can't satisfy the check.
         sendTerminalCommand(
-            "python3 -c 'import os,select,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f); r=select.select([f],[],[],3)[0]; b=os.read(f,1) if r else b\"\"; termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_LONG_PRESS_OK\" if not b else \"REMUX_LONG_PRESS_BAD\")'"
+            "python3 -c 'import os,select,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f); r=select.select([f],[],[],3)[0]; b=os.read(f,1) if r else b\"\"; termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_LONG_PRESS_\" + (\"OK\" if not b else \"BAD\"))'"
         )
         escape.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(forDuration: 1.2)
@@ -977,33 +980,40 @@ final class RemuxAppUITests: XCTestCase {
         recordLiveTmuxPaneCaptureExpectation(
             sessionName: sessionName,
             paneIndex: 1,
-            marker: "REMUX_LONG_PRESS_OK"
+            marker: "REMUX_LONG_PRESS_OK",
+            includingHistory: true
         )
 
         sendTerminalCommand(
-            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_ESCAPE_OK\" if b and b[0]==27 else \"REMUX_ESCAPE_BAD\")'"
+            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_ESCAPE_\" + (\"OK\" if b and b[0]==27 else \"BAD\"))'"
         )
         escape.tap()
         RunLoop.current.run(until: Date().addingTimeInterval(1))
         recordLiveTmuxPaneCaptureExpectation(
             sessionName: sessionName,
             paneIndex: 1,
-            marker: "REMUX_ESCAPE_OK"
+            marker: "REMUX_ESCAPE_OK",
+            includingHistory: true
         )
 
         sendTerminalCommand("sleep 10")
         control.tap()
         waitForLiveTerminalInputReady(timeout: 10)
         app.typeText("c")
-        sendTerminalCommand("echo REMUX_CTRL_MOVED_OK")
+        sendTerminalCommand("echo REMUX_CTRL_MOVED_\"OK\"")
         recordLiveTmuxPaneCaptureExpectation(
             sessionName: sessionName,
             paneIndex: 1,
-            marker: "REMUX_CTRL_MOVED_OK"
+            marker: "REMUX_CTRL_MOVED_OK",
+            includingHistory: true
         )
 
-        sendTerminalCommand("echo REMUX_ARROW_UP_OK")
-        sendTerminalCommand("clear")
+        // The command prints its own run count, so only the arrow-up re-run
+        // prints RUN_2. No `clear` in between: it also erases the scrollback.
+        sendTerminalCommand(
+            "remux_arrow_runs=$((remux_arrow_runs + 1)); echo REMUX_ARROW_UP_RUN_$remux_arrow_runs"
+        )
+        sendTerminalCommand("true")
         arrowUp.tap()
         arrowUp.tap()
         waitForLiveTerminalInputReady(timeout: 10)
@@ -1012,11 +1022,12 @@ final class RemuxAppUITests: XCTestCase {
         recordLiveTmuxPaneCaptureExpectation(
             sessionName: sessionName,
             paneIndex: 1,
-            marker: "REMUX_ARROW_UP_OK"
+            marker: "REMUX_ARROW_UP_RUN_2",
+            includingHistory: true
         )
 
         sendTerminalCommand(
-            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_PLAIN_C_OK\" if b and b[0]==99 else \"REMUX_PLAIN_C_BAD\")'"
+            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_PLAIN_C_\" + (\"OK\" if b and b[0]==99 else \"BAD\"))'"
         )
         control.tap()
         openHomeFromTerminal()
@@ -1038,7 +1049,8 @@ final class RemuxAppUITests: XCTestCase {
         recordLiveTmuxPaneCaptureExpectation(
             sessionName: sessionName,
             paneIndex: 1,
-            marker: "REMUX_PLAIN_C_OK"
+            marker: "REMUX_PLAIN_C_OK",
+            includingHistory: true
         )
     }
 
@@ -1771,7 +1783,10 @@ final class RemuxAppUITests: XCTestCase {
 
         // Typing path: every keystroke goes through the composer draft
         // binding. The typed tail also builds the command submitted below.
-        field.tap()
+        // Tapping the field places the caret where the tap lands (a center
+        // tap put it before the transcript), so tap past the transcript's end
+        // to append to it.
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5)).tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 8))
         settleComposerPerfProbe()
         guard let beforeTyping = bodyEvalProbeMetrics(probe) else {
@@ -2825,17 +2840,22 @@ final class RemuxAppUITests: XCTestCase {
         recordLiveTmuxExpectation(fields: ["window-pane-count", sessionName, "\(windowIndex)", "\(expectedCount)"])
     }
 
+    /// The harness checks the marker after the test ends. By default it must
+    /// still be on screen; `includingHistory` also accepts the pane's
+    /// scrollback, for markers that later output may scroll away.
     private func recordLiveTmuxPaneCaptureExpectation(
         sessionName: String,
         paneIndex: Int,
-        marker: String
+        marker: String,
+        includingHistory: Bool = false
     ) {
         XCTAssertGreaterThan(paneIndex, 0)
         XCTAssertTrue(
             marker.range(of: #"^[A-Za-z0-9._-]+$"#, options: .regularExpression) != nil,
             "Refusing to record unsafe tmux capture marker \(marker)."
         )
-        recordLiveTmuxExpectation(fields: ["pane-index-contains", sessionName, "\(paneIndex)", marker])
+        let kind = includingHistory ? "pane-index-history-contains" : "pane-index-contains"
+        recordLiveTmuxExpectation(fields: [kind, sessionName, "\(paneIndex)", marker])
     }
 
     private func recordLiveTmuxWindowCaptureExpectation(

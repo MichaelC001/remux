@@ -708,7 +708,7 @@ verify_tmux_expectations() {
           printf 'Verified tmux pane-mode expectation for %s pane %s: %s\n' "$session" "$arg1" "$arg2"
         fi
         ;;
-      pane-index-contains)
+      pane-index-contains|pane-index-history-contains)
         if [[ ! "$arg1" =~ ^[0-9]+$ || "$arg1" -eq 0 ]]; then
           printf 'invalid pane index for %s: %s\n' "$session" "$arg1" >&2
           status=1
@@ -721,8 +721,15 @@ verify_tmux_expectations() {
           continue
         fi
 
+        # pane-index-contains checks the screen as the test left it;
+        # pane-index-history-contains also searches the pane's scrollback.
+        local capture_range=""
+        if [[ "$kind" == "pane-index-history-contains" ]]; then
+          capture_range="-S - "
+        fi
+
         local capture_command
-        capture_command="$remote_tmux_env; session=$session; marker=$arg2; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; pane_id=\$(\"\$tmux_bin\" list-panes -t \"\$session\" -F '#{pane_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$pane_id\" ]; then echo 'expected pane index not found' >&2; exit 1; fi; \"\$tmux_bin\" capture-pane -p -e -t \"\$pane_id\" 2>/dev/null | grep -F -- \"\$marker\" >/dev/null"
+        capture_command="$remote_tmux_env; session=$session; marker=$arg2; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; pane_id=\$(\"\$tmux_bin\" list-panes -t \"\$session\" -F '#{pane_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$pane_id\" ]; then echo 'expected pane index not found' >&2; exit 1; fi; \"\$tmux_bin\" capture-pane -p -e ${capture_range}-t \"\$pane_id\" 2>/dev/null | grep -F -- \"\$marker\" >/dev/null"
 
         if ! REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
           SSH_ASKPASS="$askpass" \
@@ -736,10 +743,10 @@ verify_tmux_expectations() {
             "${ssh_auth_args[@]}" \
             "$username@$host" \
             "$capture_command" </dev/null; then
-          printf 'tmux pane-index-contains expectation failed for %s pane %s marker %s\n' "$session" "$arg1" "$arg2" >&2
+          printf 'tmux %s expectation failed for %s pane %s marker %s\n' "$kind" "$session" "$arg1" "$arg2" >&2
           status=1
         else
-          printf 'Verified tmux pane-index-contains expectation for %s pane %s marker %s\n' "$session" "$arg1" "$arg2"
+          printf 'Verified tmux %s expectation for %s pane %s marker %s\n' "$kind" "$session" "$arg1" "$arg2"
         fi
         ;;
       window-index-contains)
