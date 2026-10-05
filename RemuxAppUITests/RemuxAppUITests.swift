@@ -742,7 +742,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(app.buttons["connection.private-key.install"].isEnabled)
 
         let host = app.textFields["connection.host"]
-        host.tap()
+        tapFormField(host)
         host.typeText(".changed")
         XCTAssertTrue(
             waitForElementToDisappear(inlineStatus, timeout: 3),
@@ -3792,7 +3792,7 @@ final class RemuxAppUITests: XCTestCase {
         app.textFields["connection.host"].tap()
         app.textFields["connection.host"].typeText("127.0.0.1")
 
-        app.textFields["connection.username"].tap()
+        tapFormField(app.textFields["connection.username"])
         typeTextThenReturn("demo", into: app.textFields["connection.username"])
 
         let password = app.secureTextFields["connection.password"]
@@ -3809,8 +3809,39 @@ final class RemuxAppUITests: XCTestCase {
         app.textFields["connection.host"].tap()
         app.textFields["connection.host"].typeText("100.64.0.10")
 
-        app.textFields["connection.username"].tap()
+        tapFormField(app.textFields["connection.username"])
         typeTextThenReturn("demo", into: app.textFields["connection.username"])
+    }
+
+    /// Taps a server form field once a tap can reach it. With the keyboard up,
+    /// a field can sit right at the keyboard's top edge, where the tap lands on
+    /// the keyboard toolbar. A field scrolled off the top is scrolled back by
+    /// the tap itself, which then arrives while the form is still moving and
+    /// only stops the scroll. Either way the field never gets focus.
+    private func tapFormField(_ field: XCUIElement) {
+        if isSoftwareKeyboardOnScreen(app.keyboards.firstMatch) {
+            app.buttons["Done"].firstMatch.tap()
+            XCTAssertNotNil(waitForKeyboardPresence(false, label: "server form keyboard hidden"))
+        }
+        if !field.isHittable {
+            app.swipeDown()
+        }
+        XCTAssertTrue(waitForElementToSettle(field), "\(field) kept moving.")
+        field.tap()
+    }
+
+    private func waitForElementToSettle(_ element: XCUIElement, timeout: TimeInterval = 3) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        var previousFrame = element.frame
+        while Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+            let frame = element.frame
+            if frame == previousFrame, element.isHittable {
+                return true
+            }
+            previousFrame = frame
+        }
+        return false
     }
 
     /// Types the text, waits until the field shows it, then presses Return.
@@ -3852,7 +3883,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertEqual(port.value as? String, "22")
 
         let username = app.textFields["connection.username"]
-        username.tap()
+        tapFormField(username)
         typeTextThenReturn("demo", into: username)
     }
 
@@ -4515,7 +4546,7 @@ final class RemuxAppUITests: XCTestCase {
         host.typeText("server.example.com")
 
         let user = app.textFields["connection.username"]
-        user.tap()
+        tapFormField(user)
         typeTextThenReturn("demo", into: user)
 
         let pwd = app.secureTextFields["connection.password"]
