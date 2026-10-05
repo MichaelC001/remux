@@ -117,14 +117,26 @@ jobs:
           xcrun simctl boot "${udid}"
 
       - name: Install XcodeGen
+        env:
+          XCODEGEN_VERSION: 2.46.0
+          XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
         shell: bash
         run: |
           set -euo pipefail
-          if brew tap | grep -qx 'aws/tap'; then
-            brew untap aws/tap
+          zip_path="${RUNNER_TEMP}/xcodegen.zip"
+          curl --fail --location --silent --show-error --output "${zip_path}" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+
+          actual_sha256="$(shasum -a 256 "${zip_path}" | awk '{print $1}')"
+          if [[ "${actual_sha256}" != "${XCODEGEN_SHA256}" ]]; then
+            printf 'Checksum mismatch for XcodeGen %s.\n  expected: %s\n  actual:   %s\n' \
+              "${XCODEGEN_VERSION}" "${XCODEGEN_SHA256}" "${actual_sha256}" >&2
+            exit 1
           fi
-          HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen
-          xcodegen --version
+
+          ditto -x -k "${zip_path}" "${RUNNER_TEMP}"
+          printf '%s\n' "${RUNNER_TEMP}/xcodegen/bin" >> "${GITHUB_PATH}"
+          "${RUNNER_TEMP}/xcodegen/bin/xcodegen" --version
 
       - name: Fetch GhosttyKit
         shell: bash
