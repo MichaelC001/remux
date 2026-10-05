@@ -16,8 +16,8 @@ tmux session, so no test inherits another test's windows, panes or running
 programs. Most tests generate their own session; the harness prepares the
 fixtures up front, each in its own session, and assigns them to their tests by
 name. As soon as a test finishes, the harness verifies the tmux expectations
-a passed or skipped test recorded and removes the test's sessions, so later
-tests never see them.
+it recorded, whatever its outcome, and removes its sessions, so later tests
+never see them.
 
 This script reads live SSH details from /tmp/remux-live-ssh.json but does not
 store credentials in the repository or print secrets.
@@ -952,11 +952,8 @@ REMOTE_EXPECTATION
 }
 
 # Checks one finished test's tmux expectations, then removes its sessions.
-# The result is passed, failed, skipped, or unfinished if xcodebuild never
-# reported one.
 finish_test() {
   local test="$1"
-  local result="$2"
   local sessions="$records_dir/$test.sessions"
   local expectations="$records_dir/$test.expectations"
   local status=0
@@ -966,15 +963,15 @@ finish_test() {
     return 0
   fi
 
-  if [[ "$result" == passed || "$result" == skipped ]]; then
-    verify_tmux_expectations "$expectations" || status=1
-    for i in "${!assigned_tests[@]}"; do
-      if [[ "${assigned_tests[$i]}" == "$test" && -n "${assigned_fixtures[$i]}" && ! -s "$expectations" ]]; then
-        printf '%s recorded no tmux expectations for its prepared fixture; treating it as failed instead of passed/skipped.\n' "$test" >&2
-        status=1
-      fi
-    done
-  fi
+  # Each test's expectations name only its own sessions, so they are checked
+  # whatever the test's outcome; a failing test cannot hide its tmux checks.
+  verify_tmux_expectations "$expectations" || status=1
+  for i in "${!assigned_tests[@]}"; do
+    if [[ "${assigned_tests[$i]}" == "$test" && -n "${assigned_fixtures[$i]}" && ! -s "$expectations" ]]; then
+      printf '%s recorded no tmux expectations for its prepared fixture; treating it as failed instead of passed/skipped.\n' "$test" >&2
+      status=1
+    fi
+  done
 
   cleanup_generated_sessions "$sessions" || status=1
   rm -f "$sessions" "$expectations"
@@ -1068,7 +1065,7 @@ xcodebuild test-without-building "${common_args[@]}" \
     while IFS= read -r line; do
       printf '%s\n' "$line"
       if [[ "$line" =~ $finished_test_pattern ]]; then
-        finish_test "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" || status=1
+        finish_test "${BASH_REMATCH[1]}" || status=1
       fi
     done
     exit "$status"
@@ -1083,7 +1080,7 @@ tmux_status="${pipeline_status[2]}"
 for records in "$records_dir"/*.sessions "$records_dir"/*.expectations; do
   [[ -e "$records" ]] || continue
   test_name="${records##*/}"
-  finish_test "${test_name%.*}" unfinished || tmux_status=1
+  finish_test "${test_name%.*}" || tmux_status=1
 done
 cleanup_done=1
 
