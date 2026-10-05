@@ -1504,7 +1504,7 @@ final class RemuxAppUITests: XCTestCase {
         // scroll case): wheel gestures forward to the app instead of
         // scrolling local scrollback.
         sendTerminalCommand(
-            "seq -f 'REMUX_MOUSE_LINE_%g' 300 > /tmp/remux-scroll.txt; vim --clean -c 'set mouse=a' /tmp/remux-scroll.txt"
+            "seq -f 'REMUX_MOUSE_LINE_%g' 300 > /tmp/remux-scroll.txt; vim --clean -n -c 'set mouse=a' /tmp/remux-scroll.txt"
         )
         hideKeyboardIfPresent()
         guard let before = waitForStableLiveTerminalScreenshot(
@@ -1545,8 +1545,11 @@ final class RemuxAppUITests: XCTestCase {
         openFirstSavedSession()
         waitForLiveTerminalReady(timeout: 90)
 
+        // -n: no swap file. Cleanup kills vim with the session, which leaves
+        // a swap file behind, and on the next run vim would stop at its
+        // E325 recovery prompt instead of showing the file.
         sendTerminalCommand(
-            "seq -f 'REMUX_CATCH_LINE_%g' 300 > /tmp/remux-catch.txt; vim --clean -c 'set mouse=a' -c 'normal G' /tmp/remux-catch.txt"
+            "seq -f 'REMUX_CATCH_LINE_%g' 300 > /tmp/remux-catch.txt; vim --clean -n -c 'set mouse=a' -c 'normal G' /tmp/remux-catch.txt"
         )
         hideKeyboardIfPresent()
         guard waitForStableLiveTerminalScreenshot(
