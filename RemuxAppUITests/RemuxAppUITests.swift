@@ -1082,6 +1082,77 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(app.otherElements["terminal.input.ready"].waitForExistence(timeout: 2))
     }
 
+    func testLiveAddServerWithoutTmuxWhenConfigured() throws {
+        let configuration = try liveSSHConfiguration()
+        guard let privateKeyPEM = configuration.privateKeyPEM, !privateKeyPEM.isEmpty else {
+            throw XCTSkip("Adding a server through the form needs privateKeyPEM in the live config.")
+        }
+        guard (configuration.port ?? "22") == "22" else {
+            throw XCTSkip("This test types the default port only.")
+        }
+        app.launchEnvironment["REMUX_DEBUG_EPHEMERAL_STORAGE"] = "1"
+        forwardTraceEnvironment()
+        app.launch()
+        openConnectionSetup()
+
+        app.textFields["connection.name"].tap()
+        app.textFields["connection.name"].typeText("No tmux")
+        app.textFields["connection.host"].tap()
+        app.textFields["connection.host"].typeText(configuration.host)
+        app.textFields["connection.username"].tap()
+        app.textFields["connection.username"].typeText(configuration.username)
+
+        UIPasteboard.general.string = privateKeyPEM
+        if !app.buttons["Private Key"].waitForExistence(timeout: 1) {
+            app.swipeUp()
+        }
+        app.buttons["Private Key"].tap()
+        app.buttons["connection.private-key.paste"].tap()
+        let allowPaste = app.buttons["Allow Paste"]
+        if allowPaste.waitForExistence(timeout: 3) {
+            allowPaste.tap()
+        }
+        XCTAssertTrue(app.buttons["connection.private-key.change"].waitForExistence(timeout: 5))
+
+        // Remux can't find tmux on this server.
+        let tmuxExecutable = app.textFields["connection.tmux-executable"]
+        for _ in 0..<3 where !tmuxExecutable.isHittable {
+            app.swipeUp()
+        }
+        tmuxExecutable.tap()
+        tmuxExecutable.typeText("/nonexistent/remux-no-tmux")
+
+        app.buttons["connection.save"].tap()
+        let trustAlert = app.alerts["Trust This Server?"]
+        if trustAlert.waitForExistence(timeout: 20) {
+            let expectedHostKey = try XCTUnwrap(
+                liveHarnessValue(
+                    environmentKey: "REMUX_LIVE_EXPECTED_HOST_KEY",
+                    fallbackPath: "/tmp/remux-live-expected-host-key.txt"
+                ),
+                "Trusting the live host needs REMUX_LIVE_EXPECTED_HOST_KEY."
+            )
+            let fingerprint = try XCTUnwrap(expectedHostKey.split(separator: " ").last.map(String.init))
+            let message = trustAlert.staticTexts.matching(
+                NSPredicate(format: "label CONTAINS %@", fingerprint)
+            ).firstMatch
+            guard message.exists else {
+                return XCTFail("Refusing to trust a host key other than \(fingerprint).")
+            }
+            trustAlert.buttons["Trust Server"].tap()
+        }
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["library.server.detail"].waitForExistence(timeout: 20),
+            "A server without tmux should be added."
+        )
+        XCTAssertFalse(app.alerts["Couldn’t Add Server"].exists)
+        XCTAssertTrue(
+            app.staticTexts["Couldn’t check sessions"].waitForExistence(timeout: 20),
+            "tmux discovery should report the missing tmux after the server is added."
+        )
+    }
+
     func testLiveSessionSwitcherDiscoversAndResumesSessionsWhenConfigured() throws {
         let primarySessionName = try generatedLiveLatencySessionName("switcher-primary")
         let availableSessionName = try generatedLiveLatencySessionName("switcher-available")

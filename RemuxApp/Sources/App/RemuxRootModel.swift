@@ -781,19 +781,19 @@ final class RemuxRootModel: ObservableObject {
                     from: submission,
                     identityCredential: identityCredential
                 )
-                let discoveryTarget = target(
-                    server: server,
-                    workspace: SavedWorkspace(serverID: server.id, sessionName: ""),
-                    sshAuth: sshAuth
-                )
-                let sessionNames = try await dependencies.discoverTmuxSessions(
-                    for: discoveryTarget
+                // Only SSH is checked: a server is valid without tmux, for
+                // example one that runs only Herdr.
+                try await dependencies.verifySSHAccess(
+                    for: target(
+                        server: server,
+                        workspace: SavedWorkspace(serverID: server.id, sessionName: ""),
+                        sshAuth: sshAuth
+                    )
                 )
                 guard isCurrentSetupAction(action) else { return nil }
                 return await persistVerifiedNewServer(
                     server,
                     identityCredential: identityCredential,
-                    discoveredSessionNames: sessionNames,
                     setup: setup,
                     action: action
                 )
@@ -820,7 +820,6 @@ final class RemuxRootModel: ObservableObject {
     private func persistVerifiedNewServer(
         _ server: SavedServer,
         identityCredential: SSHIdentityCredentialPair,
-        discoveredSessionNames: [String],
         setup: ConnectionSetupState,
         action: SetupAction
     ) async -> SavedServer.ID? {
@@ -842,11 +841,8 @@ final class RemuxRootModel: ObservableObject {
             savedServer = true
             updateLibrary(try await dependencies.profileRepository.loadSnapshot())
             guard isCurrentSetupAction(action) else { return nil }
-            tmuxSessionDiscoveryStates[server.id] = TmuxSessionDiscoveryState.idle
-                .finishingRefresh(
-                    with: Self.normalizedTmuxSessionNames(discoveredSessionNames)
-                )
             finishSetupSession(action.setupID)
+            refreshTmuxSessions(for: server.id)
             scheduleLibrarySSHPrewarm(snapshot: library)
             return server.id
         } catch {
@@ -1721,23 +1717,6 @@ final class RemuxRootModel: ObservableObject {
     private static func newServerVerificationMessage(for error: any Error) -> String {
         if let tailscaleCheckError = error as? TailscaleSSHCheckError {
             return tailscaleCheckError.localizedDescription
-        }
-
-        if let discoveryError = error as? TmuxSessionDiscoveryError,
-           case .remoteExit(let status, let stderr) = discoveryError {
-            if status == 127,
-               stderr.localizedCaseInsensitiveContains(
-                   SSHTmuxControlCommandBuilder.tmuxNotFoundMarker
-               ) {
-                return "Install tmux on this server or update Executable Path."
-            }
-            if status == 126,
-               stderr.localizedCaseInsensitiveContains(
-                   SSHTmuxControlCommandBuilder.tmuxNotExecutableMarker
-               ) {
-                return "Check the tmux executable and its permissions, then try again."
-            }
-            return discoveryError.localizedDescription
         }
 
         let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
