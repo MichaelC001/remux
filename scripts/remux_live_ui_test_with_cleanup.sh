@@ -187,14 +187,24 @@ require_tool ssh-agent
 require_tool ssh-keygen
 require_tool xcodebuild
 
+# Prints a string field of the config; a missing optional field prints
+# nothing. Errors never quote the config, which may hold a private key.
 json_string() {
   ruby -rjson -e '
-    data = JSON.parse(File.read(ARGV.fetch(0)))
-    value = data[ARGV.fetch(1)]
-    if value.nil?
-      exit(ARGV.fetch(2) == "optional" ? 0 : 2)
+    path, key, presence = ARGV
+    reject = ->(message) { warn message; exit 2 }
+    begin
+      data = JSON.parse(File.read(path))
+    rescue JSON::ParserError
+      reject.("#{path} is not valid JSON.")
     end
-    exit 1 unless value.is_a?(String)
+    reject.("#{path} must hold a JSON object.") unless data.is_a?(Hash)
+    value = data[key]
+    if value.nil?
+      exit 0 if presence == "optional"
+      reject.("#{path} has no \"#{key}\".")
+    end
+    reject.("\"#{key}\" in #{path} must be a string, e.g. \"port\": \"22\".") unless value.is_a?(String)
     print value
   ' "$config" "$1" "${2:-required}"
 }
@@ -217,7 +227,8 @@ known_host_lookup="$host"
 if [[ "$port" != "22" ]]; then
   known_host_lookup="[$host]:$port"
 fi
-known_host_line="$(ssh-keygen -F "$known_host_lookup" 2>/dev/null | awk '!/^#/ { print; exit }')"
+# ssh-keygen fails when there is no entry; the checks below report that.
+known_host_line="$(ssh-keygen -F "$known_host_lookup" 2>/dev/null | awk '!/^#/ { print; exit }' || true)"
 if [[ -z "$known_host_line" ]]; then
   printf 'No trusted OpenSSH host key found for %s; refusing automated Remux trust.\n' "$known_host_lookup" >&2
   exit 2
@@ -226,7 +237,7 @@ expected_host_key_type="$(printf '%s\n' "$known_host_line" | awk '{ print $(NF -
 expected_host_key_fingerprint="$(
   printf '%s\n' "$known_host_line" |
     ssh-keygen -lf - -E sha256 2>/dev/null |
-    awk '{ print $2 }'
+    awk '{ print $2 }' || true
 )"
 if [[ -z "$expected_host_key_type" || -z "$expected_host_key_fingerprint" ]]; then
   printf 'Could not derive the trusted OpenSSH host fingerprint for %s.\n' "$known_host_lookup" >&2
