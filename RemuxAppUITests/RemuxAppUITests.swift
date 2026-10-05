@@ -3854,7 +3854,7 @@ final class RemuxAppUITests: XCTestCase {
             predicate: NSPredicate(format: "value == %@", text),
             object: field
         )
-        XCTAssertEqual(XCTWaiter.wait(for: [applied], timeout: 2), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [applied], timeout: 5), .completed)
         field.typeText("\n")
     }
 

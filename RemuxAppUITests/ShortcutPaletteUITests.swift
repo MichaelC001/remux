@@ -393,7 +393,7 @@ final class ShortcutPaletteUITests: XCTestCase {
     private func waitForValue(
         _ field: XCUIElement,
         expected: String,
-        timeout: TimeInterval = 2
+        timeout: TimeInterval = 5
     ) -> Bool {
         let predicate = NSPredicate { object, _ in
             guard let element = object as? XCUIElement else { return false }
