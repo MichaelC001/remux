@@ -9,6 +9,7 @@ final class ShortcutPaletteUITests: XCTestCase {
         app = XCUIApplication()
         app.launchEnvironment = [
             "REMUX_UI_TESTING": "1",
+            "REMUX_UI_TEST_INPUT_READY": "1",
             "REMUX_DEBUG_SEED_CONNECTION": "1",
             "REMUX_DEBUG_SERVER_NAME": "UI Test Server",
             "REMUX_DEBUG_SERVER_HOST": "example.com",
@@ -300,6 +301,11 @@ final class ShortcutPaletteUITests: XCTestCase {
         session.tap()
 
         XCTAssertTrue(app.buttons["terminal.toolbar-key.0"].waitForExistence(timeout: 5))
+        // Toolbar keys, including the long press that opens the palette, are
+        // enabled only once the terminal accepts input.
+        XCTAssertTrue(
+            app.descendants(matching: .any)["terminal.input.ready"].waitForExistence(timeout: 10)
+        )
     }
 
     private func attachScreenshot(named name: String) {

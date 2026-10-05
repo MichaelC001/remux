@@ -81,6 +81,7 @@ final class RemuxAppUITests: XCTestCase {
 
         attachScreenshot(named: "toolbar-keys-control-moved")
 
+        waitForLiveTerminalInputReady(timeout: 10)
         first.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(forDuration: 1.2)
         XCTAssertTrue(app.buttons["terminal.shortcuts.settings"].waitForExistence(timeout: 2))
@@ -3052,6 +3053,7 @@ final class RemuxAppUITests: XCTestCase {
         app.launchEnvironment.merge(
             [
                 "REMUX_UI_TESTING": "1",
+                "REMUX_UI_TEST_INPUT_READY": "1",
                 "REMUX_DEBUG_SEED_CONNECTION": "1",
                 "REMUX_DEBUG_SERVER_NAME": "UI Test Server",
                 "REMUX_DEBUG_SERVER_HOST": "example.com",
@@ -3067,6 +3069,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(session.waitForExistence(timeout: 5))
         session.tap()
         XCTAssertTrue(app.buttons["terminal.toolbar-key.0"].waitForExistence(timeout: 5))
+        waitForLiveTerminalInputReady(timeout: 10)
     }
 
     private func selectToolbarKey(_ title: String) {
