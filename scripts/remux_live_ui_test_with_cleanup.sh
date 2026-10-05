@@ -4,12 +4,23 @@ set -euo pipefail
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  scripts/remux_live_ui_test_with_cleanup.sh [--configuration Debug|Release] [--development-team <team-id>] [--derived-data-path <path>] --only-testing <test-id> [--only-testing <test-id> ...]
+  scripts/remux_live_ui_test_with_cleanup.sh [options] --only-testing <test-id> [--only-testing <test-id> ...]
   scripts/remux_live_ui_test_with_cleanup.sh --dry-run-cleanup <manifest-file>
 
-Runs selected Remux live SSH UI tests using /tmp/remux-live-ssh.json and
-remotely removes only the exact allowlisted remux-latency-* tmux sessions that
-the UI tests record in their cleanup manifest.
+Options:
+  --config <path>              Live SSH configuration (default /tmp/remux-live-ssh.json)
+  --destination <spec>         xcodebuild destination (default "platform=iOS Simulator,name=iPhone 17,OS=latest")
+  --configuration Debug|Release
+                               Build configuration (default Debug)
+  --development-team <team-id> Sign with this team, with automatic provisioning
+  --derived-data-path <path>   xcodebuild derived data path
+  --only-testing <test-id>     Test to run, e.g. RemuxUITests/RemuxAppUITests/testLiveSSHTmuxActionCycleWhenConfigured
+  --dry-run-cleanup <file>     Print the sessions a manifest would remove, then exit
+  -h, --help                   Show this help
+
+Runs selected Remux live SSH UI tests and remotely removes only the exact
+allowlisted remux-latency-* tmux sessions that the UI tests record in their
+cleanup manifest.
 
 The tests are built once and run in one xcodebuild invocation, each in its own
 tmux session, so no test inherits another test's windows, panes or running
@@ -19,8 +30,13 @@ name. As soon as a test finishes, the harness verifies the tmux expectations
 it recorded, whatever its outcome, and removes its sessions, so later tests
 never see them.
 
-This script reads live SSH details from /tmp/remux-live-ssh.json but does not
-store credentials in the repository or print secrets.
+The config is a JSON object with "host", "username", optional "port",
+"displayName", "sessionName" and "tmuxExecutablePath", and either "password" or
+"privateKeyPEM" with an optional "privateKeyPassphrase". The app reads the
+credential from the config itself, and the harness keeps a private key only in
+its own ssh-agent, so no copy of it is written anywhere else. Everything the
+harness shares with the tests lives in a temporary directory of its own, so
+runs do not share state.
 
 An optional "tmuxExecutablePath" in the config is used by both the app and the
 fixture/cleanup commands, e.g. a wrapper that runs `tmux -L <socket> "$@"` so
@@ -87,6 +103,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# The tests and the app read the config from other working directories.
+if [[ "$config" != /* ]]; then
+  config="$PWD/$config"
+fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
@@ -161,6 +182,8 @@ fi
 
 require_tool ruby
 require_tool ssh
+require_tool ssh-add
+require_tool ssh-agent
 require_tool ssh-keygen
 require_tool xcodebuild
 
@@ -210,16 +233,20 @@ if [[ -z "$expected_host_key_type" || -z "$expected_host_key_fingerprint" ]]; th
   exit 2
 fi
 expected_host_key="$expected_host_key_type $expected_host_key_fingerprint"
-live_ssh_configuration_base64="$(base64 <"$config" | tr -d '\r\n')"
 
-work_dir="$(mktemp -d "${TMPDIR:-/tmp}/remux-live-ui-cleanup.XXXXXX")"
+if [[ -z "$private_key" && -z "$password" ]]; then
+  printf '%s must include password or privateKeyPEM.\n' "$config" >&2
+  exit 2
+fi
+
+# Everything this run shares with the tests lives here; its path reaches the
+# test runner as TEST_RUNNER_REMUX_LIVE_RUN_DIR.
+run_dir="$(mktemp -d "${TMPDIR:-/tmp}/remux-live-ui.XXXXXX")"
 # Each test records its generated sessions and tmux expectations here, in
 # <test>.sessions and <test>.expectations.
-records_dir="/tmp/remux-live-tests"
-harness_file="/tmp/remux-live-cleanup-harness.txt"
-expected_host_key_file="/tmp/remux-live-expected-host-key.txt"
-askpass="$work_dir/askpass.sh"
-private_key_file="$work_dir/live_ssh_key"
+records_dir="$run_dir/tests"
+harness_file="$run_dir/harness.txt"
+askpass="$run_dir/askpass.sh"
 log_dir=".local/logs"
 mkdir -p "$log_dir"
 stamp="$(date +%Y%m%d-%H%M%S)-$$"
@@ -228,6 +255,7 @@ log="$log_dir/live-ui-cleanup-${stamp}.log"
 result_bundle="$log_dir/live-ui-cleanup-${stamp}.xcresult"
 cleanup_done=0
 marker_refresh_pid=""
+ssh_agent_pid=""
 
 stop_harness_marker_refresh() {
   if [[ -n "$marker_refresh_pid" ]]; then
@@ -239,48 +267,57 @@ stop_harness_marker_refresh() {
 
 cleanup_local_files() {
   stop_harness_marker_refresh
-  rm -rf "$work_dir"
-  rm -rf "$records_dir"
-  rm -f "$harness_file" "$harness_file.tmp"
-  rm -f "$expected_host_key_file"
+  if [[ -n "$ssh_agent_pid" ]]; then
+    kill "$ssh_agent_pid" 2>/dev/null || true
+    ssh_agent_pid=""
+  fi
+  rm -rf "$run_dir"
 }
-
-ssh_askpass_secret=""
-declare -a ssh_auth_args=()
-if [[ -n "$private_key" ]]; then
-  printf '%s\n' "$private_key" >"$private_key_file"
-  chmod 600 "$private_key_file"
-  ssh_askpass_secret="$private_key_passphrase"
-  ssh_auth_args=(
-    -i "$private_key_file"
-    -o IdentitiesOnly=yes
-    -o PreferredAuthentications=publickey
-  )
-elif [[ -n "$password" ]]; then
-  ssh_askpass_secret="$password"
-  ssh_auth_args=(
-    -o PreferredAuthentications=password,keyboard-interactive
-  )
-else
-  printf '%s must include password or privateKeyPEM.\n' "$config" >&2
-  exit 2
-fi
 
 finish_before_remote_cleanup() {
   local status=$?
   cleanup_local_files
   exit "$status"
 }
+trap finish_before_remote_cleanup EXIT
 
+mkdir "$records_dir"
 cat >"$askpass" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$REMUX_LIVE_SSH_SECRET"
 EOF
 chmod 700 "$askpass"
-rm -rf "$records_dir"
-mkdir "$records_dir"
-rm -f "$harness_file"
-rm -f "$expected_host_key_file"
+
+ssh_askpass_secret=""
+declare -a ssh_auth_args=()
+if [[ -n "$private_key" ]]; then
+  # The key goes into this run's own ssh-agent, not a file, so the config
+  # stays its only copy.
+  ssh_agent_socket="$run_dir/ssh-agent.sock"
+  ssh_agent_pid="$(
+    ssh-agent -a "$ssh_agent_socket" -s |
+      sed -n 's/^SSH_AGENT_PID=\([0-9][0-9]*\);.*/\1/p'
+  )"
+  printf '%s\n' "$private_key" |
+    SSH_AUTH_SOCK="$ssh_agent_socket" \
+    REMUX_LIVE_SSH_SECRET="$private_key_passphrase" \
+    SSH_ASKPASS="$askpass" \
+    SSH_ASKPASS_REQUIRE=force \
+    DISPLAY=remux \
+    ssh-add -q -
+  SSH_AUTH_SOCK="$ssh_agent_socket" ssh-add -L >"$run_dir/live_ssh_key.pub"
+  ssh_auth_args=(
+    -o "IdentityAgent=$ssh_agent_socket"
+    -i "$run_dir/live_ssh_key.pub"
+    -o IdentitiesOnly=yes
+    -o PreferredAuthentications=publickey
+  )
+else
+  ssh_askpass_secret="$password"
+  ssh_auth_args=(
+    -o PreferredAuthentications=password,keyboard-interactive
+  )
+fi
 
 # Tests that need a known session or a prepared fixture get their own, assigned
 # here by test method name. Every other test generates a uniquely named session
@@ -316,14 +353,16 @@ for target in "${only_testing[@]}"; do
   fi
 done
 
-# The marker tells the UI tests that this harness will clean up after them, and
-# carries each assigned test's session and fixture as session.<test>=<session>
-# and fixture.<test>=<fixture>. The tests treat a marker older than 30 minutes
-# as stale, so it is refreshed while they run.
+# The marker tells the UI tests that this harness will clean up after them,
+# where the config is and which host key to trust, and carries each assigned
+# test's session and fixture as session.<test>=<session> and
+# fixture.<test>=<fixture>. The tests treat a marker older than 30 minutes as
+# stale, so it is refreshed while they run.
 write_harness_marker() {
   local i
   {
     printf 'pid=%s\nstartedAt=%s\n' "$$" "$(date +%s)"
+    printf 'config=%s\nexpectedHostKey=%s\n' "$config" "$expected_host_key"
     for name in \
       REMUX_LIVE_AGENT_TUI_SESSION \
       REMUX_PROFILE_PANE_SWITCH_COUNT \
@@ -357,8 +396,6 @@ refresh_harness_marker() {
 }
 
 write_harness_marker
-printf '%s\n' "$expected_host_key" >"$expected_host_key_file"
-trap finish_before_remote_cleanup EXIT
 
 prepare_dense_mixed_fixture() {
   local session="$1"
@@ -1052,11 +1089,7 @@ finished_test_pattern="^Test Case '-\[[^ ]+ ([A-Za-z0-9_]+)\]' (passed|failed|sk
 
 # No failure diagnostics: collecting them takes up to ten minutes per failure.
 set +e
-REMUX_TRACE_LATENCY="${REMUX_TRACE_LATENCY:-1}" \
-REMUX_TRACE_PERF="${REMUX_TRACE_PERF:-1}" \
-GHOSTTY_TRACE_SURFACE_INIT="${GHOSTTY_TRACE_SURFACE_INIT:-1}" \
-REMUX_LIVE_EXPECTED_HOST_KEY="$expected_host_key" \
-REMUX_LIVE_SSH_CONFIGURATION_BASE64="$live_ssh_configuration_base64" \
+TEST_RUNNER_REMUX_LIVE_RUN_DIR="$run_dir" \
 xcodebuild test-without-building "${common_args[@]}" \
   "${test_args[@]}" \
   -collect-test-diagnostics never \
