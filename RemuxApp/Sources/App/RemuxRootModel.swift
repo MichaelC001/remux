@@ -23,13 +23,13 @@ enum SSHPublicKeyInstallDraftError: Error, Equatable, LocalizedError {
 
 struct ActiveTerminalSession: Identifiable, Equatable, Sendable {
     let id: SavedWorkspace.ID
-    var target: TmuxConnectionTarget
+    var target: SessionTarget
     var instanceID: UUID
     var runtimeState: TerminalRuntimeState
     var automaticReconnectAttemptedSources: Set<TerminalReconnectSource>
 
     init(
-        target: TmuxConnectionTarget,
+        target: SessionTarget,
         instanceID: UUID = UUID(),
         runtimeState: TerminalRuntimeState = .connecting,
         automaticReconnectAttemptedSources: Set<TerminalReconnectSource> = []
@@ -180,11 +180,14 @@ struct TmuxSessionDiscoveryState: Equatable {
 }
 
 enum TmuxSessionReconciliation {
+    /// Hides a saved tmux workspace once a successful discovery no longer lists
+    /// it. tmux discovery says nothing about other backends' sessions.
     static func includesSavedWorkspace(
         _ workspace: SavedWorkspace,
         discoveryStates: [SavedServer.ID: TmuxSessionDiscoveryState]
     ) -> Bool {
-        guard let discoveredNames = discoveryStates[workspace.serverID]?
+        guard workspace.backend == .tmux,
+              let discoveredNames = discoveryStates[workspace.serverID]?
             .lastSuccessfulSessionNames else {
             return true
         }
@@ -213,7 +216,7 @@ final class RemuxRootModel: ObservableObject {
     }
 
     typealias TerminalScreenModelFactory = @MainActor @Sendable (
-        TmuxConnectionTarget,
+        SessionTarget,
         UUID,
         @escaping TmuxScreenModel.TransportFactory,
         @escaping (TerminalRuntimeStateUpdate) -> Void,
@@ -1191,6 +1194,7 @@ final class RemuxRootModel: ObservableObject {
         await connect(server: server, workspace: workspace)
     }
 
+    /// Opens a session found by discovery, which lists tmux sessions.
     func connectToDiscoveredSession(
         named sessionName: String,
         on serverID: SavedServer.ID
@@ -1199,9 +1203,10 @@ final class RemuxRootModel: ObservableObject {
               let server = library.server(id: serverID) else {
             return
         }
+        let locator = SessionLocator(backend: .tmux, name: sessionName)
         let workspace = library.workspaces(for: serverID).first {
-            $0.sessionName == sessionName
-        } ?? SavedWorkspace(serverID: serverID, sessionName: sessionName)
+            $0.locator == locator
+        } ?? SavedWorkspace(serverID: serverID, backend: locator.backend, sessionName: locator.name)
         await connect(server: server, workspace: workspace)
     }
 
@@ -1581,7 +1586,7 @@ final class RemuxRootModel: ObservableObject {
         terminalSettingsSaveFailed = false
     }
 
-    func makeTransport(for target: TmuxConnectionTarget) -> any TmuxControlTransport {
+    func makeTransport(for target: SessionTarget) -> any TmuxControlTransport {
         preparedTransportCoordinator.claimOrCreateTransport(for: target)
     }
 
@@ -1935,8 +1940,8 @@ final class RemuxRootModel: ObservableObject {
         server: SavedServer,
         workspace: SavedWorkspace,
         sshAuth: ResolvedSSHAuth
-    ) -> TmuxConnectionTarget {
-        TmuxConnectionTarget(
+    ) -> SessionTarget {
+        SessionTarget(
             server: server,
             workspace: workspace,
             sshAuth: sshAuth,
@@ -2033,7 +2038,7 @@ final class RemuxRootModel: ObservableObject {
     }
 
     private static func makeDefaultTerminalScreenModel(
-        target: TmuxConnectionTarget,
+        target: SessionTarget,
         sessionInstanceID: UUID,
         transportFactory: @escaping TmuxScreenModel.TransportFactory,
         onRuntimeStateChange: @escaping (TerminalRuntimeStateUpdate) -> Void,
@@ -2191,7 +2196,7 @@ final class RemuxRootModel: ObservableObject {
     }
 
     private func prepareTransport(
-        for target: TmuxConnectionTarget,
+        for target: SessionTarget,
         reason: RemuxPreparedTransportPrepareReason
     ) {
         preparedTransportCoordinator.prepareTransport(for: target, reason: reason)

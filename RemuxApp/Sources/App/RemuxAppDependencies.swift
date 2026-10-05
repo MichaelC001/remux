@@ -26,22 +26,22 @@ struct RemuxAppDependencies: Sendable {
     let publicKeyInstaller: SSHPublicKeyInstaller
     private let sshRootService: RemuxSSHRootService
     private let transportFactory: @Sendable (
-        _ target: TmuxConnectionTarget,
+        _ target: SessionTarget,
         _ trustedHostStore: TrustedHostStore,
         _ sshRootService: RemuxSSHRootService
     ) -> any TmuxControlTransport
     private let sshConnectionPrewarmer: @Sendable (
-        _ target: TmuxConnectionTarget,
+        _ target: SessionTarget,
         _ trustedHostStore: TrustedHostStore,
         _ sshRootService: RemuxSSHRootService
     ) async -> Void
     private let attachmentTransferServiceFactory: @Sendable (
-        _ target: TmuxConnectionTarget,
+        _ target: SessionTarget,
         _ trustedHostStore: TrustedHostStore,
         _ sshRootService: RemuxSSHRootService
     ) -> any GhosttyAttachmentTransferService
     private let tmuxSessionDiscoverer: @Sendable (
-        _ target: TmuxConnectionTarget,
+        _ target: SessionTarget,
         _ trustedHostStore: TrustedHostStore,
         _ sshRootService: RemuxSSHRootService
     ) async throws -> [String]
@@ -59,22 +59,22 @@ struct RemuxAppDependencies: Sendable {
         publicKeyInstaller: SSHPublicKeyInstaller,
         sshRootService: RemuxSSHRootService = RemuxSSHRootService(),
         transportFactory: @escaping @Sendable (
-            _ target: TmuxConnectionTarget,
+            _ target: SessionTarget,
             _ trustedHostStore: TrustedHostStore,
             _ sshRootService: RemuxSSHRootService
         ) -> any TmuxControlTransport = RemuxAppDependencies.liveTransport,
         sshConnectionPrewarmer: @escaping @Sendable (
-            _ target: TmuxConnectionTarget,
+            _ target: SessionTarget,
             _ trustedHostStore: TrustedHostStore,
             _ sshRootService: RemuxSSHRootService
         ) async -> Void = RemuxAppDependencies.liveSSHConnectionPrewarmer,
         attachmentTransferServiceFactory: @escaping @Sendable (
-            _ target: TmuxConnectionTarget,
+            _ target: SessionTarget,
             _ trustedHostStore: TrustedHostStore,
             _ sshRootService: RemuxSSHRootService
         ) -> any GhosttyAttachmentTransferService = RemuxAppDependencies.liveAttachmentTransferService,
         tmuxSessionDiscoverer: @escaping @Sendable (
-            _ target: TmuxConnectionTarget,
+            _ target: SessionTarget,
             _ trustedHostStore: TrustedHostStore,
             _ sshRootService: RemuxSSHRootService
         ) async throws -> [String] = RemuxAppDependencies.liveTmuxSessionDiscoverer,
@@ -163,7 +163,7 @@ struct RemuxAppDependencies: Sendable {
         }
     }
 
-    func makeTransport(for target: TmuxConnectionTarget) -> any TmuxControlTransport {
+    func makeTransport(for target: SessionTarget) -> any TmuxControlTransport {
         transportFactory(target, trustedHostStore, sshRootService)
     }
 
@@ -171,15 +171,15 @@ struct RemuxAppDependencies: Sendable {
         sshRootService.tailscaleSSHCheckChallengeBroker.events
     }
 
-    func prewarmSSHConnection(for target: TmuxConnectionTarget) async {
+    func prewarmSSHConnection(for target: SessionTarget) async {
         await sshConnectionPrewarmer(target, trustedHostStore, sshRootService)
     }
 
-    func makeAttachmentTransferService(for target: TmuxConnectionTarget) -> any GhosttyAttachmentTransferService {
+    func makeAttachmentTransferService(for target: SessionTarget) -> any GhosttyAttachmentTransferService {
         attachmentTransferServiceFactory(target, trustedHostStore, sshRootService)
     }
 
-    func discoverTmuxSessions(for target: TmuxConnectionTarget) async throws -> [String] {
+    func discoverTmuxSessions(for target: SessionTarget) async throws -> [String] {
         try await tmuxSessionDiscoverer(target, trustedHostStore, sshRootService)
     }
 
@@ -190,7 +190,7 @@ struct RemuxAppDependencies: Sendable {
     }
 
     private static func liveTransport(
-        target: TmuxConnectionTarget,
+        target: SessionTarget,
         trustedHostStore: TrustedHostStore,
         sshRootService: RemuxSSHRootService
     ) -> any TmuxControlTransport {
@@ -206,7 +206,7 @@ struct RemuxAppDependencies: Sendable {
     }
 
     private static func liveSSHConnectionPrewarmer(
-        target: TmuxConnectionTarget,
+        target: SessionTarget,
         trustedHostStore: TrustedHostStore,
         sshRootService: RemuxSSHRootService
     ) async {
@@ -232,7 +232,7 @@ struct RemuxAppDependencies: Sendable {
     }
 
     static func sshConfiguration(
-        for target: TmuxConnectionTarget,
+        for target: SessionTarget,
         trustedHostStore: TrustedHostStore,
         tailscaleSSHCheckChallengeBroker: TailscaleSSHCheckChallengeBroker? = nil,
         traceFlowID: String?
@@ -263,7 +263,7 @@ struct RemuxAppDependencies: Sendable {
     }
 
     static func attachmentSSHRootConfiguration(
-        for target: TmuxConnectionTarget,
+        for target: SessionTarget,
         trustedHostStore: TrustedHostStore,
         tailscaleSSHCheckChallengeBroker: TailscaleSSHCheckChallengeBroker? = nil
     ) -> RemuxSSHRootConfiguration {
@@ -276,7 +276,7 @@ struct RemuxAppDependencies: Sendable {
     }
 
     private static func liveAttachmentTransferService(
-        target: TmuxConnectionTarget,
+        target: SessionTarget,
         trustedHostStore: TrustedHostStore,
         sshRootService: RemuxSSHRootService
     ) -> any GhosttyAttachmentTransferService {
@@ -295,7 +295,7 @@ struct RemuxAppDependencies: Sendable {
     }
 
     private static func liveTmuxSessionDiscoverer(
-        target: TmuxConnectionTarget,
+        target: SessionTarget,
         trustedHostStore: TrustedHostStore,
         sshRootService: RemuxSSHRootService
     ) async throws -> [String] {
@@ -334,7 +334,7 @@ struct RemuxAppDependencies: Sendable {
     }
 
     private static func sshRootConfiguration(
-        for target: TmuxConnectionTarget,
+        for target: SessionTarget,
         trustedHostStore: TrustedHostStore,
         tailscaleSSHCheckChallengeBroker: TailscaleSSHCheckChallengeBroker?,
         connectTimeout: TimeAmount

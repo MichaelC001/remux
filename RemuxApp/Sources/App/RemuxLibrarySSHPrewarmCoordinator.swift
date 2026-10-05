@@ -13,9 +13,9 @@ final class RemuxLibrarySSHPrewarmCoordinator {
         _ server: SavedServer,
         _ snapshot: ConnectionLibrarySnapshot
     ) async throws -> ResolvedSSHAuth
-    typealias SSHConnectionPrewarmer = @Sendable (TmuxConnectionTarget) async -> Void
+    typealias SSHConnectionPrewarmer = @Sendable (SessionTarget) async -> Void
     typealias CurrentContextProvider = @MainActor @Sendable () -> RemuxLibrarySSHPrewarmCurrentContext?
-    typealias EligibleTargetHandler = @MainActor @Sendable (TmuxConnectionTarget) -> Void
+    typealias EligibleTargetHandler = @MainActor @Sendable (SessionTarget) -> Void
 
     private let limit: Int
     private let authResolver: AuthResolver
@@ -64,7 +64,7 @@ final class RemuxLibrarySSHPrewarmCoordinator {
                 guard !Task.isCancelled else { return }
                 do {
                     let sshAuth = try await authResolver(candidate.server, snapshot)
-                    let target = TmuxConnectionTarget(
+                    let target = SessionTarget(
                         server: candidate.server,
                         workspace: candidate.workspace,
                         sshAuth: sshAuth,
@@ -119,7 +119,7 @@ final class RemuxLibrarySSHPrewarmCoordinator {
     private func prepareIfStillEligible(
         authResolver: AuthResolver,
         candidate: RemuxLibrarySSHPrewarmCandidate,
-        target: TmuxConnectionTarget,
+        target: SessionTarget,
         capturedGeneration: UInt64,
         currentContext: CurrentContextProvider,
         onEligibleTarget: EligibleTargetHandler
@@ -130,10 +130,10 @@ final class RemuxLibrarySSHPrewarmCoordinator {
         let hasActiveSessionOnServer = currentServer.map {
             context.activeServerIDs.contains($0.id)
         } ?? false
-        let currentTarget: TmuxConnectionTarget?
+        let currentTarget: SessionTarget?
         if let currentServer, let currentWorkspace {
             do {
-                currentTarget = TmuxConnectionTarget(
+                currentTarget = SessionTarget(
                     server: currentServer,
                     workspace: currentWorkspace,
                     sshAuth: try await authResolver(currentServer, context.snapshot),

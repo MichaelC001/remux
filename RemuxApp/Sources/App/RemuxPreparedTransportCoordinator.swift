@@ -7,7 +7,7 @@ enum RemuxPreparedTransportPrepareReason: String, Sendable {
 }
 
 final class RemuxPreparedTransportCoordinator {
-    typealias TransportFactory = (TmuxConnectionTarget) -> any TmuxControlTransport
+    typealias TransportFactory = (SessionTarget) -> any TmuxControlTransport
 
     private var cache = RemuxPreparedTransportCache()
     private let transportFactory: TransportFactory
@@ -20,7 +20,7 @@ final class RemuxPreparedTransportCoordinator {
         closeAll()
     }
 
-    func claimOrCreateTransport(for target: TmuxConnectionTarget) -> any TmuxControlTransport {
+    func claimOrCreateTransport(for target: SessionTarget) -> any TmuxControlTransport {
         switch cache.claim(for: target) {
         case .claimed(let prepared):
             GhosttyRuntimeTrace.flowEvent(
@@ -48,7 +48,7 @@ final class RemuxPreparedTransportCoordinator {
     }
 
     func prepareTransport(
-        for target: TmuxConnectionTarget,
+        for target: SessionTarget,
         reason: RemuxPreparedTransportPrepareReason
     ) {
         if cache.containsReusableTransport(for: target) {

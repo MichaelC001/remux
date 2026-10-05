@@ -117,6 +117,7 @@ struct SavedServer: Identifiable, Equatable, Codable, Sendable {
     var username: String
     var identityID: SSHIdentity.ID
     var tmuxExecutablePath: String?
+    var herdrExecutablePath: String?
 
     init(
         id: UUID = UUID(),
@@ -125,7 +126,8 @@ struct SavedServer: Identifiable, Equatable, Codable, Sendable {
         port: Int = 22,
         username: String,
         identityID: SSHIdentity.ID,
-        tmuxExecutablePath: String? = nil
+        tmuxExecutablePath: String? = nil,
+        herdrExecutablePath: String? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -134,33 +136,68 @@ struct SavedServer: Identifiable, Equatable, Codable, Sendable {
         self.username = username
         self.identityID = identityID
         self.tmuxExecutablePath = tmuxExecutablePath
+        self.herdrExecutablePath = herdrExecutablePath
     }
+}
+
+/// The multiplexer that hosts a saved session.
+enum SessionBackend: String, Codable, Sendable {
+    case tmux
+    case herdr
+}
+
+/// Names a session on a server. Session names are only unique per backend, so
+/// a tmux and a Herdr session with the same name are different sessions.
+struct SessionLocator: Hashable, Sendable {
+    let backend: SessionBackend
+    let name: String
 }
 
 struct SavedWorkspace: Identifiable, Equatable, Codable, Sendable {
     let id: UUID
     let serverID: SavedServer.ID
+    let backend: SessionBackend
     var sessionName: String
     var lastOpenedAt: Date
 
     init(
         id: UUID = UUID(),
         serverID: SavedServer.ID,
+        backend: SessionBackend = .tmux,
         sessionName: String,
         lastOpenedAt: Date = Date()
     ) {
         self.id = id
         self.serverID = serverID
+        self.backend = backend
         self.sessionName = sessionName
         self.lastOpenedAt = lastOpenedAt
     }
+
+    // Workspaces saved before backends existed have no backend and are tmux.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        serverID = try container.decode(SavedServer.ID.self, forKey: .serverID)
+        backend = try container.decodeIfPresent(SessionBackend.self, forKey: .backend) ?? .tmux
+        sessionName = try container.decode(String.self, forKey: .sessionName)
+        lastOpenedAt = try container.decode(Date.self, forKey: .lastOpenedAt)
+    }
+
+    var locator: SessionLocator {
+        SessionLocator(backend: backend, name: sessionName)
+    }
 }
 
-struct TmuxConnectionTarget: Equatable, Sendable {
+struct SessionTarget: Equatable, Sendable {
     let server: SavedServer
     let workspace: SavedWorkspace
     let sshAuth: ResolvedSSHAuth
     let terminalSettings: TerminalSettings
+
+    var locator: SessionLocator {
+        workspace.locator
+    }
 
     init(
         server: SavedServer,
@@ -396,11 +433,15 @@ struct TmuxConnectionDraft: Equatable, Sendable {
     var port: String = "22"
     var username: String = ""
     var tmuxExecutablePath: String = ""
+    // Not editable until the Herdr backend is exposed; carried so editing a
+    // server keeps it.
+    var herdrExecutablePath: String?
     var authenticationKind: SSHAuthenticationKind = .password
     var password: String = ""
     var privateKeyPEM: String = ""
     var privateKeyFileName: String = ""
     var privateKeyPassphrase: String = ""
+    var backend: SessionBackend = .tmux
     var sessionName: String = ""
 
     init(serverID: SavedServer.ID = UUID()) {
@@ -414,6 +455,8 @@ struct TmuxConnectionDraft: Equatable, Sendable {
         self.port = String(server.port)
         self.username = server.username
         self.tmuxExecutablePath = server.tmuxExecutablePath ?? ""
+        self.herdrExecutablePath = server.herdrExecutablePath
+        self.backend = workspace.backend
         self.sessionName = workspace.sessionName
     }
 
@@ -493,6 +536,7 @@ struct ValidatedTmuxServerDraft: Equatable, Sendable {
     let port: Int
     let username: String
     let tmuxExecutablePath: String?
+    let herdrExecutablePath: String?
     let credential: Credential
 
     func savedServer(identityID: SSHIdentity.ID) -> SavedServer {
@@ -503,7 +547,8 @@ struct ValidatedTmuxServerDraft: Equatable, Sendable {
             port: port,
             username: username,
             identityID: identityID,
-            tmuxExecutablePath: tmuxExecutablePath
+            tmuxExecutablePath: tmuxExecutablePath,
+            herdrExecutablePath: herdrExecutablePath
         )
     }
 }
@@ -660,6 +705,7 @@ enum TmuxConnectionDraftValidator {
                 port: port,
                 username: username,
                 tmuxExecutablePath: tmuxExecutablePath,
+                herdrExecutablePath: draft.herdrExecutablePath,
                 credential: credential
             )
         )
@@ -686,6 +732,7 @@ enum TmuxConnectionDraftValidator {
                 workspace: SavedWorkspace(
                     id: existingWorkspaceID ?? UUID(),
                     serverID: serverID,
+                    backend: draft.backend,
                     sessionName: sessionName,
                     lastOpenedAt: Date()
                 )

@@ -170,7 +170,7 @@ private func makeTarget(
     password: String = "secret",
     sshAuth: ResolvedSSHAuth? = nil,
     terminalSettings: TerminalSettings = .default
-) -> TmuxConnectionTarget {
+) -> SessionTarget {
     let server = SavedServer(
         id: serverID,
         displayName: "Build Host",
@@ -183,7 +183,7 @@ private func makeTarget(
         sessionName: "base",
         lastOpenedAt: Date(timeIntervalSince1970: 0)
     )
-    return TmuxConnectionTarget(
+    return SessionTarget(
         server: server,
         workspace: workspace,
         sshAuth: sshAuth ?? .password(

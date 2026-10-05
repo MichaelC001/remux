@@ -136,6 +136,35 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertNotNil(harness.model.library.workspace(id: opened.id))
     }
 
+    func testDiscoveredTmuxSessionDoesNotOpenSameNamedHerdrWorkspace() async throws {
+        let pair = makePasswordBackedServer()
+        let herdrOps = SavedWorkspace(serverID: pair.server.id, backend: .herdr, sessionName: "ops")
+        let discoverer = RecordingTmuxSessionDiscoverer(
+            results: [.success(["ops"]), .success(["ops"]), .success(["ops"])]
+        )
+        let harness = makeHarness(
+            servers: [pair.server],
+            workspaces: [herdrOps],
+            identities: [pair.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
+        await harness.model.load()
+        let didLoadSessions = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: pair.server.id).phase == .loaded
+        }
+        XCTAssertTrue(didLoadSessions)
+
+        await harness.model.connectToDiscoveredSession(named: "ops", on: pair.server.id)
+
+        let opened = try XCTUnwrap(harness.model.activeSessions.first)
+        XCTAssertNotEqual(opened.id, herdrOps.id)
+        XCTAssertEqual(opened.target.locator, SessionLocator(backend: .tmux, name: "ops"))
+        XCTAssertEqual(harness.model.library.workspace(id: herdrOps.id), herdrOps)
+    }
+
     func testLaunchDiscoveryStartsForEverySavedServer() async throws {
         let first = makePasswordBackedServer()
         let second = makePasswordBackedServer()
@@ -3759,22 +3788,22 @@ final class RemuxRootModelTests: XCTestCase {
         settings: TerminalSettings = .default,
         settingsRepository: (any TerminalSettingsRepository)? = nil,
         transportFactory: (@Sendable (
-            TmuxConnectionTarget,
+            SessionTarget,
             TrustedHostStore,
             RemuxSSHRootService
         ) -> any TmuxControlTransport)? = nil,
         sshConnectionPrewarmer: (@Sendable (
-            TmuxConnectionTarget,
+            SessionTarget,
             TrustedHostStore,
             RemuxSSHRootService
         ) async -> Void)? = nil,
         attachmentTransferServiceFactory: (@Sendable (
-            TmuxConnectionTarget,
+            SessionTarget,
             TrustedHostStore,
             RemuxSSHRootService
         ) -> any GhosttyAttachmentTransferService)? = nil,
         tmuxSessionDiscoverer: (@Sendable (
-            TmuxConnectionTarget,
+            SessionTarget,
             TrustedHostStore,
             RemuxSSHRootService
         ) async throws -> [String])? = nil,
@@ -4035,13 +4064,13 @@ private enum RootModelSetupTestError: Error {
 
 private actor RecordingTmuxSessionDiscoverer {
     private var results: [Result<[String], Error>]
-    private var recordedTargets: [TmuxConnectionTarget] = []
+    private var recordedTargets: [SessionTarget] = []
 
     init(results: [Result<[String], Error>]) {
         self.results = results
     }
 
-    func discover(_ target: TmuxConnectionTarget) throws -> [String] {
+    func discover(_ target: SessionTarget) throws -> [String] {
         recordedTargets.append(target)
         return try results.removeFirst().get()
     }
@@ -4050,7 +4079,7 @@ private actor RecordingTmuxSessionDiscoverer {
         results.append(contentsOf: newResults)
     }
 
-    func targets() -> [TmuxConnectionTarget] {
+    func targets() -> [SessionTarget] {
         recordedTargets
     }
 }
@@ -4059,7 +4088,7 @@ private actor SuspendingTmuxSessionDiscoverer {
     private var continuations: [CheckedContinuation<[String], Never>] = []
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
-    func discover(_ target: TmuxConnectionTarget) async -> [String] {
+    func discover(_ target: SessionTarget) async -> [String] {
         _ = target
         let waiters = waiters
         self.waiters.removeAll()
@@ -4120,7 +4149,7 @@ private actor RootModelPublicKeyInstallerRecorder {
 
 @MainActor
 private func makeTestTerminalScreenModel(
-    target: TmuxConnectionTarget,
+    target: SessionTarget,
     sessionInstanceID: UUID,
     transportFactory: @escaping TmuxScreenModel.TransportFactory,
     onRuntimeStateChange: @escaping (TerminalRuntimeStateUpdate) -> Void,
@@ -4158,7 +4187,7 @@ private final class RecordingTerminalScreenModelFactory: @unchecked Sendable {
     }
 
     func makeModel(
-        target: TmuxConnectionTarget,
+        target: SessionTarget,
         sessionInstanceID: UUID,
         transportFactory: @escaping TmuxScreenModel.TransportFactory,
         onRuntimeStateChange: @escaping (TerminalRuntimeStateUpdate) -> Void,
@@ -4189,9 +4218,9 @@ private extension TmuxSessionController.ClientSize {
 }
 
 private final class RecordingAttachmentTransferServiceFactory: @unchecked Sendable {
-    private(set) var targets: [TmuxConnectionTarget] = []
+    private(set) var targets: [SessionTarget] = []
 
-    var factory: @Sendable (TmuxConnectionTarget, TrustedHostStore, RemuxSSHRootService) -> any GhosttyAttachmentTransferService {
+    var factory: @Sendable (SessionTarget, TrustedHostStore, RemuxSSHRootService) -> any GhosttyAttachmentTransferService {
         { target, _, _ in
             self.targets.append(target)
             return FailingGhosttyAttachmentTransferService()
@@ -4218,16 +4247,16 @@ private enum RecordingRootTransportEvent: Equatable {
 
 private final class SuspendingSSHConnectionPrewarmer: @unchecked Sendable {
     private let lock = NSLock()
-    private var recordedTargets: [TmuxConnectionTarget] = []
+    private var recordedTargets: [SessionTarget] = []
     private var continuations: [CheckedContinuation<Void, Never>] = []
 
-    var targets: [TmuxConnectionTarget] {
+    var targets: [SessionTarget] {
         lock.lock()
         defer { lock.unlock() }
         return recordedTargets
     }
 
-    func recordAndSuspend(_ target: TmuxConnectionTarget) async {
+    func recordAndSuspend(_ target: SessionTarget) async {
         await withCheckedContinuation { continuation in
             lock.lock()
             recordedTargets.append(target)
@@ -4250,15 +4279,15 @@ private final class SuspendingSSHConnectionPrewarmer: @unchecked Sendable {
 
 private final class RecordingSSHConnectionPrewarmer: @unchecked Sendable {
     private let lock = NSLock()
-    private var recordedTargets: [TmuxConnectionTarget] = []
+    private var recordedTargets: [SessionTarget] = []
 
-    var targets: [TmuxConnectionTarget] {
+    var targets: [SessionTarget] {
         lock.lock()
         defer { lock.unlock() }
         return recordedTargets
     }
 
-    func record(_ target: TmuxConnectionTarget) {
+    func record(_ target: SessionTarget) {
         lock.lock()
         recordedTargets.append(target)
         lock.unlock()
@@ -4274,7 +4303,7 @@ private final class RecordingSSHConnectionPrewarmer: @unchecked Sendable {
 private final class RecordingRootTransportFactory: @unchecked Sendable {
     private let lock = NSLock()
     private var recordedEvents: [RecordingRootTransportEvent] = []
-    private var recordedTargets: [TmuxConnectionTarget] = []
+    private var recordedTargets: [SessionTarget] = []
 
     var events: [RecordingRootTransportEvent] {
         lock.lock()
@@ -4299,14 +4328,14 @@ private final class RecordingRootTransportFactory: @unchecked Sendable {
         })
     }
 
-    var targets: [TmuxConnectionTarget] {
+    var targets: [SessionTarget] {
         lock.lock()
         defer { lock.unlock() }
         return recordedTargets
     }
 
     func makeTransport(
-        target: TmuxConnectionTarget,
+        target: SessionTarget,
         trustedHostStore: TrustedHostStore
     ) -> any TmuxControlTransport {
         _ = trustedHostStore
@@ -4316,7 +4345,7 @@ private final class RecordingRootTransportFactory: @unchecked Sendable {
         return transport
     }
 
-    func record(target: TmuxConnectionTarget) {
+    func record(target: SessionTarget) {
         lock.lock()
         recordedTargets.append(target)
         lock.unlock()

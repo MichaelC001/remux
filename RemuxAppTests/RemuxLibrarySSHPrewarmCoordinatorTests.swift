@@ -31,7 +31,7 @@ final class RemuxLibrarySSHPrewarmCoordinatorTests: XCTestCase {
         await auth.setPassword("second-secret", for: secondServer.id)
         let prewarmer = RecordingLibraryPrewarmer()
         let coordinator = makePrewarmCoordinator(auth: auth, prewarmer: prewarmer)
-        var eligibleTargets: [TmuxConnectionTarget] = []
+        var eligibleTargets: [SessionTarget] = []
 
         coordinator.schedule(
             snapshot: snapshot,
@@ -75,7 +75,7 @@ final class RemuxLibrarySSHPrewarmCoordinatorTests: XCTestCase {
                 await prewarmer.recordAndSuspend(target)
             }
         )
-        var eligibleTargets: [TmuxConnectionTarget] = []
+        var eligibleTargets: [SessionTarget] = []
 
         coordinator.schedule(
             snapshot: snapshot,
@@ -133,7 +133,7 @@ final class RemuxLibrarySSHPrewarmCoordinatorTests: XCTestCase {
                 await prewarmer.recordAndSuspend(target)
             }
         )
-        var eligibleTargets: [TmuxConnectionTarget] = []
+        var eligibleTargets: [SessionTarget] = []
 
         coordinator.schedule(
             snapshot: snapshot,
@@ -186,7 +186,7 @@ final class RemuxLibrarySSHPrewarmCoordinatorTests: XCTestCase {
             }
         )
         var currentSnapshot = oldSnapshot
-        var eligibleTargets: [TmuxConnectionTarget] = []
+        var eligibleTargets: [SessionTarget] = []
 
         coordinator.schedule(
             snapshot: oldSnapshot,
@@ -260,7 +260,7 @@ final class RemuxLibrarySSHPrewarmCoordinatorTests: XCTestCase {
         await auth.setPassword("eligible-secret", for: eligibleServer.id)
         let prewarmer = RecordingLibraryPrewarmer()
         let coordinator = makePrewarmCoordinator(auth: auth, prewarmer: prewarmer)
-        var eligibleTargets: [TmuxConnectionTarget] = []
+        var eligibleTargets: [SessionTarget] = []
 
         coordinator.schedule(
             snapshot: snapshot,
@@ -308,7 +308,7 @@ final class RemuxLibrarySSHPrewarmCoordinatorTests: XCTestCase {
         await auth.setPassword("secret", for: passwordServer.id)
         let prewarmer = RecordingLibraryPrewarmer()
         let coordinator = makePrewarmCoordinator(auth: auth, prewarmer: prewarmer)
-        var eligibleTargets: [TmuxConnectionTarget] = []
+        var eligibleTargets: [SessionTarget] = []
 
         coordinator.schedule(
             snapshot: snapshot,
@@ -345,7 +345,7 @@ final class RemuxLibrarySSHPrewarmCoordinatorTests: XCTestCase {
         await auth.setPassword("secret", for: server.id)
         let prewarmer = RecordingLibraryPrewarmer()
         let coordinator = makePrewarmCoordinator(auth: auth, prewarmer: prewarmer)
-        var eligibleTargets: [TmuxConnectionTarget] = []
+        var eligibleTargets: [SessionTarget] = []
 
         coordinator.schedule(
             snapshot: snapshot,
@@ -380,7 +380,7 @@ final class RemuxLibrarySSHPrewarmCoordinatorTests: XCTestCase {
         await auth.setPassword("secret", for: server.id)
         let prewarmer = RecordingLibraryPrewarmer()
         let coordinator = makePrewarmCoordinator(auth: auth, prewarmer: prewarmer)
-        var eligibleTargets: [TmuxConnectionTarget] = []
+        var eligibleTargets: [SessionTarget] = []
 
         coordinator.schedule(
             snapshot: snapshot,
@@ -421,7 +421,7 @@ final class RemuxLibrarySSHPrewarmCoordinatorTests: XCTestCase {
                 await auth.setPassword("new-secret", for: target.server.id)
             }
         )
-        var eligibleTargets: [TmuxConnectionTarget] = []
+        var eligibleTargets: [SessionTarget] = []
 
         coordinator.schedule(
             snapshot: snapshot,
@@ -468,7 +468,7 @@ private func makePrewarmCoordinator(
 private func makePrewarmCoordinator(
     limit: Int = 3,
     auth: LibraryPrewarmAuthResolver,
-    sshConnectionPrewarmer: @escaping @Sendable (TmuxConnectionTarget) async -> Void
+    sshConnectionPrewarmer: @escaping @Sendable (SessionTarget) async -> Void
 ) -> RemuxLibrarySSHPrewarmCoordinator {
     RemuxLibrarySSHPrewarmCoordinator(
         limit: limit,
@@ -531,29 +531,29 @@ private actor LibraryPrewarmAuthResolver {
 }
 
 private actor RecordingLibraryPrewarmer {
-    private var recordedTargets: [TmuxConnectionTarget] = []
+    private var recordedTargets: [SessionTarget] = []
 
-    func record(_ target: TmuxConnectionTarget) {
+    func record(_ target: SessionTarget) {
         recordedTargets.append(target)
     }
 
-    func targets() -> [TmuxConnectionTarget] {
+    func targets() -> [SessionTarget] {
         recordedTargets
     }
 }
 
 private actor SuspendingLibraryPrewarmer {
-    private var recordedTargets: [TmuxConnectionTarget] = []
+    private var recordedTargets: [SessionTarget] = []
     private var continuations: [CheckedContinuation<Void, Never>] = []
 
-    func recordAndSuspend(_ target: TmuxConnectionTarget) async {
+    func recordAndSuspend(_ target: SessionTarget) async {
         recordedTargets.append(target)
         await withCheckedContinuation { continuation in
             continuations.append(continuation)
         }
     }
 
-    func targets() -> [TmuxConnectionTarget] {
+    func targets() -> [SessionTarget] {
         recordedTargets
     }
 
