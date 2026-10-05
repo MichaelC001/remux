@@ -9,10 +9,9 @@ Usage:
 
 Options:
   --config <path>              Live SSH configuration (default /tmp/remux-live-ssh.json)
-  --destination <spec>         xcodebuild destination (default "platform=iOS Simulator,name=iPhone 17,OS=latest")
+  --destination <spec>         iOS simulator destination (default "platform=iOS Simulator,name=iPhone 17,OS=latest")
   --configuration Debug|Release
                                Build configuration (default Debug)
-  --development-team <team-id> Sign with this team, with automatic provisioning
   --derived-data-path <path>   xcodebuild derived data path
   --only-testing <test-id>     Test to run, e.g. RemuxUITests/RemuxAppUITests/testLiveSSHTmuxActionCycleWhenConfigured
   --dry-run-cleanup <file>     Print the sessions a manifest would remove, then exit
@@ -21,6 +20,9 @@ Options:
 Runs selected Remux live SSH UI tests and remotely removes only the exact
 allowlisted remux-latency-* tmux sessions that the UI tests record in their
 cleanup manifest.
+
+Live tests run only on an iOS simulator: the test runner reads the harness's
+files and the config on this Mac and checks that the harness is still running.
 
 The tests are built once and run in one xcodebuild invocation, each in its own
 tmux session, so no test inherits another test's windows, panes or running
@@ -47,7 +49,6 @@ USAGE
 config="/tmp/remux-live-ssh.json"
 destination="platform=iOS Simulator,name=iPhone 17,OS=latest"
 configuration="Debug"
-development_team=""
 derived_data_path=""
 declare -a only_testing=()
 dry_run_manifest=""
@@ -74,11 +75,6 @@ while [[ $# -gt 0 ]]; do
         Debug|Release) ;;
         *) usage; exit 2 ;;
       esac
-      shift 2
-      ;;
-    --development-team)
-      development_team="${2:-}"
-      [[ "$development_team" =~ ^[A-Za-z0-9]+$ ]] || { usage; exit 2; }
       shift 2
       ;;
     --derived-data-path)
@@ -996,13 +992,6 @@ fi
 declare -a build_args=(build-for-testing "${common_args[@]}")
 if [[ "$configuration" == "Release" ]]; then
   build_args+=('SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) REMUX_LIVE_UI_TESTING')
-fi
-if [[ -n "$development_team" ]]; then
-  build_args+=(
-    "DEVELOPMENT_TEAM=$development_team"
-    CODE_SIGN_STYLE=Automatic
-    -allowProvisioningUpdates
-  )
 fi
 
 set +e
