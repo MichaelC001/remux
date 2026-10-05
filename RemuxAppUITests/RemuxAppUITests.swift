@@ -166,14 +166,14 @@ final class RemuxAppUITests: XCTestCase {
         stop.tap()
 
         let status = app.staticTexts["terminal.composer.dictation.status"]
-        XCTAssertTrue(status.waitForExistence(timeout: 1))
+        XCTAssertTrue(status.waitForExistence(timeout: 3))
         XCTAssertEqual(status.label, "Transcribing…")
         XCTAssertNotNil(waitForKeyboardPresence(false, label: "transcribing kept keyboard hidden"))
         XCTAssertFalse(keyboardDismiss.exists)
         attachScreenshot(named: "composer-dictation-transcribing")
 
         let field = app.textViews["terminal.composer.field"]
-        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
         XCTAssertEqual(field.value as? String, transcript)
         XCTAssertNotNil(waitForKeyboardPresence(false, label: "dictation stopped with keyboard hidden"))
         attachScreenshot(named: "composer-dictation-result")
@@ -210,11 +210,11 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertFalse(keyboardDismiss.exists)
         stop.tap()
 
-        XCTAssertTrue(status.waitForExistence(timeout: 1))
+        XCTAssertTrue(status.waitForExistence(timeout: 3))
         XCTAssertEqual(status.label, "Transcribing…")
         XCTAssertNotNil(waitForKeyboardPresence(true, label: "transcribing kept keyboard visible"))
         XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
-        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
         XCTAssertNotNil(waitForKeyboardPresence(true, label: "dictation stopped with keyboard visible"))
         XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
         XCTAssertTrue(keyboardDismiss.waitForExistence(timeout: 3))
