@@ -503,6 +503,9 @@ struct RemuxAppDependencies: Sendable {
         let tailscaleSSHCheckChallenge = ProcessInfo.processInfo.environment[
             "REMUX_UI_TEST_TAILSCALE_CHECK_BANNER"
         ].flatMap(TailscaleSSHCheckChallenge.parse(from:))
+        let simulatesMissingTmux = ProcessInfo.processInfo.environment[
+            "REMUX_UI_TEST_TMUX_MISSING"
+        ] == "1"
 
         return RemuxAppDependencies(
             profileRepository: InMemoryConnectionProfileRepository(),
@@ -529,34 +532,34 @@ struct RemuxAppDependencies: Sendable {
             },
             sshConnectionPrewarmer: { _, _, _ in
             },
+            // UI tests reach no real server: discovery and verification
+            // answer like a server that signs in and whose tmux has only the
+            // seeded session, if any.
             tmuxSessionDiscoverer: { target, _, sshRootService in
-                guard target.sshAuth.credential == .none,
-                      let tailscaleSSHCheckChallenge else {
-                    return try await RemuxAppDependencies.liveTmuxSessionDiscoverer(
-                        target: target,
-                        trustedHostStore: trustedHostStore,
+                if target.sshAuth.credential == .none, let tailscaleSSHCheckChallenge {
+                    try await simulateTailscaleSSHCheck(
+                        tailscaleSSHCheckChallenge,
                         sshRootService: sshRootService
                     )
+                    return []
                 }
-                try await simulateTailscaleSSHCheck(
-                    tailscaleSSHCheckChallenge,
-                    sshRootService: sshRootService
-                )
-                return []
+                if simulatesMissingTmux {
+                    // What the discovery script reports when tmux isn't found.
+                    let executable = target.server.tmuxExecutablePath ?? "tmux"
+                    throw TmuxSessionDiscoveryError.remoteExit(
+                        status: 127,
+                        stderr: "\(SSHTmuxControlCommandBuilder.tmuxNotFoundMarker): \(executable)\n"
+                    )
+                }
+                return DebugConnectionProfileSeeder.seededSessionName().map { [$0] } ?? []
             },
             sshAccessVerifier: { target, _, sshRootService in
-                guard target.sshAuth.credential == .none,
-                      let tailscaleSSHCheckChallenge else {
-                    return try await RemuxAppDependencies.liveSSHAccessVerifier(
-                        target: target,
-                        trustedHostStore: trustedHostStore,
+                if target.sshAuth.credential == .none, let tailscaleSSHCheckChallenge {
+                    try await simulateTailscaleSSHCheck(
+                        tailscaleSSHCheckChallenge,
                         sshRootService: sshRootService
                     )
                 }
-                try await simulateTailscaleSSHCheck(
-                    tailscaleSSHCheckChallenge,
-                    sshRootService: sshRootService
-                )
             }
         )
     }
