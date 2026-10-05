@@ -156,6 +156,10 @@ jobs:
           xcodegen generate
           git diff --exit-code -- Remux.xcodeproj
 
+      - name: Build UI tests
+        shell: bash
+        run: xcodebuild build-for-testing -project Remux.xcodeproj -scheme RemuxUIOnly -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}"
+
       - name: Wait for simulator
         shell: bash
         run: xcrun simctl bootstatus "${{ steps.simulator.outputs.udid }}" -b
