@@ -17,6 +17,17 @@ final class TmuxSessionDiscoveryTests: XCTestCase {
         XCTAssertFalse(command.contains("touch pwned"))
     }
 
+    func testExecutableProblemReadsTheScriptMarkers() {
+        let notFound = "\(SSHTmuxControlCommandBuilder.tmuxNotFoundMarker): tmux\n"
+        let notExecutable = "\(SSHTmuxControlCommandBuilder.tmuxNotExecutableMarker): /opt/tmux\n"
+
+        XCTAssertEqual(TmuxExecutableProblem(exitStatus: 127, stderr: notFound), .notFound)
+        XCTAssertEqual(TmuxExecutableProblem(exitStatus: 126, stderr: notExecutable), .notExecutable)
+        XCTAssertNil(TmuxExecutableProblem(exitStatus: 127, stderr: "sh: other failure\n"))
+        XCTAssertNil(TmuxExecutableProblem(exitStatus: 126, stderr: notFound))
+        XCTAssertNil(TmuxExecutableProblem(exitStatus: 1, stderr: notFound))
+    }
+
     func testParserPreservesWhitespaceDeduplicatesAndAcceptsCRLF() throws {
         let names = try TmuxSessionDiscovery.parseSessionNames(
             Data("main\r\n  spaced  \nmain\n\nops\r\n".utf8)

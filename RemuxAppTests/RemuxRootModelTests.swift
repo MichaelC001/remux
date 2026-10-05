@@ -1376,6 +1376,32 @@ final class RemuxRootModelTests: XCTestCase {
             harness.model.tmuxSessionDiscoveryState(for: serverID).phase == .failed
         }
         XCTAssertTrue(discoveryFailed)
+        XCTAssertEqual(
+            harness.model.tmuxSessionDiscoveryState(for: serverID).executableProblem,
+            .notFound
+        )
+    }
+
+    func testDiscoveryFailureOtherThanTmuxStaysGeneric() async throws {
+        let pair = makePasswordBackedServer()
+        let discoverer = RecordingTmuxSessionDiscoverer(
+            results: [.failure(SSHAccessVerificationError.commandFailed(status: 1))]
+        )
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
+        await harness.model.load()
+
+        let discoveryFailed = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: pair.server.id).phase == .failed
+        }
+        XCTAssertTrue(discoveryFailed)
+        XCTAssertNil(harness.model.tmuxSessionDiscoveryState(for: pair.server.id).executableProblem)
     }
 
     func testNewServerVerificationFailureKeepsDraftWithoutPersistingProfile() async throws {

@@ -1,3 +1,31 @@
+/// A remote tmux that the launch or discovery script couldn't run.
+enum TmuxExecutableProblem: Equatable, Sendable {
+    case notFound
+    case notExecutable
+
+    /// Reads the scripts' exit status and stderr marker.
+    init?(exitStatus: Int, stderr: String) {
+        if exitStatus == 127,
+           stderr.localizedCaseInsensitiveContains(SSHTmuxControlCommandBuilder.tmuxNotFoundMarker) {
+            self = .notFound
+        } else if exitStatus == 126,
+                  stderr.localizedCaseInsensitiveContains(SSHTmuxControlCommandBuilder.tmuxNotExecutableMarker) {
+            self = .notExecutable
+        } else {
+            return nil
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .notFound:
+            "Install tmux on this server or update Executable Path."
+        case .notExecutable:
+            "Check the tmux executable and its permissions, then try again."
+        }
+    }
+}
+
 enum SSHTmuxControlCommandBuilder {
     static let tmuxNotFoundMarker = "remux: tmux executable not found"
     static let tmuxNotExecutableMarker = "remux: tmux executable cannot be executed"

@@ -117,12 +117,15 @@ struct TmuxSessionDiscoveryState: Equatable {
     static let idle = TmuxSessionDiscoveryState(
         phase: .idle,
         lastSuccessfulSessionNames: nil,
-        hostKeyChallenge: nil
+        hostKeyChallenge: nil,
+        executableProblem: nil
     )
 
     let phase: Phase
     let lastSuccessfulSessionNames: [String]?
     let hostKeyChallenge: SSHHostKeyTrustChallenge?
+    /// Why the last refresh failed, when it was the server's tmux itself.
+    let executableProblem: TmuxExecutableProblem?
 
     var sessionNames: [String] {
         lastSuccessfulSessionNames ?? []
@@ -136,7 +139,8 @@ struct TmuxSessionDiscoveryState: Equatable {
         Self(
             phase: .loading,
             lastSuccessfulSessionNames: lastSuccessfulSessionNames,
-            hostKeyChallenge: nil
+            hostKeyChallenge: nil,
+            executableProblem: nil
         )
     }
 
@@ -144,15 +148,20 @@ struct TmuxSessionDiscoveryState: Equatable {
         Self(
             phase: .loaded,
             lastSuccessfulSessionNames: sessionNames,
-            hostKeyChallenge: nil
+            hostKeyChallenge: nil,
+            executableProblem: nil
         )
     }
 
-    func failingRefresh(hostKeyChallenge: SSHHostKeyTrustChallenge? = nil) -> Self {
+    func failingRefresh(
+        hostKeyChallenge: SSHHostKeyTrustChallenge? = nil,
+        executableProblem: TmuxExecutableProblem? = nil
+    ) -> Self {
         Self(
             phase: .failed,
             lastSuccessfulSessionNames: lastSuccessfulSessionNames,
-            hostKeyChallenge: hostKeyChallenge
+            hostKeyChallenge: hostKeyChallenge,
+            executableProblem: executableProblem
         )
     }
 
@@ -161,7 +170,8 @@ struct TmuxSessionDiscoveryState: Equatable {
         return Self(
             phase: .loaded,
             lastSuccessfulSessionNames: lastSuccessfulSessionNames,
-            hostKeyChallenge: nil
+            hostKeyChallenge: nil,
+            executableProblem: nil
         )
     }
 
@@ -174,7 +184,8 @@ struct TmuxSessionDiscoveryState: Equatable {
         return Self(
             phase: phase,
             lastSuccessfulSessionNames: lastSuccessfulSessionNames,
-            hostKeyChallenge: hostKeyChallenge
+            hostKeyChallenge: hostKeyChallenge,
+            executableProblem: executableProblem
         )
     }
 }
@@ -1959,8 +1970,12 @@ final class RemuxRootModel: ObservableObject {
             guard isCurrentTmuxSessionRefresh(server, refreshID: refreshID) else { return }
             // Discovery is auxiliary to an already-running terminal. Keep its
             // failure inside the sheet rather than replacing the app route.
+            var executableProblem: TmuxExecutableProblem?
+            if case .remoteExit(let status, let stderr) = error as? TmuxSessionDiscoveryError {
+                executableProblem = TmuxExecutableProblem(exitStatus: status, stderr: stderr)
+            }
             tmuxSessionDiscoveryStates[server.id] = tmuxSessionDiscoveryState(for: server.id)
-                .failingRefresh()
+                .failingRefresh(executableProblem: executableProblem)
         }
     }
 
