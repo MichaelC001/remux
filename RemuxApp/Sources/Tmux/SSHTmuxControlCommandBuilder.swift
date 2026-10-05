@@ -13,8 +13,8 @@ enum SSHTmuxControlCommandBuilder {
         // expression so fish and csh do not need to understand POSIX syntax.
         [
             "exec /bin/sh -c '\(launchScript)' remux",
-            octalEncodedArgument(tmuxExecutable),
-            octalEncodedArgument(sessionName),
+            RemoteShellArgument.octalEncoded(tmuxExecutable),
+            RemoteShellArgument.octalEncoded(sessionName),
             "\(initialViewport.columns)",
             "\(initialViewport.rows)",
         ].joined(separator: " ")
@@ -26,7 +26,7 @@ enum SSHTmuxControlCommandBuilder {
         // login shell just as the attach command does.
         [
             "exec /bin/sh -c '\(discoveryScript)' remux",
-            octalEncodedArgument(tmuxExecutable),
+            RemoteShellArgument.octalEncoded(tmuxExecutable),
         ].joined(separator: " ")
     }
 
@@ -56,12 +56,4 @@ enum SSHTmuxControlCommandBuilder {
         #"echo "\#(tmuxNotFoundMarker): $tmux" >&2"#,
         "exit 127",
     ].joined(separator: "; ")
-
-    private static func octalEncodedArgument(_ value: String) -> String {
-        let bytes = value.utf8.map { byte in
-            let digits = String(byte, radix: 8)
-            return "\\0" + String(repeating: "0", count: 3 - digits.count) + digits
-        }
-        return "'\(bytes.joined())'"
-    }
 }
