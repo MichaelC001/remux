@@ -16,6 +16,7 @@ enum DebugConnectionProfileSeederError: LocalizedError, Sendable {
                 validation.privateKey,
                 validation.privateKeyPassphrase,
                 validation.sessionName,
+                validation.tmuxExecutablePath,
             ].compactMap { $0 }
             return "Invalid debug connection seed: \(messages.joined(separator: " "))"
         }
@@ -33,6 +34,7 @@ enum DebugConnectionProfileSeeder {
         static let privateKey = "REMUX_DEBUG_PRIVATE_KEY"
         static let privateKeyPassphrase = "REMUX_DEBUG_PRIVATE_KEY_PASSPHRASE"
         static let sessionName = "REMUX_DEBUG_TMUX_SESSION"
+        static let tmuxExecutablePath = "REMUX_DEBUG_TMUX_EXECUTABLE_PATH"
     }
 
     @discardableResult
@@ -52,7 +54,8 @@ enum DebugConnectionProfileSeeder {
             password: environment[Key.password] ?? "",
             privateKey: environment[Key.privateKey],
             privateKeyPassphrase: environment[Key.privateKeyPassphrase],
-            sessionName: environment[Key.sessionName] ?? "base"
+            sessionName: environment[Key.sessionName] ?? "base",
+            tmuxExecutablePath: environment[Key.tmuxExecutablePath] ?? ""
         )
 
         switch TmuxConnectionDraftValidator.validate(
@@ -118,7 +121,8 @@ private extension TmuxConnectionDraft {
         password: String,
         privateKey: String?,
         privateKeyPassphrase: String?,
-        sessionName: String
+        sessionName: String,
+        tmuxExecutablePath: String
     ) {
         self.init()
         self.displayName = displayName
@@ -136,6 +140,7 @@ private extension TmuxConnectionDraft {
             self.password = password
         }
         self.sessionName = sessionName
+        self.tmuxExecutablePath = tmuxExecutablePath
     }
 }
 #endif

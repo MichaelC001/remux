@@ -13,6 +13,7 @@ final class RemuxAppUITests: XCTestCase {
         var privateKeyPEM: String?
         var privateKeyPassphrase: String?
         var sessionName: String?
+        var tmuxExecutablePath: String?
     }
 
     private struct LiveSSHCleanupHarnessError: Error, CustomStringConvertible {
@@ -962,8 +963,11 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertEqual(control.label, "Control")
         XCTAssertEqual(arrowUp.label, "Up Arrow")
 
+        // The harness checks these markers in the pane's scrollback after the
+        // test, where the typed commands also remain, so each command builds
+        // its marker at run time and its own text can't satisfy the check.
         sendTerminalCommand(
-            "python3 -c 'import os,select,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f); r=select.select([f],[],[],3)[0]; b=os.read(f,1) if r else b\"\"; termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_LONG_PRESS_OK\" if not b else \"REMUX_LONG_PRESS_BAD\")'"
+            "python3 -c 'import os,select,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f); r=select.select([f],[],[],3)[0]; b=os.read(f,1) if r else b\"\"; termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_LONG_PRESS_\" + (\"OK\" if not b else \"BAD\"))'"
         )
         escape.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(forDuration: 1.2)
@@ -976,33 +980,40 @@ final class RemuxAppUITests: XCTestCase {
         recordLiveTmuxPaneCaptureExpectation(
             sessionName: sessionName,
             paneIndex: 1,
-            marker: "REMUX_LONG_PRESS_OK"
+            marker: "REMUX_LONG_PRESS_OK",
+            includingHistory: true
         )
 
         sendTerminalCommand(
-            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_ESCAPE_OK\" if b and b[0]==27 else \"REMUX_ESCAPE_BAD\")'"
+            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_ESCAPE_\" + (\"OK\" if b and b[0]==27 else \"BAD\"))'"
         )
         escape.tap()
         RunLoop.current.run(until: Date().addingTimeInterval(1))
         recordLiveTmuxPaneCaptureExpectation(
             sessionName: sessionName,
             paneIndex: 1,
-            marker: "REMUX_ESCAPE_OK"
+            marker: "REMUX_ESCAPE_OK",
+            includingHistory: true
         )
 
         sendTerminalCommand("sleep 10")
         control.tap()
         waitForLiveTerminalInputReady(timeout: 10)
         app.typeText("c")
-        sendTerminalCommand("echo REMUX_CTRL_MOVED_OK")
+        sendTerminalCommand("echo REMUX_CTRL_MOVED_\"OK\"")
         recordLiveTmuxPaneCaptureExpectation(
             sessionName: sessionName,
             paneIndex: 1,
-            marker: "REMUX_CTRL_MOVED_OK"
+            marker: "REMUX_CTRL_MOVED_OK",
+            includingHistory: true
         )
 
-        sendTerminalCommand("echo REMUX_ARROW_UP_OK")
-        sendTerminalCommand("clear")
+        // The command prints its own run count, so only the arrow-up re-run
+        // prints RUN_2. No `clear` in between: it also erases the scrollback.
+        sendTerminalCommand(
+            "remux_arrow_runs=$((remux_arrow_runs + 1)); echo REMUX_ARROW_UP_RUN_$remux_arrow_runs"
+        )
+        sendTerminalCommand("true")
         arrowUp.tap()
         arrowUp.tap()
         waitForLiveTerminalInputReady(timeout: 10)
@@ -1011,11 +1022,12 @@ final class RemuxAppUITests: XCTestCase {
         recordLiveTmuxPaneCaptureExpectation(
             sessionName: sessionName,
             paneIndex: 1,
-            marker: "REMUX_ARROW_UP_OK"
+            marker: "REMUX_ARROW_UP_RUN_2",
+            includingHistory: true
         )
 
         sendTerminalCommand(
-            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_PLAIN_C_OK\" if b and b[0]==99 else \"REMUX_PLAIN_C_BAD\")'"
+            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_PLAIN_C_\" + (\"OK\" if b and b[0]==99 else \"BAD\"))'"
         )
         control.tap()
         openHomeFromTerminal()
@@ -1037,7 +1049,8 @@ final class RemuxAppUITests: XCTestCase {
         recordLiveTmuxPaneCaptureExpectation(
             sessionName: sessionName,
             paneIndex: 1,
-            marker: "REMUX_PLAIN_C_OK"
+            marker: "REMUX_PLAIN_C_OK",
+            includingHistory: true
         )
     }
 
@@ -1491,7 +1504,7 @@ final class RemuxAppUITests: XCTestCase {
         // scroll case): wheel gestures forward to the app instead of
         // scrolling local scrollback.
         sendTerminalCommand(
-            "seq -f 'REMUX_MOUSE_LINE_%g' 300 > /tmp/remux-scroll.txt; vim --clean -c 'set mouse=a' /tmp/remux-scroll.txt"
+            "seq -f 'REMUX_MOUSE_LINE_%g' 300 > /tmp/remux-scroll.txt; vim --clean -n -c 'set mouse=a' /tmp/remux-scroll.txt"
         )
         hideKeyboardIfPresent()
         guard let before = waitForStableLiveTerminalScreenshot(
@@ -1532,8 +1545,11 @@ final class RemuxAppUITests: XCTestCase {
         openFirstSavedSession()
         waitForLiveTerminalReady(timeout: 90)
 
+        // -n: no swap file. Cleanup kills vim with the session, which leaves
+        // a swap file behind, and on the next run vim would stop at its
+        // E325 recovery prompt instead of showing the file.
         sendTerminalCommand(
-            "seq -f 'REMUX_CATCH_LINE_%g' 300 > /tmp/remux-catch.txt; vim --clean -c 'set mouse=a' -c 'normal G' /tmp/remux-catch.txt"
+            "seq -f 'REMUX_CATCH_LINE_%g' 300 > /tmp/remux-catch.txt; vim --clean -n -c 'set mouse=a' -c 'normal G' /tmp/remux-catch.txt"
         )
         hideKeyboardIfPresent()
         guard waitForStableLiveTerminalScreenshot(
@@ -1770,7 +1786,10 @@ final class RemuxAppUITests: XCTestCase {
 
         // Typing path: every keystroke goes through the composer draft
         // binding. The typed tail also builds the command submitted below.
-        field.tap()
+        // Tapping the field places the caret where the tap lands (a center
+        // tap put it before the transcript), so tap past the transcript's end
+        // to append to it.
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5)).tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 8))
         settleComposerPerfProbe()
         guard let beforeTyping = bodyEvalProbeMetrics(probe) else {
@@ -2149,10 +2168,12 @@ final class RemuxAppUITests: XCTestCase {
 
         let copy = waitForCopyMenuItem(timeout: 5)
         copy.tap()
-        XCTAssertTrue(
-            waitForPasteboard(equalTo: marker, timeout: 5),
+        XCTAssertEqual(
+            pasteIntoEmptyComposer(),
+            marker,
             "Stationary terminal word selection should copy exactly the selected marker."
         )
+        clearAndCloseComposer()
 
         let link = "http://localhost:3000/dashboard"
         UIPasteboard.general.string = "REMUX_LINK_COPY_SENTINEL"
@@ -2172,8 +2193,9 @@ final class RemuxAppUITests: XCTestCase {
         let linkCopy = waitForCopyMenuItem(timeout: 5)
         attach(name: "live-terminal-exact-link-selected")
         linkCopy.tap()
-        XCTAssertTrue(
-            waitForPasteboard(equalTo: link, timeout: 5),
+        XCTAssertEqual(
+            pasteIntoEmptyComposer(),
+            link,
             "Stationary terminal link selection should copy the entire URL exactly."
         )
     }
@@ -2821,17 +2843,22 @@ final class RemuxAppUITests: XCTestCase {
         recordLiveTmuxExpectation(fields: ["window-pane-count", sessionName, "\(windowIndex)", "\(expectedCount)"])
     }
 
+    /// The harness checks the marker after the test ends. By default it must
+    /// still be on screen; `includingHistory` also accepts the pane's
+    /// scrollback, for markers that later output may scroll away.
     private func recordLiveTmuxPaneCaptureExpectation(
         sessionName: String,
         paneIndex: Int,
-        marker: String
+        marker: String,
+        includingHistory: Bool = false
     ) {
         XCTAssertGreaterThan(paneIndex, 0)
         XCTAssertTrue(
             marker.range(of: #"^[A-Za-z0-9._-]+$"#, options: .regularExpression) != nil,
             "Refusing to record unsafe tmux capture marker \(marker)."
         )
-        recordLiveTmuxExpectation(fields: ["pane-index-contains", sessionName, "\(paneIndex)", marker])
+        let kind = includingHistory ? "pane-index-history-contains" : "pane-index-contains"
+        recordLiveTmuxExpectation(fields: [kind, sessionName, "\(paneIndex)", marker])
     }
 
     private func recordLiveTmuxWindowCaptureExpectation(
@@ -3061,6 +3088,9 @@ final class RemuxAppUITests: XCTestCase {
         app.launchEnvironment["REMUX_DEBUG_SERVER_HOST"] = configuration.host
         app.launchEnvironment["REMUX_DEBUG_SERVER_PORT"] = configuration.port ?? "22"
         app.launchEnvironment["REMUX_DEBUG_SERVER_USERNAME"] = configuration.username
+        if let tmuxExecutablePath = configuration.tmuxExecutablePath {
+            app.launchEnvironment["REMUX_DEBUG_TMUX_EXECUTABLE_PATH"] = tmuxExecutablePath
+        }
         if let privateKeyPEM = configuration.privateKeyPEM, !privateKeyPEM.isEmpty {
             app.launchEnvironment["REMUX_DEBUG_PRIVATE_KEY"] = privateKeyPEM
             if let passphrase = configuration.privateKeyPassphrase {
@@ -4305,69 +4335,36 @@ final class RemuxAppUITests: XCTestCase {
         return menuItem
     }
 
-    private func waitForPasteboard(
-        equalTo expected: String,
-        timeout: TimeInterval,
-        pollInterval: TimeInterval = 0.1
-    ) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        repeat {
-            if readPasteboardStringAllowingPermission(timeout: 1) == expected {
-                return true
-            }
-            RunLoop.current.run(until: Date().addingTimeInterval(pollInterval))
-        } while Date() < deadline
-
-        return readPasteboardStringAllowingPermission(timeout: 1) == expected
-    }
-
-    private func readPasteboardStringAllowingPermission(timeout: TimeInterval) -> String? {
-        let group = DispatchGroup()
-        let lock = NSLock()
-        var result: String?
-        group.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            let pasteboardString = UIPasteboard.general.string
-            lock.lock()
-            result = pasteboardString
-            lock.unlock()
-            group.leave()
+    /// Pastes into the empty composer through the app's own Paste action and
+    /// returns the draft. The test runner can't check a copy by reading the
+    /// pasteboard: iOS denies its read of an item Remux wrote (PBErrorDomain
+    /// 13) without offering an Allow Paste prompt.
+    private func pasteIntoEmptyComposer(timeout: TimeInterval = 5) -> String? {
+        let field = app.textViews["terminal.composer.field"]
+        if !field.exists {
+            let composerToggle = app.buttons["terminal.composer.toggle"]
+            XCTAssertTrue(composerToggle.waitForExistence(timeout: 10))
+            composerToggle.tap()
         }
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 8))
+        field.press(forDuration: 0.8)
+        waitForSelectionMenuItem("Paste", timeout: timeout).tap()
 
         let deadline = Date().addingTimeInterval(timeout)
-        while group.wait(timeout: .now()) == .timedOut, Date() < deadline {
-            allowPastePermissionIfPresent(timeout: 0.05)
-            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        while Date() < deadline, ((field.value as? String) ?? "").isEmpty {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         }
-        allowPastePermissionIfPresent(timeout: 0.05)
-
-        guard group.wait(timeout: .now()) == .success else {
-            return nil
-        }
-
-        lock.lock()
-        defer { lock.unlock() }
-        return result
+        return field.value as? String
     }
 
-    private func allowPastePermissionIfPresent(timeout: TimeInterval) {
-        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let candidates = [
-            app.buttons["Allow Paste"].firstMatch,
-            springboard.buttons["Allow Paste"].firstMatch,
-        ]
-
-        for candidate in candidates where candidate.exists {
-            candidate.tap()
-            return
+    private func clearAndCloseComposer() {
+        let field = app.textViews["terminal.composer.field"]
+        if let draft = field.value as? String, !draft.isEmpty {
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: draft.count))
         }
-
-        if timeout > 0 {
-            for candidate in candidates where candidate.waitForExistence(timeout: timeout) {
-                candidate.tap()
-                return
-            }
-        }
+        app.buttons["terminal.composer.toggle"].tap()
     }
 
     private func backgroundAndReactivateApp(backgroundDuration: TimeInterval) {

@@ -11,8 +11,16 @@ Runs selected Remux live SSH UI tests using /tmp/remux-live-ssh.json and
 remotely removes only the exact allowlisted remux-latency-* tmux sessions that
 the UI tests record in their cleanup manifest.
 
+The tests are built once, then each selected test runs in its own xcodebuild
+invocation with its own tmux fixture, expectation check and cleanup, so no
+test inherits another test's tmux session, windows, panes or running programs.
+
 This script reads live SSH details from /tmp/remux-live-ssh.json but does not
 store credentials in the repository or print secrets.
+
+An optional "tmuxExecutablePath" in the config is used by both the app and the
+fixture/cleanup commands, e.g. a wrapper that runs `tmux -L <socket> "$@"` so
+live tests never share a tmux server with real sessions.
 USAGE
 }
 
@@ -171,6 +179,12 @@ private_key="$(json_string privateKeyPEM optional)"
 private_key_passphrase="$(json_string privateKeyPassphrase optional)"
 port="$(json_string port optional)"
 port="${port:-22}"
+tmux_executable="$(json_string tmuxExecutablePath optional)"
+if [[ -n "$tmux_executable" && ! "$tmux_executable" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+  printf 'tmuxExecutablePath in %s must be an absolute path of [A-Za-z0-9._/-] characters.\n' "$config" >&2
+  exit 2
+fi
+remote_tmux_env="REMUX_LIVE_TMUX=$tmux_executable"
 
 known_host_lookup="$host"
 if [[ "$port" != "22" ]]; then
@@ -206,8 +220,7 @@ private_key_file="$work_dir/live_ssh_key"
 log_dir=".local/logs"
 mkdir -p "$log_dir"
 stamp="$(date +%Y%m%d-%H%M%S)-$$"
-log="$log_dir/live-ui-cleanup-${stamp}.log"
-result_bundle="$log_dir/live-ui-cleanup-${stamp}.xcresult"
+build_log="$log_dir/live-ui-cleanup-${stamp}-build.log"
 cleanup_done=0
 
 cleanup_local_files() {
@@ -258,49 +271,33 @@ rm -f "$harness_file"
 rm -f "$fixture_name_file"
 rm -f "$fixture_session_file"
 rm -f "$expected_host_key_file"
-printf 'pid=%s\nstartedAt=%s\n' "$$" "$(date +%s)" >"$harness_file"
-for name in \
-  REMUX_LIVE_AGENT_TUI_SESSION \
-  REMUX_PROFILE_PANE_SWITCH_COUNT \
-  REMUX_TRACE_FLOWS \
-  REMUX_TRACE_TMUX_VIEWPORT \
-  REMUX_TRACE_LATENCY \
-  REMUX_TRACE_PERF \
-  GHOSTTY_TRACE_SURFACE_INIT \
-  GHOSTTY_TRACE_FRAME_COMPLETION
-do
-  if declare -p "$name" >/dev/null 2>&1; then
-    printf '%s=%s\n' "$name" "${!name}" >>"$harness_file"
-  fi
-done
+
+# The UI tests treat a marker older than 30 minutes as stale, so it is
+# rewritten before each test rather than once for the whole run.
+write_harness_marker() {
+  printf 'pid=%s\nstartedAt=%s\n' "$$" "$(date +%s)" >"$harness_file"
+  for name in \
+    REMUX_LIVE_AGENT_TUI_SESSION \
+    REMUX_PROFILE_PANE_SWITCH_COUNT \
+    REMUX_TRACE_FLOWS \
+    REMUX_TRACE_TMUX_VIEWPORT \
+    REMUX_TRACE_LATENCY \
+    REMUX_TRACE_PERF \
+    GHOSTTY_TRACE_SURFACE_INIT \
+    GHOSTTY_TRACE_FRAME_COMPLETION
+  do
+    if declare -p "$name" >/dev/null 2>&1; then
+      printf '%s=%s\n' "$name" "${!name}" >>"$harness_file"
+    fi
+  done
+}
+
+write_harness_marker
 printf '%s\n' "$expected_host_key" >"$expected_host_key_file"
 trap finish_before_remote_cleanup EXIT
 
 fixture_name=""
 fixture_session=""
-for target in "${only_testing[@]}"; do
-  case "$target" in
-    *testLiveSSHTmuxActionCycleWhenConfigured)
-      fixture_session="remux-latency-action-${stamp}"
-      ;;
-    *testLiveWindowNamesAndRenameWhenConfigured)
-      fixture_session="remux-latency-window-names-${stamp}"
-      ;;
-    *testLiveDenseMixedTopologySelectsDeepPaneWhenConfigured)
-      fixture_name="dense-mixed"
-      fixture_session="remux-latency-dense-mixed-${stamp}"
-      ;;
-    *testLiveTerminalRelativeFilePreviewWhenConfigured)
-      fixture_name="relative-file-preview"
-      fixture_session="remux-latency-pv-${stamp}"
-      ;;
-  esac
-done
-
-if [[ -n "$fixture_session" ]]; then
-  printf '%s\n' "$fixture_session" >>"$manifest"
-  printf '%s\n' "$fixture_session" >"$fixture_session_file"
-fi
 
 prepare_dense_mixed_fixture() {
   local session="$1"
@@ -322,10 +319,10 @@ prepare_dense_mixed_fixture() {
       -o ConnectTimeout=10 \
       "${ssh_auth_args[@]}" \
       "$username@$host" \
-      sh -s -- "$session" <<'REMOTE'
+      "$remote_tmux_env" sh -s -- "$session" <<'REMOTE'
 set -eu
 session="$1"
-tmux_bin="$(command -v tmux 2>/dev/null || true)"
+tmux_bin="${REMUX_LIVE_TMUX:-$(command -v tmux 2>/dev/null || true)}"
 if [ -z "$tmux_bin" ] && [ -x /opt/homebrew/bin/tmux ]; then
   tmux_bin=/opt/homebrew/bin/tmux
 fi
@@ -384,7 +381,7 @@ prepare_relative_file_preview_fixture() {
       -o ConnectTimeout=10 \
       "${ssh_auth_args[@]}" \
       "$username@$host" \
-      sh -s -- "$session" <<'REMOTE'
+      "$remote_tmux_env" sh -s -- "$session" <<'REMOTE'
 set -eu
 session="$1"
 fixture_suffix="${session#remux-latency-pv-}"
@@ -394,7 +391,7 @@ html_path="$fixture_dir/index.html"
 css_path="$fixture_dir/preview.css"
 image_path="$fixture_dir/preview.svg"
 script_path="$fixture_dir/preview.js"
-tmux_bin="$(command -v tmux 2>/dev/null || true)"
+tmux_bin="${REMUX_LIVE_TMUX:-$(command -v tmux 2>/dev/null || true)}"
 if [ -z "$tmux_bin" ] && [ -x /opt/homebrew/bin/tmux ]; then
   tmux_bin=/opt/homebrew/bin/tmux
 fi
@@ -484,15 +481,6 @@ PREVIEW_SVG
 REMOTE
 }
 
-if [[ "$fixture_name" == "dense-mixed" ]]; then
-  prepare_dense_mixed_fixture "$fixture_session"
-  printf '%s\n' "$fixture_name" >"$fixture_name_file"
-fi
-if [[ "$fixture_name" == "relative-file-preview" ]]; then
-  prepare_relative_file_preview_fixture "$fixture_session"
-  printf '%s\n' "$fixture_name" >"$fixture_name_file"
-fi
-
 cleanup_generated_sessions() {
   local status=0
 
@@ -509,7 +497,7 @@ cleanup_generated_sessions() {
     [[ -n "$session" ]] || continue
     printf 'Cleaning generated tmux session: %s\n' "$session"
     local remote_command
-    remote_command="session=$session; tmux_bin=\$(command -v tmux 2>/dev/null || true); if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; \"\$tmux_bin\" kill-session -t \"\$session\" 2>/dev/null || true"
+    remote_command="$remote_tmux_env; session=$session; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; \"\$tmux_bin\" kill-session -t \"\$session\" 2>/dev/null || true"
     if [[ "$fixture_name" == "relative-file-preview" && "$session" == "$fixture_session" ]]; then
       remote_command+="; fixture_suffix=\${session#remux-latency-pv-}; fixture_dir=/tmp/rpv-\$fixture_suffix; if [ -f \"\$fixture_dir/server.pid\" ]; then kill \"\$(cat \"\$fixture_dir/server.pid\")\" 2>/dev/null || true; fi; rm -f -- \"\$fixture_dir/README.md\" \"\$fixture_dir/index.html\" \"\$fixture_dir/preview.css\" \"\$fixture_dir/preview.svg\" \"\$fixture_dir/preview.js\" \"\$fixture_dir/server.pid\"; rmdir -- \"\$fixture_dir\" 2>/dev/null || true"
     fi
@@ -570,7 +558,7 @@ verify_tmux_expectations() {
         fi
 
         local remote_command
-        remote_command="session=$session; tmux_bin=\$(command -v tmux 2>/dev/null || true); if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; \"\$tmux_bin\" list-windows -t \"\$session\" -F '#{window_id}' 2>/dev/null | wc -l | tr -d ' '"
+        remote_command="$remote_tmux_env; session=$session; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; \"\$tmux_bin\" list-windows -t \"\$session\" -F '#{window_id}' 2>/dev/null | wc -l | tr -d ' '"
 
         local actual
         if ! actual="$(REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
@@ -611,7 +599,7 @@ verify_tmux_expectations() {
         fi
 
         local remote_command
-        remote_command="session=$session; tmux_bin=\$(command -v tmux 2>/dev/null || true); if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; window_id=\$(\"\$tmux_bin\" list-windows -t \"\$session\" -F '#{window_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$window_id\" ]; then echo 'expected window index not found' >&2; exit 1; fi; \"\$tmux_bin\" list-panes -t \"\$window_id\" -F '#{pane_id}' 2>/dev/null | wc -l | tr -d ' '"
+        remote_command="$remote_tmux_env; session=$session; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; window_id=\$(\"\$tmux_bin\" list-windows -t \"\$session\" -F '#{window_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$window_id\" ]; then echo 'expected window index not found' >&2; exit 1; fi; \"\$tmux_bin\" list-panes -t \"\$window_id\" -F '#{pane_id}' 2>/dev/null | wc -l | tr -d ' '"
 
         local actual
         if ! actual="$(REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
@@ -652,7 +640,7 @@ verify_tmux_expectations() {
         fi
 
         local remote_command
-        remote_command="session=$session; tmux_bin=\$(command -v tmux 2>/dev/null || true); if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; count=0; for window_id in \$(\"\$tmux_bin\" list-windows -t \"\$session\" -F '#{window_id}' 2>/dev/null); do window_count=\$(\"\$tmux_bin\" list-panes -t \"\$window_id\" -F '#{pane_id}' 2>/dev/null | wc -l | tr -d ' '); count=\$((count + window_count)); done; printf '%s\n' \"\$count\""
+        remote_command="$remote_tmux_env; session=$session; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; count=0; for window_id in \$(\"\$tmux_bin\" list-windows -t \"\$session\" -F '#{window_id}' 2>/dev/null); do window_count=\$(\"\$tmux_bin\" list-panes -t \"\$window_id\" -F '#{pane_id}' 2>/dev/null | wc -l | tr -d ' '); count=\$((count + window_count)); done; printf '%s\n' \"\$count\""
 
         local actual
         if ! actual="$(REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
@@ -693,7 +681,7 @@ verify_tmux_expectations() {
         fi
 
         local remote_command
-        remote_command="session=$session; tmux_bin=\$(command -v tmux 2>/dev/null || true); if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; pane_id=\$(\"\$tmux_bin\" list-panes -t \"\$session\" -F '#{pane_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$pane_id\" ]; then echo 'expected pane index not found' >&2; exit 1; fi; \"\$tmux_bin\" display-message -p -t \"\$pane_id\" '#{pane_in_mode}' 2>/dev/null"
+        remote_command="$remote_tmux_env; session=$session; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; pane_id=\$(\"\$tmux_bin\" list-panes -t \"\$session\" -F '#{pane_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$pane_id\" ]; then echo 'expected pane index not found' >&2; exit 1; fi; \"\$tmux_bin\" display-message -p -t \"\$pane_id\" '#{pane_in_mode}' 2>/dev/null"
 
         local actual
         if ! actual="$(REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
@@ -720,7 +708,7 @@ verify_tmux_expectations() {
           printf 'Verified tmux pane-mode expectation for %s pane %s: %s\n' "$session" "$arg1" "$arg2"
         fi
         ;;
-      pane-index-contains)
+      pane-index-contains|pane-index-history-contains)
         if [[ ! "$arg1" =~ ^[0-9]+$ || "$arg1" -eq 0 ]]; then
           printf 'invalid pane index for %s: %s\n' "$session" "$arg1" >&2
           status=1
@@ -733,8 +721,15 @@ verify_tmux_expectations() {
           continue
         fi
 
+        # pane-index-contains checks the screen as the test left it;
+        # pane-index-history-contains also searches the pane's scrollback.
+        local capture_range=""
+        if [[ "$kind" == "pane-index-history-contains" ]]; then
+          capture_range="-S - "
+        fi
+
         local capture_command
-        capture_command="session=$session; marker=$arg2; tmux_bin=\$(command -v tmux 2>/dev/null || true); if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; pane_id=\$(\"\$tmux_bin\" list-panes -t \"\$session\" -F '#{pane_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$pane_id\" ]; then echo 'expected pane index not found' >&2; exit 1; fi; \"\$tmux_bin\" capture-pane -p -e -t \"\$pane_id\" 2>/dev/null | grep -F -- \"\$marker\" >/dev/null"
+        capture_command="$remote_tmux_env; session=$session; marker=$arg2; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; pane_id=\$(\"\$tmux_bin\" list-panes -t \"\$session\" -F '#{pane_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$pane_id\" ]; then echo 'expected pane index not found' >&2; exit 1; fi; \"\$tmux_bin\" capture-pane -p -e ${capture_range}-t \"\$pane_id\" 2>/dev/null | grep -F -- \"\$marker\" >/dev/null"
 
         if ! REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
           SSH_ASKPASS="$askpass" \
@@ -748,10 +743,10 @@ verify_tmux_expectations() {
             "${ssh_auth_args[@]}" \
             "$username@$host" \
             "$capture_command" </dev/null; then
-          printf 'tmux pane-index-contains expectation failed for %s pane %s marker %s\n' "$session" "$arg1" "$arg2" >&2
+          printf 'tmux %s expectation failed for %s pane %s marker %s\n' "$kind" "$session" "$arg1" "$arg2" >&2
           status=1
         else
-          printf 'Verified tmux pane-index-contains expectation for %s pane %s marker %s\n' "$session" "$arg1" "$arg2"
+          printf 'Verified tmux %s expectation for %s pane %s marker %s\n' "$kind" "$session" "$arg1" "$arg2"
         fi
         ;;
       window-index-contains)
@@ -768,7 +763,7 @@ verify_tmux_expectations() {
         fi
 
         local capture_command
-        capture_command="session=$session; marker=$arg2; tmux_bin=\$(command -v tmux 2>/dev/null || true); if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; window_id=\$(\"\$tmux_bin\" list-windows -t \"\$session\" -F '#{window_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$window_id\" ]; then echo 'expected window index not found' >&2; exit 1; fi; pane_id=\$(\"\$tmux_bin\" display-message -p -t \"\$window_id\" '#{pane_id}' 2>/dev/null); if [ -z \"\$pane_id\" ]; then echo 'expected window active pane not found' >&2; exit 1; fi; \"\$tmux_bin\" capture-pane -p -e -t \"\$pane_id\" 2>/dev/null | grep -F -- \"\$marker\" >/dev/null"
+        capture_command="$remote_tmux_env; session=$session; marker=$arg2; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; window_id=\$(\"\$tmux_bin\" list-windows -t \"\$session\" -F '#{window_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$window_id\" ]; then echo 'expected window index not found' >&2; exit 1; fi; pane_id=\$(\"\$tmux_bin\" display-message -p -t \"\$window_id\" '#{pane_id}' 2>/dev/null); if [ -z \"\$pane_id\" ]; then echo 'expected window active pane not found' >&2; exit 1; fi; \"\$tmux_bin\" capture-pane -p -e -t \"\$pane_id\" 2>/dev/null | grep -F -- \"\$marker\" >/dev/null"
 
         if ! REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
           SSH_ASKPASS="$askpass" \
@@ -820,14 +815,14 @@ verify_tmux_expectations() {
             -o ConnectTimeout=10 \
             "${ssh_auth_args[@]}" \
             "$username@$host" \
-            sh -s -- "$session" "$window_index" "$pane_index" "$arg2" <<'REMOTE_EXPECTATION'
+            "$remote_tmux_env" sh -s -- "$session" "$window_index" "$pane_index" "$arg2" <<'REMOTE_EXPECTATION'
 set -eu
 session="$1"
 window_index="$2"
 pane_index="$3"
 marker="$4"
 
-tmux_bin="$(command -v tmux 2>/dev/null || true)"
+tmux_bin="${REMUX_LIVE_TMUX:-$(command -v tmux 2>/dev/null || true)}"
 if [ -z "$tmux_bin" ] && [ -x /opt/homebrew/bin/tmux ]; then
   tmux_bin=/opt/homebrew/bin/tmux
 fi
@@ -893,27 +888,22 @@ finish() {
 }
 trap finish EXIT
 
-declare -a xcode_args=(
-  test
+declare -a common_args=(
   -project Remux.xcodeproj
   -scheme RemuxUIOnly
   -configuration "$configuration"
   -destination "$destination"
-  -resultBundlePath "$result_bundle"
 )
-
-for target in "${only_testing[@]}"; do
-  xcode_args+=("-only-testing:$target")
-done
-
 if [[ -n "$derived_data_path" ]]; then
-  xcode_args+=(-derivedDataPath "$derived_data_path")
+  common_args+=(-derivedDataPath "$derived_data_path")
 fi
+
+declare -a build_args=(build-for-testing "${common_args[@]}")
 if [[ "$configuration" == "Release" ]]; then
-  xcode_args+=('SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) REMUX_LIVE_UI_TESTING')
+  build_args+=('SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) REMUX_LIVE_UI_TESTING')
 fi
 if [[ -n "$development_team" ]]; then
-  xcode_args+=(
+  build_args+=(
     "DEVELOPMENT_TEAM=$development_team"
     CODE_SIGN_STYLE=Automatic
     -allowProvisioningUpdates
@@ -921,43 +911,114 @@ if [[ -n "$development_team" ]]; then
 fi
 
 set +e
-REMUX_TRACE_LATENCY="${REMUX_TRACE_LATENCY:-1}" \
-REMUX_TRACE_PERF="${REMUX_TRACE_PERF:-1}" \
-GHOSTTY_TRACE_SURFACE_INIT="${GHOSTTY_TRACE_SURFACE_INIT:-1}" \
-REMUX_LIVE_GENERATED_SESSION_MANIFEST="$manifest" \
-REMUX_LIVE_TMUX_EXPECTATION_MANIFEST="$expectations" \
-REMUX_LIVE_PREPARED_FIXTURE="$fixture_name" \
-REMUX_LIVE_SESSION_NAME_OVERRIDE="$fixture_session" \
-REMUX_LIVE_EXPECTED_HOST_KEY="$expected_host_key" \
-REMUX_LIVE_SSH_CONFIGURATION_BASE64="$live_ssh_configuration_base64" \
-xcodebuild "${xcode_args[@]}" 2>&1 | tee "$log"
-xcode_status=$?
+xcodebuild "${build_args[@]}" 2>&1 | tee "$build_log"
+build_status=$?
 set -e
-
-verify_status=0
-if [[ "$xcode_status" -eq 0 ]]; then
-  if [[ -n "$fixture_name" && ! -s "$expectations" ]]; then
-    printf 'prepared fixture test recorded no tmux expectations; treating as failed instead of passed/skipped.\n' >&2
-    verify_status=1
-  else
-    verify_tmux_expectations
-    verify_status=$?
-  fi
+if [[ "$build_status" -ne 0 ]]; then
+  printf 'live UI test build log: %s\n' "$build_log"
+  exit "$build_status"
 fi
 
-cleanup_generated_sessions
-cleanup_status=$?
-cleanup_done=1
+# Each test gets its own fixture, session override, cleanup manifest and tmux
+# expectations, and its expectations are verified before the next test can
+# change the server.
+overall_status=0
+declare -a results=()
+index=0
+for target in "${only_testing[@]}"; do
+  index=$((index + 1))
+  test_stamp="${stamp}-${index}"
+  log="$log_dir/live-ui-cleanup-${test_stamp}.log"
+  result_bundle="$log_dir/live-ui-cleanup-${test_stamp}.xcresult"
+
+  write_harness_marker
+  rm -f "$manifest"
+  rm -f "$expectations"
+  rm -f "$fixture_name_file"
+  rm -f "$fixture_session_file"
+  fixture_name=""
+  fixture_session=""
+  case "$target" in
+    *testLiveSSHTmuxActionCycleWhenConfigured)
+      fixture_session="remux-latency-action-${test_stamp}"
+      ;;
+    *testLiveWindowNamesAndRenameWhenConfigured)
+      fixture_session="remux-latency-window-names-${test_stamp}"
+      ;;
+    *testLiveDenseMixedTopologySelectsDeepPaneWhenConfigured)
+      fixture_name="dense-mixed"
+      fixture_session="remux-latency-dense-mixed-${test_stamp}"
+      ;;
+    *testLiveTerminalRelativeFilePreviewWhenConfigured)
+      fixture_name="relative-file-preview"
+      fixture_session="remux-latency-pv-${test_stamp}"
+      ;;
+  esac
+
+  cleanup_done=0
+  if [[ -n "$fixture_session" ]]; then
+    printf '%s\n' "$fixture_session" >>"$manifest"
+    printf '%s\n' "$fixture_session" >"$fixture_session_file"
+  fi
+  if [[ "$fixture_name" == "dense-mixed" ]]; then
+    prepare_dense_mixed_fixture "$fixture_session"
+    printf '%s\n' "$fixture_name" >"$fixture_name_file"
+  fi
+  if [[ "$fixture_name" == "relative-file-preview" ]]; then
+    prepare_relative_file_preview_fixture "$fixture_session"
+    printf '%s\n' "$fixture_name" >"$fixture_name_file"
+  fi
+
+  set +e
+  REMUX_TRACE_LATENCY="${REMUX_TRACE_LATENCY:-1}" \
+  REMUX_TRACE_PERF="${REMUX_TRACE_PERF:-1}" \
+  GHOSTTY_TRACE_SURFACE_INIT="${GHOSTTY_TRACE_SURFACE_INIT:-1}" \
+  REMUX_LIVE_GENERATED_SESSION_MANIFEST="$manifest" \
+  REMUX_LIVE_TMUX_EXPECTATION_MANIFEST="$expectations" \
+  REMUX_LIVE_PREPARED_FIXTURE="$fixture_name" \
+  REMUX_LIVE_SESSION_NAME_OVERRIDE="$fixture_session" \
+  REMUX_LIVE_EXPECTED_HOST_KEY="$expected_host_key" \
+  REMUX_LIVE_SSH_CONFIGURATION_BASE64="$live_ssh_configuration_base64" \
+  xcodebuild test-without-building "${common_args[@]}" \
+    "-only-testing:$target" \
+    -resultBundlePath "$result_bundle" 2>&1 | tee "$log"
+  xcode_status=$?
+  set -e
+
+  verify_status=0
+  if [[ "$xcode_status" -eq 0 ]]; then
+    if [[ -n "$fixture_name" && ! -s "$expectations" ]]; then
+      printf 'prepared fixture test recorded no tmux expectations; treating as failed instead of passed/skipped.\n' >&2
+      verify_status=1
+    else
+      verify_tmux_expectations || verify_status=$?
+    fi
+  fi
+
+  cleanup_status=0
+  cleanup_generated_sessions || cleanup_status=$?
+  cleanup_done=1
+
+  test_status="$xcode_status"
+  if [[ "$test_status" -eq 0 ]]; then
+    test_status="$verify_status"
+  fi
+  if [[ "$test_status" -eq 0 ]]; then
+    test_status="$cleanup_status"
+  fi
+  if [[ "$test_status" -eq 0 ]]; then
+    results+=("passed $target ($log)")
+  else
+    results+=("failed ($test_status) $target ($log)")
+    if [[ "$overall_status" -eq 0 ]]; then
+      overall_status="$test_status"
+    fi
+  fi
+done
+
 trap - EXIT
 cleanup_local_files
 
-printf 'live UI test log: %s\n' "$log"
-printf 'live UI test result bundle: %s\n' "$result_bundle"
-
-if [[ "$xcode_status" -ne 0 ]]; then
-  exit "$xcode_status"
-fi
-if [[ "$verify_status" -ne 0 ]]; then
-  exit "$verify_status"
-fi
-exit "$cleanup_status"
+printf 'live UI test build log: %s\n' "$build_log"
+printf 'live UI test result: %s\n' "${results[@]}"
+exit "$overall_status"
