@@ -39,8 +39,16 @@ func ghosttyDiagnosticSurfaceSize(_ size: ghostty_surface_size_s) -> String {
     "\(size.columns)x\(size.rows) cells \(size.width_px)x\(size.height_px)px cell=\(size.cell_width_px)x\(size.cell_height_px)"
 }
 
-/// Stable screen-facing projection of one concrete tmux pane surface.
-/// The pane surface owns native lifetime and display updates; this type contains
+/// Pane input the composer awaits before sending what follows. The result
+/// says whether the backend delivered the input.
+@MainActor
+protocol TerminalPaneInputSink: AnyObject {
+    func sendPasteAwaitingCommandCompletion(_ text: String) async -> Bool
+    func sendKeyEventAwaitingCommandCompletion(_ event: GhosttySurfaceKeyEvent) async -> Bool
+}
+
+/// Stable screen-facing projection of one pane renderer.
+/// The renderer owns native lifetime and display updates; this type contains
 /// only UIKit presentation state and direct terminal interaction forwarding.
 @MainActor
 final class GhosttyManagedSurface {
@@ -48,7 +56,7 @@ final class GhosttyManagedSurface {
     let view: GhosttyKitSurfaceView
     private(set) var controlSurface: GhosttyKitControlSurface
 
-    private weak var paneOwner: TmuxPaneSurface?
+    private weak var inputSink: (any TerminalPaneInputSink)?
     private(set) var isFocused = false
     private(set) var isVisible = false
     private(set) var rendererIsAvailable = true
@@ -63,13 +71,13 @@ final class GhosttyManagedSurface {
         id: UUID,
         view: GhosttyKitSurfaceView,
         controlSurface: GhosttyKitControlSurface,
-        paneOwner: TmuxPaneSurface,
+        inputSink: any TerminalPaneInputSink,
         interactionState: GhosttySurfaceInteractionState
     ) {
         self.id = id
         self.view = view
         self.controlSurface = controlSurface
-        self.paneOwner = paneOwner
+        self.inputSink = inputSink
         scrollState = interactionState.scrollState
         scrollRoute = interactionState.scrollRoute
     }
@@ -95,8 +103,8 @@ final class GhosttyManagedSurface {
     }
 
     func sendPasteAwaitingCommandCompletion(_ text: String) async -> Bool {
-        guard !text.isEmpty, rendererIsAvailable, let paneOwner else { return false }
-        return await paneOwner.sendPasteAwaitingCommandCompletion(text)
+        guard !text.isEmpty, rendererIsAvailable, let inputSink else { return false }
+        return await inputSink.sendPasteAwaitingCommandCompletion(text)
     }
 
     @discardableResult
@@ -110,8 +118,8 @@ final class GhosttyManagedSurface {
     func sendKeyEventAwaitingCommandCompletion(
         _ event: GhosttySurfaceKeyEvent
     ) async -> Bool {
-        guard rendererIsAvailable, let paneOwner else { return false }
-        let delivered = await paneOwner.sendKeyEventAwaitingCommandCompletion(event)
+        guard rendererIsAvailable, let inputSink else { return false }
+        let delivered = await inputSink.sendKeyEventAwaitingCommandCompletion(event)
         if delivered {
             onLocalSelectionGeometryChange?()
         }

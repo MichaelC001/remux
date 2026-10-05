@@ -425,7 +425,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     ) -> GhosttyManagedSurface {
         let paneID = paneSurface.paneID
         let surfaceID = identities.surfaceID(for: paneID)
-        let wasAlreadyWrapped = paneSurface.managedSurface != nil
+        let wasAlreadyWrapped = paneSurface.renderer.managedSurface != nil
         let managed = paneSurface.screenSurface(id: surfaceID)
         if !wasAlreadyWrapped {
             GhosttyRuntimeTrace.flowEventIfActive(
@@ -433,7 +433,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
                 event: "presentation.managedSurface.ready",
                 fields: [
                     "pane": "\(paneID)",
-                    "surface": String(describing: paneSurface.rawSurface),
+                    "surface": String(describing: paneSurface.renderer.rawSurface),
                     "surface_uuid": managed.id.uuidString,
                 ]
             )

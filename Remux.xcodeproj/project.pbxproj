@@ -187,6 +187,7 @@
 		E312086F6A463AC00BC93C8E /* GhosttyKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0CB12DC1EC78CE1C1286BA4E /* GhosttyKit.xcframework */; };
 		E346403238D71C27A9124999 /* GhosttyAttachmentStagingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AFA16C96FE00BC33898C788 /* GhosttyAttachmentStagingStore.swift */; };
 		E35A4C6758E1D06E01EE5826 /* ConnectionProfileRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48AC2CE228C16D7E9DCD09BE /* ConnectionProfileRepository.swift */; };
+		E4567A58B784F0F52B31505F /* TmuxPaneSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78CD307268384537F5CF1219 /* TmuxPaneSurface.swift */; };
 		E5127955E3EE44561EEFFB58 /* GhosttyTerminalViewportCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74B1BE024B39B56C24D7F7A2 /* GhosttyTerminalViewportCoordinatorTests.swift */; };
 		E6AB349F8A2D7ED9336D8052 /* GhosttyKeyboardCursorTrackpadHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = 233453E510348B0E5F5B8C2C /* GhosttyKeyboardCursorTrackpadHUD.swift */; };
 		E7197DF29F93624F83D17240 /* SSHPublicKeyInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23798EF07D4A939CF330686D /* SSHPublicKeyInstaller.swift */; };
@@ -337,6 +338,7 @@
 		74B1BE024B39B56C24D7F7A2 /* GhosttyTerminalViewportCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyTerminalViewportCoordinatorTests.swift; sourceTree = "<group>"; };
 		76659C49175055C3E15DB226 /* RemuxActiveSessionRuntimeReducer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemuxActiveSessionRuntimeReducer.swift; sourceTree = "<group>"; };
 		771B767054F02C52F17EB92B /* StarterShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StarterShortcuts.swift; sourceTree = "<group>"; };
+		78CD307268384537F5CF1219 /* TmuxPaneSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxPaneSurface.swift; sourceTree = "<group>"; };
 		7C826602D9C963622FB26A40 /* TerminalThemePreviewRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalThemePreviewRenderer.swift; sourceTree = "<group>"; };
 		810D178FA878A5BEA4265D7E /* RemuxSSHExecSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemuxSSHExecSession.swift; sourceTree = "<group>"; };
 		8151E185EE3CC5784181D01E /* GhosttyAttachmentTransfer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyAttachmentTransfer.swift; sourceTree = "<group>"; };
@@ -482,6 +484,7 @@
 				00BF7405360DC035455D7ACE /* TmuxControlTransport.swift */,
 				D5C1984ED86A7C5154746E37 /* TmuxControlViewport.swift */,
 				12398BF9373F42BEB01C099E /* TmuxIdentity.swift */,
+				78CD307268384537F5CF1219 /* TmuxPaneSurface.swift */,
 				6B19046A43739DE9328A3612 /* TmuxScreenModel.swift */,
 				E6264B24DDF73BB7A9ACA1D7 /* TmuxSessionController.swift */,
 				575EDAA61B2B7A0B241A5E4D /* TmuxSessionLink.swift */,
@@ -1058,6 +1061,7 @@
 				4809C175892171E7B13557EF /* TmuxControlTransport.swift in Sources */,
 				59082855C99ADBA1145126DB /* TmuxControlViewport.swift in Sources */,
 				4910DDB4F6A8C62A9EFA0B1C /* TmuxIdentity.swift in Sources */,
+				E4567A58B784F0F52B31505F /* TmuxPaneSurface.swift in Sources */,
 				8B1B766701C8B598CD3A5480 /* TmuxScreenModel.swift in Sources */,
 				2CC93B0F7B15C422B91559A6 /* TmuxSessionController.swift in Sources */,
 				1E964EDC5E093FBBBDE6E8D0 /* TmuxSessionDiscovery.swift in Sources */,

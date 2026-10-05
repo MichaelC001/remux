@@ -83,7 +83,7 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
 
     func testCreationFailureKeepsHandoffOwnedUntilReportedAndDoesNotRetryOnTopology() async throws {
         let runtime = try GhosttyKitRuntime()
-        var complete: (@MainActor (Result<TmuxPaneSurface, TmuxPaneSurface.CreateError>) -> Void)?
+        var complete: (@MainActor (Result<TmuxPaneSurface, TerminalPaneRenderer.CreateError>) -> Void)?
         weak var handedOff: TmuxSessionController.RetainedPaneTerminal?
         var creations = 0
         let session = TmuxTerminalSession(
@@ -125,7 +125,7 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         session.handleTopology(try XCTUnwrap(session.topology))
         XCTAssertEqual(creations, 1)
         XCTAssertNotNil(handedOff, "reconciliation during creation must not consume pending ownership")
-        complete?(.failure(.registrationFailed(.paneUnknown)))
+        complete?(.failure(.registrationFailed(TmuxSessionController.SurfaceRegistrationError.paneUnknown)))
         complete = nil
         XCTAssertNil(handedOff, "reported terminal failure releases the pending ownership")
         guard case .failed = session.presentation(for: 0) else {
@@ -167,37 +167,37 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         for _ in 0..<3 { await drain(session.controller) }
         let surface = try XCTUnwrap(session.surfacesByPaneID[0])
         let managed = surface.screenSurface(id: UUID())
-        XCTAssertEqual(surface.presentation, .pending, "an unattached renderer is not ready")
+        XCTAssertEqual(surface.renderer.presentation, .pending, "an unattached renderer is not ready")
 
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 600))
         let viewController = UIViewController()
         window.rootViewController = viewController
-        viewController.view.addSubview(surface.view)
+        viewController.view.addSubview(surface.renderer.view)
         window.isHidden = false
         defer { window.isHidden = true }
-        for _ in 0..<100 where surface.presentation != .ready {
+        for _ in 0..<100 where surface.renderer.presentation != .ready {
             try await Task.sleep(for: .milliseconds(20))
         }
-        XCTAssertEqual(surface.presentation, .ready, "empty terminal contents still publish a valid frame")
-        surface.view.removeFromSuperview()
-        XCTAssertEqual(surface.presentation, .pending, "detachment invalidates readiness even after a frame")
-        viewController.view.addSubview(surface.view)
-        XCTAssertEqual(surface.presentation, .ready)
+        XCTAssertEqual(surface.renderer.presentation, .ready, "empty terminal contents still publish a valid frame")
+        surface.renderer.view.removeFromSuperview()
+        XCTAssertEqual(surface.renderer.presentation, .pending, "detachment invalidates readiness even after a frame")
+        viewController.view.addSubview(surface.renderer.view)
+        XCTAssertEqual(surface.renderer.presentation, .ready)
         let metrics = try XCTUnwrap(measurement.displayMetrics(columns: 83, rows: 44))
         let recovered = await withCheckedContinuation { continuation in
-            surface.replaceRenderer(
+            surface.renderer.replaceRenderer(
                 baseConfig: runtime.makeTmuxBaseSurfaceConfig(), metrics: metrics, theme: .remuxDark
             ) { continuation.resume(returning: $0) }
         }
         XCTAssertEqual(recovered, .replaced, "expected \(metrics), actual \(managed.controlSurface.currentSize())")
-        XCTAssertEqual(surface.presentation, .ready)
+        XCTAssertEqual(surface.renderer.presentation, .ready)
         XCTAssertTrue(managed.rendererIsAvailable)
         XCTAssertNil(managed.rendererRecoverySnapshot)
 
-        surface.suppressReplacementPublicationForTesting = true
+        surface.renderer.suppressReplacementPublicationForTesting = true
         var recoveryImage: CGImage?
         let result = await withCheckedContinuation { continuation in
-            surface.replaceRenderer(
+            surface.renderer.replaceRenderer(
                 baseConfig: runtime.makeTmuxBaseSurfaceConfig(), metrics: metrics, theme: .remuxDark
             ) { continuation.resume(returning: $0) }
             recoveryImage = managed.rendererRecoverySnapshot
@@ -207,127 +207,127 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         XCTAssertNotNil(managed.rendererRecoverySnapshot, "retain the last known frame until repair succeeds")
         XCTAssertTrue(managed.rendererRecoverySnapshot === recoveryImage,
                       "a timed-out replacement must preserve the original recovery image")
-        XCTAssertNotEqual(surface.presentation, .ready)
+        XCTAssertNotEqual(surface.renderer.presentation, .ready)
         await session.shutdown()
     }
 
     func testInitialFrameTimeoutIsRepairableAndCannotBeErasedByLatePublication() async throws {
         let fixture = try await makeNativeFixture(attach: false)
         defer { fixture.window.isHidden = true }
-        fixture.surface.suppressFirstPublicationForTesting = true
-        fixture.window.rootViewController?.view.addSubview(fixture.surface.view)
+        fixture.surface.renderer.suppressFirstPublicationForTesting = true
+        fixture.window.rootViewController?.view.addSubview(fixture.surface.renderer.view)
         fixture.window.isHidden = false
         try await waitUntil {
-            if case .failed = fixture.surface.presentation { return true }
+            if case .failed = fixture.surface.renderer.presentation { return true }
             return false
         }
-        let failure = fixture.surface.presentation
-        XCTAssertFalse(try XCTUnwrap(fixture.surface.managedSurface).rendererIsAvailable)
-        fixture.surface.suppressFirstPublicationForTesting = false
-        _ = fixture.surface.managedSurface?.controlSurface.requestFrame()
+        let failure = fixture.surface.renderer.presentation
+        XCTAssertFalse(try XCTUnwrap(fixture.surface.renderer.managedSurface).rendererIsAvailable)
+        fixture.surface.renderer.suppressFirstPublicationForTesting = false
+        _ = fixture.surface.renderer.managedSurface?.controlSurface.requestFrame()
         await drain(fixture.session.controller)
-        XCTAssertEqual(fixture.surface.presentation, failure)
+        XCTAssertEqual(fixture.surface.renderer.presentation, failure)
         await fixture.session.shutdown()
     }
 
     func testReplacementUsesResizeArrivingDuringNativeUnregister() async throws {
         let fixture = try await makeNativeFixture()
         defer { fixture.window.isHidden = true }
-        var results: [TmuxPaneSurface.RendererReplacementResult] = []
-        fixture.surface.replaceRenderer(
+        var results: [TerminalPaneRenderer.RendererReplacementResult] = []
+        fixture.surface.renderer.replaceRenderer(
             baseConfig: fixture.runtime.makeTmuxBaseSurfaceConfig(),
             metrics: fixture.metrics, theme: .remuxDark
         ) { results.append($0) }
         let resized = try XCTUnwrap(fixture.measurement.displayMetrics(columns: 80, rows: 30))
         // Unregister acknowledgement is dispatched asynchronously. This update
         // arrives before installation, without relying on a timing sleep.
-        XCTAssertTrue(fixture.surface.updateDisplay(metrics: resized))
+        XCTAssertTrue(fixture.surface.renderer.updateDisplay(metrics: resized))
         try await waitUntil { !results.isEmpty }
         XCTAssertEqual(results, [.replaced])
-        XCTAssertEqual(fixture.surface.managedSurface?.controlSurface.currentSize().width_px, resized.pixelWidth)
-        XCTAssertEqual(fixture.surface.managedSurface?.controlSurface.currentSize().height_px, resized.pixelHeight)
-        XCTAssertEqual(fixture.surface.presentation, .ready)
+        XCTAssertEqual(fixture.surface.renderer.managedSurface?.controlSurface.currentSize().width_px, resized.pixelWidth)
+        XCTAssertEqual(fixture.surface.renderer.managedSurface?.controlSurface.currentSize().height_px, resized.pixelHeight)
+        XCTAssertEqual(fixture.surface.renderer.presentation, .ready)
         await fixture.session.shutdown()
     }
 
     func testReplacementAcceptsResizeWhileWaitingForFirstFrame() async throws {
         let fixture = try await makeNativeFixture()
         defer { fixture.window.isHidden = true }
-        fixture.surface.suppressReplacementPublicationForTesting = true
-        var results: [TmuxPaneSurface.RendererReplacementResult] = []
-        fixture.surface.replaceRenderer(
+        fixture.surface.renderer.suppressReplacementPublicationForTesting = true
+        var results: [TerminalPaneRenderer.RendererReplacementResult] = []
+        fixture.surface.renderer.replaceRenderer(
             baseConfig: fixture.runtime.makeTmuxBaseSurfaceConfig(),
             metrics: fixture.metrics, theme: .remuxDark
         ) { results.append($0) }
-        try await waitUntil { fixture.surface.isAwaitingReplacementFrameForTesting }
-        XCTAssertFalse(try XCTUnwrap(fixture.surface.managedSurface).rendererIsAvailable)
+        try await waitUntil { fixture.surface.renderer.isAwaitingReplacementFrameForTesting }
+        XCTAssertFalse(try XCTUnwrap(fixture.surface.renderer.managedSurface).rendererIsAvailable)
         let resized = try XCTUnwrap(fixture.measurement.displayMetrics(columns: 80, rows: 30))
-        XCTAssertTrue(fixture.surface.updateDisplay(metrics: resized))
-        fixture.surface.suppressReplacementPublicationForTesting = false
-        XCTAssertTrue(try XCTUnwrap(fixture.surface.managedSurface).controlSurface.requestFrame())
+        XCTAssertTrue(fixture.surface.renderer.updateDisplay(metrics: resized))
+        fixture.surface.renderer.suppressReplacementPublicationForTesting = false
+        XCTAssertTrue(try XCTUnwrap(fixture.surface.renderer.managedSurface).controlSurface.requestFrame())
         try await waitUntil { !results.isEmpty }
-        let layer = try XCTUnwrap(GhosttyIOSurfaceFrame.rendererLayer(in: fixture.surface.view.layer))
+        let layer = try XCTUnwrap(GhosttyIOSurfaceFrame.rendererLayer(in: fixture.surface.renderer.view.layer))
         let dimensions = try XCTUnwrap(GhosttyIOSurfaceFrame.dimensions(in: layer))
         XCTAssertEqual(dimensions.width, Int(resized.pixelWidth))
         XCTAssertEqual(dimensions.height, Int(resized.pixelHeight))
         XCTAssertEqual(results, [.replaced])
-        XCTAssertEqual(fixture.surface.presentation, .ready)
+        XCTAssertEqual(fixture.surface.renderer.presentation, .ready)
         await fixture.session.shutdown()
     }
 
     func testReplacementDeadlinePausesWhenDetachedBackgroundedOrHidden() async throws {
         let fixture = try await makeNativeFixture()
         defer { fixture.window.isHidden = true }
-        fixture.surface.suppressReplacementPublicationForTesting = true
-        var results: [TmuxPaneSurface.RendererReplacementResult] = []
-        fixture.surface.replaceRenderer(
+        fixture.surface.renderer.suppressReplacementPublicationForTesting = true
+        var results: [TerminalPaneRenderer.RendererReplacementResult] = []
+        fixture.surface.renderer.replaceRenderer(
             baseConfig: fixture.runtime.makeTmuxBaseSurfaceConfig(),
             metrics: fixture.metrics, theme: .remuxDark
         ) { results.append($0) }
-        try await waitUntil { fixture.surface.isAwaitingReplacementFrameForTesting }
-        fixture.surface.view.removeFromSuperview()
+        try await waitUntil { fixture.surface.renderer.isAwaitingReplacementFrameForTesting }
+        fixture.surface.renderer.view.removeFromSuperview()
         try await Task.sleep(for: .milliseconds(2100))
         XCTAssertTrue(results.isEmpty, "detached time must not consume the first-frame deadline")
-        fixture.surface.setSceneActive(false)
-        fixture.window.rootViewController?.view.addSubview(fixture.surface.view)
+        fixture.surface.renderer.setSceneActive(false)
+        fixture.window.rootViewController?.view.addSubview(fixture.surface.renderer.view)
         try await Task.sleep(for: .milliseconds(2100))
         XCTAssertTrue(results.isEmpty, "background time must not consume the first-frame deadline")
-        fixture.surface.setPresented(false)
-        fixture.surface.setSceneActive(true)
+        fixture.surface.renderer.setPresented(false)
+        fixture.surface.renderer.setSceneActive(true)
         try await Task.sleep(for: .milliseconds(2100))
         XCTAssertTrue(results.isEmpty, "an unselected window must not consume the first-frame deadline")
-        XCTAssertEqual(fixture.surface.presentation, .pending)
-        fixture.surface.suppressReplacementPublicationForTesting = false
-        fixture.surface.setPresented(true)
+        XCTAssertEqual(fixture.surface.renderer.presentation, .pending)
+        fixture.surface.renderer.suppressReplacementPublicationForTesting = false
+        fixture.surface.renderer.setPresented(true)
         try await waitUntil { !results.isEmpty }
         XCTAssertEqual(results, [.replaced])
-        XCTAssertEqual(fixture.surface.presentation, .ready)
+        XCTAssertEqual(fixture.surface.renderer.presentation, .ready)
         await fixture.session.shutdown()
     }
 
     func testFailureWhileAwaitingReplacementCannotBecomeSuccess() async throws {
         let fixture = try await makeNativeFixture()
         defer { fixture.window.isHidden = true }
-        fixture.surface.suppressReplacementPublicationForTesting = true
-        var results: [TmuxPaneSurface.RendererReplacementResult] = []
-        fixture.surface.replaceRenderer(
+        fixture.surface.renderer.suppressReplacementPublicationForTesting = true
+        var results: [TerminalPaneRenderer.RendererReplacementResult] = []
+        fixture.surface.renderer.replaceRenderer(
             baseConfig: fixture.runtime.makeTmuxBaseSurfaceConfig(),
             metrics: fixture.metrics, theme: .remuxDark
         ) { results.append($0) }
-        try await waitUntil { fixture.surface.isAwaitingReplacementFrameForTesting }
-        let recoveryImage = try XCTUnwrap(fixture.surface.managedSurface?.rendererRecoverySnapshot)
-        fixture.surface.reportRendererFailure()
-        XCTAssertTrue(fixture.surface.managedSurface?.rendererRecoverySnapshot === recoveryImage,
+        try await waitUntil { fixture.surface.renderer.isAwaitingReplacementFrameForTesting }
+        let recoveryImage = try XCTUnwrap(fixture.surface.renderer.managedSurface?.rendererRecoverySnapshot)
+        fixture.surface.renderer.reportRendererFailure()
+        XCTAssertTrue(fixture.surface.renderer.managedSurface?.rendererRecoverySnapshot === recoveryImage,
                       "failed replacement pixels must not replace the last successful frame")
         XCTAssertEqual(results, [.failed])
-        fixture.surface.suppressReplacementPublicationForTesting = false
-        _ = fixture.surface.managedSurface?.controlSurface.requestFrame()
+        fixture.surface.renderer.suppressReplacementPublicationForTesting = false
+        _ = fixture.surface.renderer.managedSurface?.controlSurface.requestFrame()
         await drain(fixture.session.controller)
-        guard case .failed = fixture.surface.presentation else {
+        guard case .failed = fixture.surface.renderer.presentation else {
             await fixture.session.shutdown()
             return XCTFail("a later publication must not erase the renderer failure")
         }
-        XCTAssertFalse(try XCTUnwrap(fixture.surface.managedSurface).rendererIsAvailable)
+        XCTAssertFalse(try XCTUnwrap(fixture.surface.renderer.managedSurface).rendererIsAvailable)
         XCTAssertEqual(results, [.failed], "one failure settles the attempt exactly once")
         await fixture.session.shutdown()
     }
@@ -335,19 +335,19 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
     func testRetiredRendererCallbackCannotFailReplacementAndCloseSettlesWait() async throws {
         let fixture = try await makeNativeFixture()
         defer { fixture.window.isHidden = true }
-        let retiredFailure = fixture.surface.rendererFailureCallbackForTesting()
-        fixture.surface.suppressReplacementPublicationForTesting = true
-        var results: [TmuxPaneSurface.RendererReplacementResult] = []
-        fixture.surface.replaceRenderer(
+        let retiredFailure = fixture.surface.renderer.rendererFailureCallbackForTesting()
+        fixture.surface.renderer.suppressReplacementPublicationForTesting = true
+        var results: [TerminalPaneRenderer.RendererReplacementResult] = []
+        fixture.surface.renderer.replaceRenderer(
             baseConfig: fixture.runtime.makeTmuxBaseSurfaceConfig(),
             metrics: fixture.metrics, theme: .remuxDark
         ) { results.append($0) }
-        try await waitUntil { fixture.surface.isAwaitingReplacementFrameForTesting }
+        try await waitUntil { fixture.surface.renderer.isAwaitingReplacementFrameForTesting }
         retiredFailure()
         XCTAssertTrue(results.isEmpty, "queued health events belong to the retired renderer")
         await fixture.session.shutdown()
         XCTAssertEqual(results, [.failed], "close must settle the frame wait")
-        XCTAssertNil(fixture.surface.rawSurface)
+        XCTAssertNil(fixture.surface.renderer.rawSurface)
         retiredFailure()
         XCTAssertEqual(results, [.failed])
     }
@@ -355,14 +355,14 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
     func testNeverPresentedPaneCanPublishPickerPreviewWithoutEnablingInput() async throws {
         let fixture = try await makeNativeFixture(attach: false)
         defer { fixture.window.isHidden = true }
-        fixture.surface.setPresented(false)
-        let managed = try XCTUnwrap(fixture.surface.managedSurface)
+        fixture.surface.renderer.setPresented(false)
+        let managed = try XCTUnwrap(fixture.surface.renderer.managedSurface)
         XCTAssertFalse(managed.rendererIsAvailable)
-        let preview = await fixture.surface.capturePickerPreview(
+        let preview = await fixture.surface.renderer.capturePickerPreview(
             columns: 83, rows: 44, budget: .init(width: 200, height: 120)
         )
         XCTAssertNotNil(preview)
-        XCTAssertEqual(fixture.surface.presentation, .pending)
+        XCTAssertEqual(fixture.surface.renderer.presentation, .pending)
         XCTAssertFalse(managed.rendererIsAvailable)
         await fixture.session.shutdown()
     }
@@ -386,14 +386,14 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         let managed = admitted.screenSurface(id: UUID())
         XCTAssertEqual(managed.controlSurface.currentSize().width_px, expected.pixelWidth)
         XCTAssertEqual(managed.controlSurface.currentSize().height_px, expected.pixelHeight)
-        XCTAssertEqual(admitted.view.backgroundColor, TerminalTheme.remuxLight.terminalBackgroundUIColor)
-        XCTAssertEqual(admitted.presentation, .pending)
+        XCTAssertEqual(admitted.renderer.view.backgroundColor, TerminalTheme.remuxLight.terminalBackgroundUIColor)
+        XCTAssertEqual(admitted.renderer.presentation, .pending)
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 600))
         window.rootViewController = UIViewController()
-        window.rootViewController?.view.addSubview(admitted.view)
+        window.rootViewController?.view.addSubview(admitted.renderer.view)
         window.isHidden = false
         defer { window.isHidden = true }
-        try await waitUntil { admitted.presentation == .ready }
+        try await waitUntil { admitted.renderer.presentation == .ready }
         await fixture.session.shutdown()
     }
 
@@ -401,7 +401,7 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         let fixture = try await makeDelayedNativeFixture()
         fixture.session.handleTopology(emptySnapshot())
         fixture.deliver()
-        try await waitUntil { fixture.surface.rawSurface == nil }
+        try await waitUntil { fixture.surface.renderer.rawSurface == nil }
         XCTAssertTrue(fixture.session.surfacesByPaneID.isEmpty)
         XCTAssertTrue(fixture.session.creatingPaneIDsForTesting.isEmpty)
         await fixture.session.shutdown()
@@ -413,7 +413,7 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         await drain(fixture.session.controller)
         fixture.deliver()
         await shutdown.value
-        XCTAssertNil(fixture.surface.rawSurface)
+        XCTAssertNil(fixture.surface.renderer.rawSurface)
         XCTAssertTrue(fixture.session.surfacesByPaneID.isEmpty)
         XCTAssertTrue(fixture.session.creatingPaneIDsForTesting.isEmpty)
     }
@@ -491,9 +491,9 @@ final class TmuxTerminalSessionShutdownDrainTests: XCTestCase {
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 600))
         window.rootViewController = UIViewController()
         if attach {
-            window.rootViewController?.view.addSubview(surface.view)
+            window.rootViewController?.view.addSubview(surface.renderer.view)
             window.isHidden = false
-            try await waitUntil { surface.presentation == .ready }
+            try await waitUntil { surface.renderer.presentation == .ready }
         }
         return NativeFixture(
             runtime: runtime, session: session, surface: surface, measurement: measurement,
