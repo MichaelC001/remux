@@ -802,7 +802,7 @@ verify_tmux_expectations() {
         fi
 
         local capture_command
-        capture_command="$remote_tmux_env; session=$session; marker=$arg2; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; pane_id=\$(\"\$tmux_bin\" list-panes -t \"\$session\" -F '#{pane_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$pane_id\" ]; then echo 'expected pane index not found' >&2; exit 1; fi; \"\$tmux_bin\" capture-pane -p -e ${capture_range}-t \"\$pane_id\" 2>/dev/null | grep -F -- \"\$marker\" >/dev/null"
+        capture_command="$remote_tmux_env; session=$session; marker=$arg2; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; pane_id=\$(\"\$tmux_bin\" list-panes -t \"\$session\" -F '#{pane_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$pane_id\" ]; then echo 'expected pane index not found' >&2; exit 1; fi; capture=\$(\"\$tmux_bin\" capture-pane -p -e ${capture_range}-t \"\$pane_id\" 2>/dev/null); if printf \"%s\n\" \"\$capture\" | grep -F -- \"\$marker\" >/dev/null; then exit 0; fi; echo \"--- pane \$pane_id capture tail ---\" >&2; printf \"%s\n\" \"\$capture\" | grep -v \"^\$\" | tail -40 >&2; exit 1"
 
         if ! REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
           SSH_ASKPASS="$askpass" \
