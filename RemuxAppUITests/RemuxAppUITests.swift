@@ -3793,7 +3793,7 @@ final class RemuxAppUITests: XCTestCase {
         app.textFields["connection.host"].typeText("127.0.0.1")
 
         app.textFields["connection.username"].tap()
-        app.textFields["connection.username"].typeText("demo\n")
+        typeTextThenReturn("demo", into: app.textFields["connection.username"])
 
         let password = app.secureTextFields["connection.password"]
         XCTAssertTrue(password.waitForExistence(timeout: 2))
@@ -3810,7 +3810,21 @@ final class RemuxAppUITests: XCTestCase {
         app.textFields["connection.host"].typeText("100.64.0.10")
 
         app.textFields["connection.username"].tap()
-        app.textFields["connection.username"].typeText("demo\n")
+        typeTextThenReturn("demo", into: app.textFields["connection.username"])
+    }
+
+    /// Types the text, waits until the field shows it, then presses Return.
+    /// Typed as one burst, the Return can reach the server form before the
+    /// field has applied the text: the field then reverts to an earlier value
+    /// or ignores the Return, leaving focus on it.
+    private func typeTextThenReturn(_ text: String, into field: XCUIElement) {
+        field.typeText(text)
+        let applied = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", text),
+            object: field
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [applied], timeout: 2), .completed)
+        field.typeText("\n")
     }
 
     private func selectAuthentication(_ name: String) {
@@ -3839,7 +3853,7 @@ final class RemuxAppUITests: XCTestCase {
 
         let username = app.textFields["connection.username"]
         username.tap()
-        username.typeText("demo\n")
+        typeTextThenReturn("demo", into: username)
     }
 
     private func saveConnectionAndWaitForTerminal() {
@@ -4502,7 +4516,7 @@ final class RemuxAppUITests: XCTestCase {
 
         let user = app.textFields["connection.username"]
         user.tap()
-        user.typeText("demo\n")
+        typeTextThenReturn("demo", into: user)
 
         let pwd = app.secureTextFields["connection.password"]
         XCTAssertTrue(pwd.waitForExistence(timeout: 2))
