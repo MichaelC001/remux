@@ -27,8 +27,8 @@ tmux session, so no test inherits another test's windows, panes or running
 programs. Most tests generate their own session; the harness prepares the
 fixtures up front, each in its own session, and assigns them to their tests by
 name. As soon as a test finishes, the harness verifies the tmux expectations
-it recorded, whatever its outcome, and removes its sessions, so later tests
-never see them.
+it recorded, whatever its outcome, and removes its sessions. The next test
+waits until that is done, so later tests never see them.
 
 The config is a JSON object with "host", "username", optional "port",
 "displayName", "sessionName" and "tmuxExecutablePath", and either "password" or
@@ -940,6 +940,8 @@ if ! remote check_tools "${remote_tools[@]}"; then
 fi
 
 # Checks one finished test's tmux expectations, then removes its sessions.
+# Last, whatever the outcome, it removes the test's awaiting-cleanup marker,
+# which the test left in tearDown and the next test waits for in setUp.
 finish_test() {
   local test="$1"
   local sessions="$records_dir/$test.sessions"
@@ -948,6 +950,7 @@ finish_test() {
   local i
 
   if [[ ! -e "$sessions" && ! -e "$expectations" ]]; then
+    rm -f "$records_dir/$test.awaiting-cleanup"
     return 0
   fi
 
@@ -962,7 +965,7 @@ finish_test() {
   done
 
   cleanup_generated_sessions "$sessions" || status=1
-  rm -f "$sessions" "$expectations"
+  rm -f "$sessions" "$expectations" "$records_dir/$test.awaiting-cleanup"
   return "$status"
 }
 
@@ -1030,7 +1033,9 @@ refresh_harness_marker >/dev/null 2>&1 &
 marker_refresh_pid=$!
 
 # Each test is checked and cleaned up as soon as xcodebuild reports it
-# finished, so later tests never see an earlier test's sessions.
+# finished. By then the next test may have started, but it waits in setUp
+# until finish_test removes the awaiting-cleanup marker this test left before
+# its result was reported, so later tests never see an earlier test's sessions.
 finished_test_pattern="^Test Case '-\[[^ ]+ ([A-Za-z0-9_]+)\]' (passed|failed|skipped)"
 
 # No failure diagnostics: collecting them takes up to ten minutes per failure.
