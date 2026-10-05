@@ -995,7 +995,7 @@ final class RemuxAppUITests: XCTestCase {
         )
 
         sendTerminalCommand(
-            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_ESCAPE_\" + (\"OK\" if b and b[0]==27 else \"BAD\"))'"
+            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f, termios.TCSANOW); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_ESCAPE_\" + (\"OK\" if b and b[0]==27 else \"BAD\"))'"
         )
         escape.tap()
         RunLoop.current.run(until: Date().addingTimeInterval(1))
@@ -1037,7 +1037,7 @@ final class RemuxAppUITests: XCTestCase {
         )
 
         sendTerminalCommand(
-            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_PLAIN_C_\" + (\"OK\" if b and b[0]==99 else \"BAD\"))'"
+            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f, termios.TCSANOW); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_PLAIN_C_\" + (\"OK\" if b and b[0]==99 else \"BAD\"))'"
         )
         control.tap()
         openHomeFromTerminal()
