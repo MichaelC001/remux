@@ -459,13 +459,11 @@ struct RemuxAppDependencies: Sendable {
             sshConnectionPrewarmer: { _, _, _ in
             },
             tmuxSessionDiscoverer: { target, _, sshRootService in
+                // UI tests reach no real server: discovery answers like a
+                // server whose tmux has only the seeded session, if any.
                 guard target.sshAuth.credential == .none,
                       let tailscaleSSHCheckChallenge else {
-                    return try await RemuxAppDependencies.liveTmuxSessionDiscoverer(
-                        target: target,
-                        trustedHostStore: trustedHostStore,
-                        sshRootService: sshRootService
-                    )
+                    return DebugConnectionProfileSeeder.seededSessionName().map { [$0] } ?? []
                 }
 
                 let suspension = AsyncThrowingStream.makeStream(of: Void.self)
