@@ -583,7 +583,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertFalse(app.textFields["connection.name"].waitForExistence(timeout: 0.5))
         XCTAssertFalse(app.secureTextFields["connection.password"].exists)
         sessionName.tap()
-        sessionName.typeText("logs")
+        typeTextAndConfirm("logs", into: sessionName)
         app.swipeUp()
         XCTAssertTrue(app.buttons["connection.save"].waitForExistence(timeout: 2))
         saveConnectionAndWaitForTerminal()
@@ -3849,13 +3849,22 @@ final class RemuxAppUITests: XCTestCase {
     /// field has applied the text: the field then reverts to an earlier value
     /// or ignores the Return, leaving focus on it.
     private func typeTextThenReturn(_ text: String, into field: XCUIElement) {
+        typeTextAndConfirm(text, into: field)
+        field.typeText("\n")
+    }
+
+    /// Types the text and waits until the field shows it.
+    private func typeTextAndConfirm(_ text: String, into field: XCUIElement) {
         field.typeText(text)
         let applied = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "value == %@", text),
             object: field
         )
-        XCTAssertEqual(XCTWaiter.wait(for: [applied], timeout: 5), .completed)
-        field.typeText("\n")
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [applied], timeout: 5),
+            .completed,
+            "\(field) does not show \"\(text)\"."
+        )
     }
 
     private func selectAuthentication(_ name: String) {
@@ -3895,10 +3904,10 @@ final class RemuxAppUITests: XCTestCase {
 
     private func saveServerAndStartSession() {
         app.buttons["connection.save"].tap()
-        dismissPasswordManagerPromptIfPresent()
 
         let serverDetail = app.descendants(matching: .any)["library.server.detail"]
         XCTAssertTrue(serverDetail.waitForExistence(timeout: 5))
+        declinePasswordManagerPromptAfterAddingServer()
         let newSessionButton = app.buttons["library.server.new-session.empty"]
         XCTAssertTrue(newSessionButton.waitForExistence(timeout: 2))
         newSessionButton.tap()
@@ -3906,8 +3915,19 @@ final class RemuxAppUITests: XCTestCase {
         let sessionName = app.textFields["connection.session"]
         XCTAssertTrue(sessionName.waitForExistence(timeout: 2))
         sessionName.tap()
-        sessionName.typeText("base")
+        typeTextAndConfirm("base", into: sessionName)
         saveConnectionAndWaitForTerminal()
+    }
+
+    /// After the Add Server form closes, iOS offers to save its password. The
+    /// offer appears a few seconds later, on top of whatever the test is doing
+    /// by then, and takes the taps and keystrokes meant for the app. So wait
+    /// for it and decline it before going on.
+    private func declinePasswordManagerPromptAfterAddingServer() {
+        let notNow = app.buttons["Not Now"]
+        if notNow.waitForExistence(timeout: 10) {
+            declinePasswordManagerPrompt(notNow)
+        }
     }
 
     private func openHomeFromTerminal() {
