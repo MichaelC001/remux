@@ -1034,12 +1034,11 @@ marker_refresh_pid=$!
 # finished. By then the next test may have started, but it waits in setUp
 # until finish_test removes the awaiting-cleanup marker this test created in
 # its own setUp, so later tests never see an earlier test's sessions.
+started_test_pattern="^Test Case '-\[[^ ]+ ([A-Za-z0-9_]+)\]' started"
 finished_test_pattern="^Test Case '-\[[^ ]+ ([A-Za-z0-9_]+)\]' (passed|failed|skipped)"
 # A test during which the runner crashed or timed out never reports a result;
-# xcodebuild restarts the runner instead, without naming the test. That test's
-# marker is the only one left unfinished then: earlier tests' results were
-# read before this line, and the next test cannot create its marker before
-# this one is gone.
+# xcodebuild restarts the runner instead, without naming the test. It is the
+# test whose start came last in this output with no result after it.
 runner_restart_pattern="^Restarting after unexpected exit, crash, or test timeout"
 
 # No failure diagnostics: collecting them takes up to ten minutes per failure.
@@ -1052,18 +1051,18 @@ xcodebuild test-without-building "${common_args[@]}" \
   tee "$log" |
   {
     status=0
+    running_test=""
     while IFS= read -r line; do
       printf '%s\n' "$line"
-      if [[ "$line" =~ $finished_test_pattern ]]; then
+      if [[ "$line" =~ $started_test_pattern ]]; then
+        running_test="${BASH_REMATCH[1]}"
+      elif [[ "$line" =~ $finished_test_pattern ]]; then
+        running_test=""
         finish_test "${BASH_REMATCH[1]}" || status=1
-      elif [[ "$line" =~ $runner_restart_pattern ]]; then
-        for marker in "$records_dir"/*.awaiting-cleanup; do
-          [[ -e "$marker" && ! -s "$marker" ]] || continue
-          test_name="${marker##*/}"
-          test_name="${test_name%.awaiting-cleanup}"
-          printf 'The test runner stopped during %s; checking and cleaning up after it.\n' "$test_name"
-          finish_test "$test_name" || status=1
-        done
+      elif [[ "$line" =~ $runner_restart_pattern && -n "$running_test" ]]; then
+        printf 'The test runner stopped during %s; checking and cleaning up after it.\n' "$running_test"
+        finish_test "$running_test" || status=1
+        running_test=""
       fi
     done
     exit "$status"
