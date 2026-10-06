@@ -46,13 +46,23 @@ enum DebugConnectionProfileSeeder {
         var privateKeyPassphrase: String?
     }
 
+    /// The tmux session the seeded profile opens, when seeding is requested.
+    static func seededSessionName(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String? {
+        guard environment[Key.enabled] == "1" else { return nil }
+        return environment[Key.sessionName] ?? "base"
+    }
+
     @discardableResult
     static func seedIfRequested(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         profileRepository: any ConnectionProfileRepository,
         credentialStore: any SSHCredentialStore
     ) async throws -> Bool {
-        guard environment[Key.enabled] == "1" else { return false }
+        guard let seededSessionName = seededSessionName(environment: environment) else {
+            return false
+        }
 
         let credentials = try environment[Key.credentialsFile].map {
             try JSONDecoder().decode(
@@ -69,7 +79,7 @@ enum DebugConnectionProfileSeeder {
             password: credentials.password ?? "",
             privateKey: credentials.privateKeyPEM,
             privateKeyPassphrase: credentials.privateKeyPassphrase,
-            sessionName: environment[Key.sessionName] ?? "base",
+            sessionName: seededSessionName,
             tmuxExecutablePath: environment[Key.tmuxExecutablePath] ?? ""
         )
 
