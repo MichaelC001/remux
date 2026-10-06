@@ -4096,15 +4096,19 @@ final class RemuxAppUITests: XCTestCase {
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.32, dy: 0.63)).tap()
     }
 
-    /// The Save Password prompt ignores a tap that arrives while it is still
-    /// appearing, then stays up and covers the app.
+    /// The Save Password prompt ignores taps for a moment after it appears,
+    /// even once it looks settled, and then stays up and covers the app. So
+    /// tap Not Now again until the prompt goes away.
     private func declinePasswordManagerPrompt(_ notNow: XCUIElement) {
-        XCTAssertTrue(waitForElementToSettle(notNow), "The Save Password prompt kept moving.")
-        notNow.tap()
-        XCTAssertTrue(
-            waitForElementToDisappear(notNow, timeout: 3),
-            "The Save Password prompt stayed up."
-        )
+        for _ in 0..<5 {
+            if notNow.isHittable {
+                notNow.tap()
+            }
+            if waitForElementToDisappear(notNow, timeout: 2) {
+                return
+            }
+        }
+        XCTFail("The Save Password prompt stayed up.")
     }
 
     private func installSystemPromptMonitor() {
