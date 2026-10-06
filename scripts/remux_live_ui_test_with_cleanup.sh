@@ -9,10 +9,9 @@ Usage:
 
 Options:
   --config <path>              Live SSH configuration (default /tmp/remux-live-ssh.json)
-  --destination <spec>         xcodebuild destination (default "platform=iOS Simulator,name=iPhone 17,OS=latest")
+  --destination <spec>         iOS simulator destination (default "platform=iOS Simulator,name=iPhone 17,OS=latest")
   --configuration Debug|Release
                                Build configuration (default Debug)
-  --development-team <team-id> Sign with this team, with automatic provisioning
   --derived-data-path <path>   xcodebuild derived data path
   --only-testing <test-id>     Test to run, e.g. RemuxUITests/RemuxAppUITests/testLiveSSHTmuxActionCycleWhenConfigured
   --dry-run-cleanup <file>     Print the sessions a manifest would remove, then exit
@@ -22,13 +21,16 @@ Runs selected Remux live SSH UI tests and remotely removes only the exact
 allowlisted remux-latency-* tmux sessions that the UI tests record in their
 cleanup manifest.
 
+Live tests run only on an iOS simulator: the test runner reads the harness's
+files and the config on this Mac and checks that the harness is still running.
+
 The tests are built once and run in one xcodebuild invocation, each in its own
 tmux session, so no test inherits another test's windows, panes or running
 programs. Most tests generate their own session; the harness prepares the
 fixtures up front, each in its own session, and assigns them to their tests by
 name. As soon as a test finishes, the harness verifies the tmux expectations
-it recorded, whatever its outcome, and removes its sessions, so later tests
-never see them.
+it recorded, whatever its outcome, and removes its sessions. The next test
+waits until that is done, so later tests never see them.
 
 The config is a JSON object with "host", "username", optional "port",
 "displayName", "sessionName" and "tmuxExecutablePath", and either "password" or
@@ -47,7 +49,6 @@ USAGE
 config="/tmp/remux-live-ssh.json"
 destination="platform=iOS Simulator,name=iPhone 17,OS=latest"
 configuration="Debug"
-development_team=""
 derived_data_path=""
 declare -a only_testing=()
 dry_run_manifest=""
@@ -74,11 +75,6 @@ while [[ $# -gt 0 ]]; do
         Debug|Release) ;;
         *) usage; exit 2 ;;
       esac
-      shift 2
-      ;;
-    --development-team)
-      development_team="${2:-}"
-      [[ "$development_team" =~ ^[A-Za-z0-9]+$ ]] || { usage; exit 2; }
       shift 2
       ;;
     --derived-data-path)
@@ -940,14 +936,21 @@ if ! remote check_tools "${remote_tools[@]}"; then
 fi
 
 # Checks one finished test's tmux expectations, then removes its sessions.
+# Last, it removes the test's awaiting-cleanup marker, which the test created
+# in setUp and the next test waits for in setUp. If the sessions could not be
+# removed, it keeps the marker, saying so, and the manifest instead: later
+# tests then stop rather than see those sessions, and the run tries again at
+# the end.
 finish_test() {
   local test="$1"
   local sessions="$records_dir/$test.sessions"
   local expectations="$records_dir/$test.expectations"
+  local marker="$records_dir/$test.awaiting-cleanup"
   local status=0
   local i
 
   if [[ ! -e "$sessions" && ! -e "$expectations" ]]; then
+    rm -f "$marker"
     return 0
   fi
 
@@ -961,8 +964,13 @@ finish_test() {
     fi
   done
 
-  cleanup_generated_sessions "$sessions" || status=1
-  rm -f "$sessions" "$expectations"
+  rm -f "$expectations"
+  if cleanup_generated_sessions "$sessions"; then
+    rm -f "$sessions" "$marker"
+  else
+    printf 'cleanup failed\n' >"$marker"
+    status=1
+  fi
   return "$status"
 }
 
@@ -994,13 +1002,6 @@ declare -a build_args=(build-for-testing "${common_args[@]}")
 if [[ "$configuration" == "Release" ]]; then
   build_args+=('SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) REMUX_LIVE_UI_TESTING')
 fi
-if [[ -n "$development_team" ]]; then
-  build_args+=(
-    "DEVELOPMENT_TEAM=$development_team"
-    CODE_SIGN_STYLE=Automatic
-    -allowProvisioningUpdates
-  )
-fi
 
 set +e
 xcodebuild "${build_args[@]}" 2>&1 | tee "$build_log"
@@ -1030,8 +1031,15 @@ refresh_harness_marker >/dev/null 2>&1 &
 marker_refresh_pid=$!
 
 # Each test is checked and cleaned up as soon as xcodebuild reports it
-# finished, so later tests never see an earlier test's sessions.
+# finished. By then the next test may have started, but it waits in setUp
+# until finish_test removes the awaiting-cleanup marker this test created in
+# its own setUp, so later tests never see an earlier test's sessions.
+started_test_pattern="^Test Case '-\[[^ ]+ ([A-Za-z0-9_]+)\]' started"
 finished_test_pattern="^Test Case '-\[[^ ]+ ([A-Za-z0-9_]+)\]' (passed|failed|skipped)"
+# A test during which the runner crashed or timed out never reports a result;
+# xcodebuild restarts the runner instead, without naming the test. It is the
+# test whose start came last in this output with no result after it.
+runner_restart_pattern="^Restarting after unexpected exit, crash, or test timeout"
 
 # No failure diagnostics: collecting them takes up to ten minutes per failure.
 set +e
@@ -1043,10 +1051,18 @@ xcodebuild test-without-building "${common_args[@]}" \
   tee "$log" |
   {
     status=0
+    running_test=""
     while IFS= read -r line; do
       printf '%s\n' "$line"
-      if [[ "$line" =~ $finished_test_pattern ]]; then
+      if [[ "$line" =~ $started_test_pattern ]]; then
+        running_test="${BASH_REMATCH[1]}"
+      elif [[ "$line" =~ $finished_test_pattern ]]; then
+        running_test=""
         finish_test "${BASH_REMATCH[1]}" || status=1
+      elif [[ "$line" =~ $runner_restart_pattern && -n "$running_test" ]]; then
+        printf 'The test runner stopped during %s; checking and cleaning up after it.\n' "$running_test"
+        finish_test "$running_test" || status=1
+        running_test=""
       fi
     done
     exit "$status"
@@ -1057,11 +1073,17 @@ stop_harness_marker_refresh
 xcode_status="${pipeline_status[0]}"
 tmux_status="${pipeline_status[2]}"
 
-# Tests xcodebuild never reported as finished, e.g. after a test runner crash.
+# Tests xcodebuild never reported as finished, e.g. after a test runner crash,
+# and another try at sessions whose cleanup failed.
 for records in "$records_dir"/*.sessions "$records_dir"/*.expectations; do
   [[ -e "$records" ]] || continue
   test_name="${records##*/}"
-  finish_test "${test_name%.*}" || tmux_status=1
+  test_name="${test_name%.*}"
+  if [[ -s "$records_dir/$test_name.awaiting-cleanup" ]]; then
+    cleanup_generated_sessions "$records" || tmux_status=1
+  else
+    finish_test "$test_name" || tmux_status=1
+  fi
 done
 cleanup_done=1
 

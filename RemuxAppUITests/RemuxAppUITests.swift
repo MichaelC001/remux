@@ -23,12 +23,13 @@ final class RemuxAppUITests: XCTestCase {
     private var acceptedExpectedLiveHostKey = false
     private var launchedLiveSSHApp = false
 
-    override func setUp() {
-        super.setUp()
+    override func setUpWithError() throws {
+        try super.setUpWithError()
         continueAfterFailure = false
 
         app = XCUIApplication()
         installSystemPromptMonitor()
+        try waitForEarlierLiveTestCleanupThenMarkThisTest()
     }
 
     override func tearDown() {
@@ -38,6 +39,47 @@ final class RemuxAppUITests: XCTestCase {
             app.terminate()
         }
         super.tearDown()
+    }
+
+    /// The cleanup harness checks and cleans up after a live test once XCTest
+    /// reports its result, by which time the next test may have started. So
+    /// each test creates `<test>.awaiting-cleanup` in setUp, before its body
+    /// runs; the harness removes it when it is done with the test, and the
+    /// next test waits for that in setUp. If the harness could not remove the
+    /// test's sessions, it keeps the marker and writes "cleanup failed" in it.
+    private func waitForEarlierLiveTestCleanupThenMarkThisTest() throws {
+        guard let records = liveHarnessRunDirectory?.appendingPathComponent("tests", isDirectory: true) else {
+            return
+        }
+        let suffix = ".awaiting-cleanup"
+        let timeout: TimeInterval = 120
+        let started = Date()
+        while true {
+            let awaiting = try FileManager.default.contentsOfDirectory(atPath: records.path)
+                .filter { $0.hasSuffix(suffix) }
+            if awaiting.isEmpty {
+                break
+            }
+            for marker in awaiting {
+                if let contents = FileManager.default.contents(atPath: records.appendingPathComponent(marker).path),
+                   !contents.isEmpty {
+                    throw LiveSSHCleanupHarnessError(
+                        description: "The cleanup harness could not remove the tmux sessions of \(marker.dropLast(suffix.count)); refusing to start a test that could see them."
+                    )
+                }
+            }
+            guard Date().timeIntervalSince(started) < timeout else {
+                throw LiveSSHCleanupHarnessError(
+                    description: "The cleanup harness has not finished with \(awaiting.joined(separator: ", ")) after \(Int(timeout)) s; refusing to start a test that could see its tmux sessions."
+                )
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        let waited = Date().timeIntervalSince(started)
+        if waited >= 0.2 {
+            print(String(format: "Waited %.1f s for the cleanup harness to finish the previous test.", waited))
+        }
+        try Data().write(to: records.appendingPathComponent(liveHarnessTestMethod + suffix))
     }
 
     private func attachScreenshot(named name: String) {
