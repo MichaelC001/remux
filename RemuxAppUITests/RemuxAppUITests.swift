@@ -22,6 +22,7 @@ final class RemuxAppUITests: XCTestCase {
 
     private var app: XCUIApplication!
     private var acceptedExpectedLiveHostKey = false
+    private var launchedLiveSSHApp = false
 
     override func setUp() {
         super.setUp()
@@ -29,6 +30,15 @@ final class RemuxAppUITests: XCTestCase {
 
         app = XCUIApplication()
         installSystemPromptMonitor()
+    }
+
+    override func tearDown() {
+        // The cleanup harness removes a live test's tmux sessions as soon as
+        // the test ends. An app left running would reattach and recreate them.
+        if launchedLiveSSHApp {
+            app.terminate()
+        }
+        super.tearDown()
     }
 
     private func attachScreenshot(named name: String) {
@@ -990,7 +1000,7 @@ final class RemuxAppUITests: XCTestCase {
         )
 
         sendTerminalCommand(
-            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_ESCAPE_\" + (\"OK\" if b and b[0]==27 else \"BAD\"))'"
+            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f, termios.TCSANOW); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_ESCAPE_\" + (\"OK\" if b and b[0]==27 else \"BAD\"))'"
         )
         escape.tap()
         RunLoop.current.run(until: Date().addingTimeInterval(1))
@@ -1032,7 +1042,7 @@ final class RemuxAppUITests: XCTestCase {
         )
 
         sendTerminalCommand(
-            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_PLAIN_C_\" + (\"OK\" if b and b[0]==99 else \"BAD\"))'"
+            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f, termios.TCSANOW); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_PLAIN_C_\" + (\"OK\" if b and b[0]==99 else \"BAD\"))'"
         )
         control.tap()
         openHomeFromTerminal()
@@ -1974,20 +1984,7 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     func testLiveWindowNamesAndRenameWhenConfigured() throws {
-        let sessionName: String
-        if let override = liveSessionNameOverride() {
-            guard override.range(
-                of: #"^remux-latency-[A-Za-z0-9._-]+$"#,
-                options: .regularExpression
-            ) != nil else {
-                throw LiveSSHCleanupHarnessError(
-                    description: "Refusing unsafe window-name fixture session \(override)."
-                )
-            }
-            sessionName = override
-        } else {
-            sessionName = try generatedLiveLatencySessionName("window-names")
-        }
+        let sessionName = try generatedLiveLatencySessionName("window-names")
         defer {
             cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
         }
@@ -2623,16 +2620,16 @@ final class RemuxAppUITests: XCTestCase {
         try requireLiveSSHConfigurationExists()
         let manifestPath = try liveGeneratedSessionManifestPath()
 
-        if let override = liveSessionNameOverride() {
+        if let assigned = liveHarnessTestValue("session") {
             XCTAssertTrue(
-                override.range(
+                assigned.range(
                     of: #"^remux-latency-[A-Za-z0-9._-]+$"#,
                     options: .regularExpression
                 ) != nil,
-                "Refusing to use non-allowlisted live tmux session override \(override)."
+                "Refusing to use non-allowlisted harness-assigned live tmux session \(assigned)."
             )
-            recordGeneratedLiveLatencySession(override, manifestPath: manifestPath)
-            return override
+            recordGeneratedLiveLatencySession(assigned, manifestPath: manifestPath)
+            return assigned
         }
 
         let safePurpose = purpose.replacingOccurrences(
@@ -2652,12 +2649,7 @@ final class RemuxAppUITests: XCTestCase {
             )
         }
 
-        if let manifestPath = ProcessInfo.processInfo.environment["REMUX_LIVE_GENERATED_SESSION_MANIFEST"],
-           !manifestPath.isEmpty {
-            return manifestPath
-        }
-
-        return "/tmp/remux-live-generated-sessions.txt"
+        return liveHarnessTestRecordPath("sessions")
     }
 
     private func liveCleanupHarnessEnabled() -> Bool {
@@ -2750,24 +2742,28 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func requireLivePreparedFixture(_ fixtureName: String) throws {
-        let preparedFixture = livePreparedFixtureName()
-        guard preparedFixture == fixtureName else {
+        guard liveHarnessTestValue("fixture") == fixtureName else {
             throw XCTSkip("Run this live SSH UI test through scripts/remux_live_ui_test_with_cleanup.sh so it can prepare the \(fixtureName) tmux fixture.")
         }
     }
 
-    private func liveSessionNameOverride() -> String? {
-        liveHarnessValue(
-            environmentKey: "REMUX_LIVE_SESSION_NAME_OVERRIDE",
-            fallbackPath: "/tmp/remux-live-session-name-override.txt"
-        )
+    /// XCTest names a test "-[RemuxUITests.RemuxAppUITests testLiveExample]".
+    private var liveHarnessTestMethod: String {
+        String(name.split(separator: " ").last?.dropLast() ?? "")
     }
 
-    private func livePreparedFixtureName() -> String? {
-        liveHarnessValue(
-            environmentKey: "REMUX_LIVE_PREPARED_FIXTURE",
-            fallbackPath: "/tmp/remux-live-prepared-fixture.txt"
-        )
+    /// The cleanup harness assigns values to individual tests, such as a
+    /// prepared fixture's tmux session, as `<field>.<test method>=<value>`
+    /// marker lines, so tests sharing one xcodebuild run never share them.
+    private func liveHarnessTestValue(_ field: String) -> String? {
+        liveCleanupHarnessFieldsIfEnabled()?["\(field).\(liveHarnessTestMethod)"]
+    }
+
+    /// Each test records its generated tmux sessions and tmux expectations in
+    /// its own files, which the cleanup harness checks and cleans up as soon
+    /// as the test ends.
+    private func liveHarnessTestRecordPath(_ kind: String) -> String {
+        "/tmp/remux-live-tests/\(liveHarnessTestMethod).\(kind)"
     }
 
     private func liveHarnessValue(environmentKey: String, fallbackPath: String) -> String? {
@@ -2900,9 +2896,7 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func recordLiveTmuxExpectation(fields: [String]) {
-        let manifestPath = ProcessInfo.processInfo.environment["REMUX_LIVE_TMUX_EXPECTATION_MANIFEST"]
-            .flatMap { $0.isEmpty ? nil : $0 }
-            ?? "/tmp/remux-live-tmux-expectations.txt"
+        let manifestPath = liveHarnessTestRecordPath("expectations")
 
         for field in fields {
             XCTAssertFalse(field.contains("\t"), "Live tmux expectation fields cannot contain tabs.")
@@ -3120,6 +3114,7 @@ final class RemuxAppUITests: XCTestCase {
             app.launchEnvironment["GHOSTTY_TRACE_SURFACE_INIT"] = "1"
         }
         forwardTraceEnvironment()
+        launchedLiveSSHApp = true
         app.launch()
     }
 

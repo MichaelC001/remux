@@ -11,9 +11,13 @@ Runs selected Remux live SSH UI tests using /tmp/remux-live-ssh.json and
 remotely removes only the exact allowlisted remux-latency-* tmux sessions that
 the UI tests record in their cleanup manifest.
 
-The tests are built once, then each selected test runs in its own xcodebuild
-invocation with its own tmux fixture, expectation check and cleanup, so no
-test inherits another test's tmux session, windows, panes or running programs.
+The tests are built once and run in one xcodebuild invocation, each in its own
+tmux session, so no test inherits another test's windows, panes or running
+programs. Most tests generate their own session; the harness prepares the
+fixtures up front, each in its own session, and assigns them to their tests by
+name. As soon as a test finishes, the harness verifies the tmux expectations
+it recorded, whatever its outcome, and removes its sessions, so later tests
+never see them.
 
 This script reads live SSH details from /tmp/remux-live-ssh.json but does not
 store credentials in the repository or print secrets.
@@ -209,11 +213,10 @@ expected_host_key="$expected_host_key_type $expected_host_key_fingerprint"
 live_ssh_configuration_base64="$(base64 <"$config" | tr -d '\r\n')"
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/remux-live-ui-cleanup.XXXXXX")"
-manifest="/tmp/remux-live-generated-sessions.txt"
-expectations="/tmp/remux-live-tmux-expectations.txt"
+# Each test records its generated sessions and tmux expectations here, in
+# <test>.sessions and <test>.expectations.
+records_dir="/tmp/remux-live-tests"
 harness_file="/tmp/remux-live-cleanup-harness.txt"
-fixture_name_file="/tmp/remux-live-prepared-fixture.txt"
-fixture_session_file="/tmp/remux-live-session-name-override.txt"
 expected_host_key_file="/tmp/remux-live-expected-host-key.txt"
 askpass="$work_dir/askpass.sh"
 private_key_file="$work_dir/live_ssh_key"
@@ -221,15 +224,24 @@ log_dir=".local/logs"
 mkdir -p "$log_dir"
 stamp="$(date +%Y%m%d-%H%M%S)-$$"
 build_log="$log_dir/live-ui-cleanup-${stamp}-build.log"
+log="$log_dir/live-ui-cleanup-${stamp}.log"
+result_bundle="$log_dir/live-ui-cleanup-${stamp}.xcresult"
 cleanup_done=0
+marker_refresh_pid=""
+
+stop_harness_marker_refresh() {
+  if [[ -n "$marker_refresh_pid" ]]; then
+    kill "$marker_refresh_pid" 2>/dev/null || true
+    wait "$marker_refresh_pid" 2>/dev/null || true
+    marker_refresh_pid=""
+  fi
+}
 
 cleanup_local_files() {
+  stop_harness_marker_refresh
   rm -rf "$work_dir"
-  rm -f "$manifest"
-  rm -f "$expectations"
-  rm -f "$harness_file"
-  rm -f "$fixture_name_file"
-  rm -f "$fixture_session_file"
+  rm -rf "$records_dir"
+  rm -f "$harness_file" "$harness_file.tmp"
   rm -f "$expected_host_key_file"
 }
 
@@ -265,39 +277,88 @@ cat >"$askpass" <<'EOF'
 printf '%s\n' "$REMUX_LIVE_SSH_SECRET"
 EOF
 chmod 700 "$askpass"
-rm -f "$manifest"
-rm -f "$expectations"
+rm -rf "$records_dir"
+mkdir "$records_dir"
 rm -f "$harness_file"
-rm -f "$fixture_name_file"
-rm -f "$fixture_session_file"
 rm -f "$expected_host_key_file"
 
-# The UI tests treat a marker older than 30 minutes as stale, so it is
-# rewritten before each test rather than once for the whole run.
+# Tests that need a known session or a prepared fixture get their own, assigned
+# here by test method name. Every other test generates a uniquely named session
+# itself.
+declare -a assigned_tests=()
+declare -a assigned_sessions=()
+declare -a assigned_fixtures=()
+index=0
+for target in "${only_testing[@]}"; do
+  index=$((index + 1))
+  session=""
+  fixture=""
+  case "$target" in
+    *testLiveSSHTmuxActionCycleWhenConfigured)
+      session="remux-latency-action-${stamp}-${index}"
+      ;;
+    *testLiveWindowNamesAndRenameWhenConfigured)
+      session="remux-latency-window-names-${stamp}-${index}"
+      ;;
+    *testLiveDenseMixedTopologySelectsDeepPaneWhenConfigured)
+      fixture="dense-mixed"
+      session="remux-latency-dense-mixed-${stamp}-${index}"
+      ;;
+    *testLiveTerminalRelativeFilePreviewWhenConfigured)
+      fixture="relative-file-preview"
+      session="remux-latency-pv-${stamp}-${index}"
+      ;;
+  esac
+  if [[ -n "$session" ]]; then
+    assigned_tests+=("${target##*/}")
+    assigned_sessions+=("$session")
+    assigned_fixtures+=("$fixture")
+  fi
+done
+
+# The marker tells the UI tests that this harness will clean up after them, and
+# carries each assigned test's session and fixture as session.<test>=<session>
+# and fixture.<test>=<fixture>. The tests treat a marker older than 30 minutes
+# as stale, so it is refreshed while they run.
 write_harness_marker() {
-  printf 'pid=%s\nstartedAt=%s\n' "$$" "$(date +%s)" >"$harness_file"
-  for name in \
-    REMUX_LIVE_AGENT_TUI_SESSION \
-    REMUX_PROFILE_PANE_SWITCH_COUNT \
-    REMUX_TRACE_FLOWS \
-    REMUX_TRACE_TMUX_VIEWPORT \
-    REMUX_TRACE_LATENCY \
-    REMUX_TRACE_PERF \
-    GHOSTTY_TRACE_SURFACE_INIT \
-    GHOSTTY_TRACE_FRAME_COMPLETION
-  do
-    if declare -p "$name" >/dev/null 2>&1; then
-      printf '%s=%s\n' "$name" "${!name}" >>"$harness_file"
-    fi
+  local i
+  {
+    printf 'pid=%s\nstartedAt=%s\n' "$$" "$(date +%s)"
+    for name in \
+      REMUX_LIVE_AGENT_TUI_SESSION \
+      REMUX_PROFILE_PANE_SWITCH_COUNT \
+      REMUX_TRACE_FLOWS \
+      REMUX_TRACE_TMUX_VIEWPORT \
+      REMUX_TRACE_LATENCY \
+      REMUX_TRACE_PERF \
+      GHOSTTY_TRACE_SURFACE_INIT \
+      GHOSTTY_TRACE_FRAME_COMPLETION
+    do
+      if declare -p "$name" >/dev/null 2>&1; then
+        printf '%s=%s\n' "$name" "${!name}"
+      fi
+    done
+    for i in "${!assigned_tests[@]}"; do
+      printf 'session.%s=%s\n' "${assigned_tests[$i]}" "${assigned_sessions[$i]}"
+      if [[ -n "${assigned_fixtures[$i]}" ]]; then
+        printf 'fixture.%s=%s\n' "${assigned_tests[$i]}" "${assigned_fixtures[$i]}"
+      fi
+    done
+  } >"$harness_file.tmp"
+  mv -f "$harness_file.tmp" "$harness_file"
+}
+
+# Runs in the background while the tests run, and stops on its own if the
+# harness dies without its exit trap.
+refresh_harness_marker() {
+  while sleep 60 && kill -0 "$$" 2>/dev/null; do
+    write_harness_marker
   done
 }
 
 write_harness_marker
 printf '%s\n' "$expected_host_key" >"$expected_host_key_file"
 trap finish_before_remote_cleanup EXIT
-
-fixture_name=""
-fixture_session=""
 
 prepare_dense_mixed_fixture() {
   local session="$1"
@@ -481,7 +542,18 @@ PREVIEW_SVG
 REMOTE
 }
 
+assigned_fixture_for_session() {
+  local i
+  for i in "${!assigned_sessions[@]}"; do
+    if [[ "${assigned_sessions[$i]}" == "$1" ]]; then
+      printf '%s\n' "${assigned_fixtures[$i]}"
+      return
+    fi
+  done
+}
+
 cleanup_generated_sessions() {
+  local manifest="$1"
   local status=0
 
   if [[ ! -s "$manifest" ]]; then
@@ -498,7 +570,7 @@ cleanup_generated_sessions() {
     printf 'Cleaning generated tmux session: %s\n' "$session"
     local remote_command
     remote_command="$remote_tmux_env; session=$session; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; \"\$tmux_bin\" kill-session -t \"\$session\" 2>/dev/null || true"
-    if [[ "$fixture_name" == "relative-file-preview" && "$session" == "$fixture_session" ]]; then
+    if [[ "$(assigned_fixture_for_session "$session")" == "relative-file-preview" ]]; then
       remote_command+="; fixture_suffix=\${session#remux-latency-pv-}; fixture_dir=/tmp/rpv-\$fixture_suffix; if [ -f \"\$fixture_dir/server.pid\" ]; then kill \"\$(cat \"\$fixture_dir/server.pid\")\" 2>/dev/null || true; fi; rm -f -- \"\$fixture_dir/README.md\" \"\$fixture_dir/index.html\" \"\$fixture_dir/preview.css\" \"\$fixture_dir/preview.svg\" \"\$fixture_dir/preview.js\" \"\$fixture_dir/server.pid\"; rmdir -- \"\$fixture_dir\" 2>/dev/null || true"
     fi
 
@@ -522,6 +594,7 @@ cleanup_generated_sessions() {
 }
 
 verify_tmux_expectations() {
+  local expectations="$1"
   local status=0
 
   if [[ ! -s "$expectations" ]]; then
@@ -729,7 +802,7 @@ verify_tmux_expectations() {
         fi
 
         local capture_command
-        capture_command="$remote_tmux_env; session=$session; marker=$arg2; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; pane_id=\$(\"\$tmux_bin\" list-panes -t \"\$session\" -F '#{pane_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$pane_id\" ]; then echo 'expected pane index not found' >&2; exit 1; fi; \"\$tmux_bin\" capture-pane -p -e ${capture_range}-t \"\$pane_id\" 2>/dev/null | grep -F -- \"\$marker\" >/dev/null"
+        capture_command="$remote_tmux_env; session=$session; marker=$arg2; tmux_bin=\${REMUX_LIVE_TMUX:-\$(command -v tmux 2>/dev/null || true)}; if [ -z \"\$tmux_bin\" ] && [ -x /opt/homebrew/bin/tmux ]; then tmux_bin=/opt/homebrew/bin/tmux; fi; if [ -z \"\$tmux_bin\" ]; then echo 'tmux not found on remote host' >&2; exit 127; fi; pane_id=\$(\"\$tmux_bin\" list-panes -t \"\$session\" -F '#{pane_id}' 2>/dev/null | sed -n '${arg1}p'); if [ -z \"\$pane_id\" ]; then echo 'expected pane index not found' >&2; exit 1; fi; capture=\$(\"\$tmux_bin\" capture-pane -p -e ${capture_range}-t \"\$pane_id\" 2>/dev/null); if printf \"%s\n\" \"\$capture\" | grep -F -- \"\$marker\" >/dev/null; then exit 0; fi; echo \"--- pane \$pane_id capture tail ---\" >&2; printf \"%s\n\" \"\$capture\" | grep -v \"^\$\" | tail -40 >&2; exit 1"
 
         if ! REMUX_LIVE_SSH_SECRET="$ssh_askpass_secret" \
           SSH_ASKPASS="$askpass" \
@@ -878,10 +951,41 @@ REMOTE_EXPECTATION
   return "$status"
 }
 
+# Checks one finished test's tmux expectations, then removes its sessions.
+finish_test() {
+  local test="$1"
+  local sessions="$records_dir/$test.sessions"
+  local expectations="$records_dir/$test.expectations"
+  local status=0
+  local i
+
+  if [[ ! -e "$sessions" && ! -e "$expectations" ]]; then
+    return 0
+  fi
+
+  # Each test's expectations name only its own sessions, so they are checked
+  # whatever the test's outcome; a failing test cannot hide its tmux checks.
+  verify_tmux_expectations "$expectations" || status=1
+  for i in "${!assigned_tests[@]}"; do
+    if [[ "${assigned_tests[$i]}" == "$test" && -n "${assigned_fixtures[$i]}" && ! -s "$expectations" ]]; then
+      printf '%s recorded no tmux expectations for its prepared fixture; treating it as failed instead of passed/skipped.\n' "$test" >&2
+      status=1
+    fi
+  done
+
+  cleanup_generated_sessions "$sessions" || status=1
+  rm -f "$sessions" "$expectations"
+  return "$status"
+}
+
 finish() {
   local status=$?
+  local sessions
   if [[ "$cleanup_done" -eq 0 ]]; then
-    cleanup_generated_sessions || status=$?
+    for sessions in "$records_dir"/*.sessions; do
+      [[ -e "$sessions" ]] || continue
+      cleanup_generated_sessions "$sessions" || status=$?
+    done
   fi
   cleanup_local_files
   exit "$status"
@@ -919,106 +1023,79 @@ if [[ "$build_status" -ne 0 ]]; then
   exit "$build_status"
 fi
 
-# Each test gets its own fixture, session override, cleanup manifest and tmux
-# expectations, and its expectations are verified before the next test can
-# change the server.
-overall_status=0
-declare -a results=()
-index=0
-for target in "${only_testing[@]}"; do
-  index=$((index + 1))
-  test_stamp="${stamp}-${index}"
-  log="$log_dir/live-ui-cleanup-${test_stamp}.log"
-  result_bundle="$log_dir/live-ui-cleanup-${test_stamp}.xcresult"
-
-  write_harness_marker
-  rm -f "$manifest"
-  rm -f "$expectations"
-  rm -f "$fixture_name_file"
-  rm -f "$fixture_session_file"
-  fixture_name=""
-  fixture_session=""
-  case "$target" in
-    *testLiveSSHTmuxActionCycleWhenConfigured)
-      fixture_session="remux-latency-action-${test_stamp}"
+# All selected tests run in one xcodebuild invocation, so every assigned
+# session and fixture is prepared before it starts.
+for i in "${!assigned_sessions[@]}"; do
+  printf '%s\n' "${assigned_sessions[$i]}" >>"$records_dir/${assigned_tests[$i]}.sessions"
+  case "${assigned_fixtures[$i]}" in
+    dense-mixed)
+      prepare_dense_mixed_fixture "${assigned_sessions[$i]}"
       ;;
-    *testLiveWindowNamesAndRenameWhenConfigured)
-      fixture_session="remux-latency-window-names-${test_stamp}"
-      ;;
-    *testLiveDenseMixedTopologySelectsDeepPaneWhenConfigured)
-      fixture_name="dense-mixed"
-      fixture_session="remux-latency-dense-mixed-${test_stamp}"
-      ;;
-    *testLiveTerminalRelativeFilePreviewWhenConfigured)
-      fixture_name="relative-file-preview"
-      fixture_session="remux-latency-pv-${test_stamp}"
+    relative-file-preview)
+      prepare_relative_file_preview_fixture "${assigned_sessions[$i]}"
       ;;
   esac
-
-  cleanup_done=0
-  if [[ -n "$fixture_session" ]]; then
-    printf '%s\n' "$fixture_session" >>"$manifest"
-    printf '%s\n' "$fixture_session" >"$fixture_session_file"
-  fi
-  if [[ "$fixture_name" == "dense-mixed" ]]; then
-    prepare_dense_mixed_fixture "$fixture_session"
-    printf '%s\n' "$fixture_name" >"$fixture_name_file"
-  fi
-  if [[ "$fixture_name" == "relative-file-preview" ]]; then
-    prepare_relative_file_preview_fixture "$fixture_session"
-    printf '%s\n' "$fixture_name" >"$fixture_name_file"
-  fi
-
-  set +e
-  REMUX_TRACE_LATENCY="${REMUX_TRACE_LATENCY:-1}" \
-  REMUX_TRACE_PERF="${REMUX_TRACE_PERF:-1}" \
-  GHOSTTY_TRACE_SURFACE_INIT="${GHOSTTY_TRACE_SURFACE_INIT:-1}" \
-  REMUX_LIVE_GENERATED_SESSION_MANIFEST="$manifest" \
-  REMUX_LIVE_TMUX_EXPECTATION_MANIFEST="$expectations" \
-  REMUX_LIVE_PREPARED_FIXTURE="$fixture_name" \
-  REMUX_LIVE_SESSION_NAME_OVERRIDE="$fixture_session" \
-  REMUX_LIVE_EXPECTED_HOST_KEY="$expected_host_key" \
-  REMUX_LIVE_SSH_CONFIGURATION_BASE64="$live_ssh_configuration_base64" \
-  xcodebuild test-without-building "${common_args[@]}" \
-    "-only-testing:$target" \
-    -resultBundlePath "$result_bundle" 2>&1 | tee "$log"
-  xcode_status=$?
-  set -e
-
-  verify_status=0
-  if [[ "$xcode_status" -eq 0 ]]; then
-    if [[ -n "$fixture_name" && ! -s "$expectations" ]]; then
-      printf 'prepared fixture test recorded no tmux expectations; treating as failed instead of passed/skipped.\n' >&2
-      verify_status=1
-    else
-      verify_tmux_expectations || verify_status=$?
-    fi
-  fi
-
-  cleanup_status=0
-  cleanup_generated_sessions || cleanup_status=$?
-  cleanup_done=1
-
-  test_status="$xcode_status"
-  if [[ "$test_status" -eq 0 ]]; then
-    test_status="$verify_status"
-  fi
-  if [[ "$test_status" -eq 0 ]]; then
-    test_status="$cleanup_status"
-  fi
-  if [[ "$test_status" -eq 0 ]]; then
-    results+=("passed $target ($log)")
-  else
-    results+=("failed ($test_status) $target ($log)")
-    if [[ "$overall_status" -eq 0 ]]; then
-      overall_status="$test_status"
-    fi
-  fi
 done
+
+declare -a test_args=()
+for target in "${only_testing[@]}"; do
+  test_args+=("-only-testing:$target")
+done
+
+write_harness_marker
+refresh_harness_marker >/dev/null 2>&1 &
+marker_refresh_pid=$!
+
+# Each test is checked and cleaned up as soon as xcodebuild reports it
+# finished, so later tests never see an earlier test's sessions.
+finished_test_pattern="^Test Case '-\[[^ ]+ ([A-Za-z0-9_]+)\]' (passed|failed|skipped)"
+
+# No failure diagnostics: collecting them takes up to ten minutes per failure.
+set +e
+REMUX_TRACE_LATENCY="${REMUX_TRACE_LATENCY:-1}" \
+REMUX_TRACE_PERF="${REMUX_TRACE_PERF:-1}" \
+GHOSTTY_TRACE_SURFACE_INIT="${GHOSTTY_TRACE_SURFACE_INIT:-1}" \
+REMUX_LIVE_EXPECTED_HOST_KEY="$expected_host_key" \
+REMUX_LIVE_SSH_CONFIGURATION_BASE64="$live_ssh_configuration_base64" \
+xcodebuild test-without-building "${common_args[@]}" \
+  "${test_args[@]}" \
+  -collect-test-diagnostics never \
+  -resultBundlePath "$result_bundle" 2>&1 |
+  tee "$log" |
+  {
+    status=0
+    while IFS= read -r line; do
+      printf '%s\n' "$line"
+      if [[ "$line" =~ $finished_test_pattern ]]; then
+        finish_test "${BASH_REMATCH[1]}" || status=1
+      fi
+    done
+    exit "$status"
+  }
+pipeline_status=("${PIPESTATUS[@]}")
+set -e
+stop_harness_marker_refresh
+xcode_status="${pipeline_status[0]}"
+tmux_status="${pipeline_status[2]}"
+
+# Tests xcodebuild never reported as finished, e.g. after a test runner crash.
+for records in "$records_dir"/*.sessions "$records_dir"/*.expectations; do
+  [[ -e "$records" ]] || continue
+  test_name="${records##*/}"
+  finish_test "${test_name%.*}" || tmux_status=1
+done
+cleanup_done=1
 
 trap - EXIT
 cleanup_local_files
 
+overall_status="$xcode_status"
+if [[ "$overall_status" -eq 0 ]]; then
+  overall_status="$tmux_status"
+fi
+
 printf 'live UI test build log: %s\n' "$build_log"
-printf 'live UI test result: %s\n' "${results[@]}"
+printf 'live UI test log: %s\n' "$log"
+grep -E "^Test Case '.*' (passed|failed|skipped)" "$log" | sed 's/^/live UI test result: /' || true
+printf 'live UI test status: xcodebuild %s, tmux expectations and cleanup %s\n' "$xcode_status" "$tmux_status"
 exit "$overall_status"
