@@ -90,7 +90,7 @@ enum HerdrSessionDiscovery {
         return try sessions(from: result)
     }
 
-    /// One exec prints `herdr --version` on its first line, then the
+    /// One exec prints the first line of `herdr --version`, then the
     /// `session list --json` document. The executable stays out of the login
     /// shell, as in the tmux commands.
     static func listSessionsCommand(herdrExecutable: String) -> String {
@@ -150,7 +150,7 @@ enum HerdrSessionDiscovery {
         #"resolved=$(command -v "$herdr" 2> /dev/null)"#,
         #"if [ ! -x "$resolved" ]; then if [ -e "$herdr" ]; then echo "\#(herdrNotExecutableMarker): $herdr" >&2; exit 126; fi; echo "\#(herdrNotFoundMarker): $herdr" >&2; exit 127; fi"#,
         #"version=$("$resolved" --version) || exit $?"#,
-        #"printf "%s\n" "$version""#,
+        #"printf "%s\n" "$version" | head -n 1"#,
         #"exec "$resolved" session list --json"#,
     ].joined(separator: "; ")
 }
