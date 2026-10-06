@@ -936,17 +936,21 @@ if ! remote check_tools "${remote_tools[@]}"; then
 fi
 
 # Checks one finished test's tmux expectations, then removes its sessions.
-# Last, whatever the outcome, it removes the test's awaiting-cleanup marker,
-# which the test left in tearDown and the next test waits for in setUp.
+# Last, it removes the test's awaiting-cleanup marker, which the test created
+# in setUp and the next test waits for in setUp. If the sessions could not be
+# removed, it keeps the marker, saying so, and the manifest instead: later
+# tests then stop rather than see those sessions, and the run tries again at
+# the end.
 finish_test() {
   local test="$1"
   local sessions="$records_dir/$test.sessions"
   local expectations="$records_dir/$test.expectations"
+  local marker="$records_dir/$test.awaiting-cleanup"
   local status=0
   local i
 
   if [[ ! -e "$sessions" && ! -e "$expectations" ]]; then
-    rm -f "$records_dir/$test.awaiting-cleanup"
+    rm -f "$marker"
     return 0
   fi
 
@@ -960,8 +964,13 @@ finish_test() {
     fi
   done
 
-  cleanup_generated_sessions "$sessions" || status=1
-  rm -f "$sessions" "$expectations" "$records_dir/$test.awaiting-cleanup"
+  rm -f "$expectations"
+  if cleanup_generated_sessions "$sessions"; then
+    rm -f "$sessions" "$marker"
+  else
+    printf 'cleanup failed\n' >"$marker"
+    status=1
+  fi
   return "$status"
 }
 
@@ -1023,8 +1032,8 @@ marker_refresh_pid=$!
 
 # Each test is checked and cleaned up as soon as xcodebuild reports it
 # finished. By then the next test may have started, but it waits in setUp
-# until finish_test removes the awaiting-cleanup marker this test left before
-# its result was reported, so later tests never see an earlier test's sessions.
+# until finish_test removes the awaiting-cleanup marker this test created in
+# its own setUp, so later tests never see an earlier test's sessions.
 finished_test_pattern="^Test Case '-\[[^ ]+ ([A-Za-z0-9_]+)\]' (passed|failed|skipped)"
 
 # No failure diagnostics: collecting them takes up to ten minutes per failure.
@@ -1051,11 +1060,17 @@ stop_harness_marker_refresh
 xcode_status="${pipeline_status[0]}"
 tmux_status="${pipeline_status[2]}"
 
-# Tests xcodebuild never reported as finished, e.g. after a test runner crash.
+# Tests xcodebuild never reported as finished, e.g. after a test runner crash,
+# and another try at sessions whose cleanup failed.
 for records in "$records_dir"/*.sessions "$records_dir"/*.expectations; do
   [[ -e "$records" ]] || continue
   test_name="${records##*/}"
-  finish_test "${test_name%.*}" || tmux_status=1
+  test_name="${test_name%.*}"
+  if [[ -s "$records_dir/$test_name.awaiting-cleanup" ]]; then
+    cleanup_generated_sessions "$records" || tmux_status=1
+  else
+    finish_test "$test_name" || tmux_status=1
+  fi
 done
 cleanup_done=1
 
