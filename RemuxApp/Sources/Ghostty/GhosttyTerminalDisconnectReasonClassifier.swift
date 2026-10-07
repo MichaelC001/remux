@@ -68,21 +68,10 @@ enum GhosttyTerminalDisconnectReasonClassifier {
         status: Int,
         diagnostics: SSHTmuxStartupDiagnostics?
     ) -> String? {
-        guard status == 126 || status == 127 else {
-            return nil
-        }
-
-        let stderr = diagnostics?.stderrPreview ?? ""
-        if status == 127,
-           stderr.localizedCaseInsensitiveContains(SSHTmuxControlCommandBuilder.tmuxNotFoundMarker) {
-            return "Install tmux on this server or update Executable Path."
-        }
-
-        if status == 126,
-           stderr.localizedCaseInsensitiveContains(SSHTmuxControlCommandBuilder.tmuxNotExecutableMarker) {
-            return "Check the tmux executable and its permissions, then try again."
-        }
-        return nil
+        TmuxExecutableProblem(
+            exitStatus: status,
+            stderr: diagnostics?.stderrPreview ?? ""
+        )?.message
     }
 
     private static func isServerUnreachable(_ error: any Error) -> Bool {

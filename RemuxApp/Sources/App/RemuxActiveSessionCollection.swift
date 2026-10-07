@@ -51,7 +51,7 @@ enum RemuxActiveSessionCollection {
 
     @discardableResult
     static func upsertActivatedSession(
-        target: TmuxConnectionTarget,
+        target: SessionTarget,
         in activeSessions: inout [ActiveTerminalSession]
     ) -> ActiveTerminalSession {
         upsertActivatedSession(
@@ -148,7 +148,7 @@ enum RemuxActiveSessionCollection {
     ) {
         for index in activeSessions.indices where activeSessions[index].target.server.id == server.id {
             let target = activeSessions[index].target
-            activeSessions[index].target = TmuxConnectionTarget(
+            activeSessions[index].target = SessionTarget(
                 server: server,
                 workspace: target.workspace,
                 sshAuth: sshAuth,
@@ -166,7 +166,7 @@ enum RemuxActiveSessionCollection {
         }
 
         let target = activeSessions[index].target
-        activeSessions[index].target = TmuxConnectionTarget(
+        activeSessions[index].target = SessionTarget(
             server: target.server,
             workspace: workspace,
             sshAuth: target.sshAuth,
@@ -180,7 +180,7 @@ enum RemuxActiveSessionCollection {
     ) {
         for index in activeSessions.indices {
             let target = activeSessions[index].target
-            activeSessions[index].target = TmuxConnectionTarget(
+            activeSessions[index].target = SessionTarget(
                 server: target.server,
                 workspace: target.workspace,
                 sshAuth: target.sshAuth,

@@ -8,13 +8,13 @@ struct ActiveSessionSwitcherItem: Identifiable, Equatable {
     let isSelected: Bool
 }
 
-struct RemoteTmuxSessionIdentity: Hashable {
+struct RemoteSessionIdentity: Hashable {
     let serverID: SavedServer.ID
-    let sessionName: String
+    let locator: SessionLocator
 }
 
 struct AvailableSessionSwitcherItem: Identifiable, Equatable {
-    let id: RemoteTmuxSessionIdentity
+    let id: RemoteSessionIdentity
     let serverName: String
 }
 
@@ -42,7 +42,7 @@ struct SessionSwitcherProjection: Equatable {
 
     func availableSessionNames(on serverID: SavedServer.ID) -> [String] {
         availableSessions.compactMap { session in
-            session.id.serverID == serverID ? session.id.sessionName : nil
+            session.id.serverID == serverID ? session.id.locator.name : nil
         }
     }
 
@@ -66,13 +66,13 @@ struct SessionSwitcherProjection: Equatable {
 
         let activeWorkspaceIDs = Set(activeSessions.map(\.id))
         let activeIdentities = Set(activeSessions.map {
-            RemoteTmuxSessionIdentity(
+            RemoteSessionIdentity(
                 serverID: $0.target.server.id,
-                sessionName: $0.target.workspace.sessionName
+                locator: $0.target.locator
             )
         })
 
-        var recentIdentities = Set<RemoteTmuxSessionIdentity>()
+        var recentIdentities = Set<RemoteSessionIdentity>()
         self.recentSessions = snapshot
             .recentWorkspaces(excluding: activeWorkspaceIDs)
             .filter {
@@ -85,9 +85,9 @@ struct SessionSwitcherProjection: Equatable {
                 guard let server = snapshot.server(id: workspace.serverID) else {
                     return nil
                 }
-                let identity = RemoteTmuxSessionIdentity(
+                let identity = RemoteSessionIdentity(
                     serverID: workspace.serverID,
-                    sessionName: workspace.sessionName
+                    locator: workspace.locator
                 )
                 guard !activeIdentities.contains(identity),
                       recentIdentities.insert(identity).inserted else {
@@ -107,9 +107,9 @@ struct SessionSwitcherProjection: Equatable {
                     $0.localizedStandardCompare($1) == .orderedAscending
                 }.map { sessionName in
                     AvailableSessionSwitcherItem(
-                        id: RemoteTmuxSessionIdentity(
+                        id: RemoteSessionIdentity(
                             serverID: server.id,
-                            sessionName: sessionName
+                            locator: SessionLocator(backend: .tmux, name: sessionName)
                         ),
                         serverName: server.displayName
                     )
@@ -419,7 +419,7 @@ struct SessionSwitcherView<NewSessionContent: View>: View {
     private func resumeAvailableSession(_ session: AvailableSessionSwitcherItem) {
         Haptic.selection()
         dismiss()
-        onResumeAvailableSession(session.id.serverID, session.id.sessionName)
+        onResumeAvailableSession(session.id.serverID, session.id.locator.name)
     }
 
     private func recentSessionRow(_ session: RecentSessionSwitcherItem) -> some View {
@@ -597,7 +597,7 @@ private struct AvailableSessionSwitcherRow: View {
                 .frame(width: 28, height: 32)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(session.id.sessionName)
+                Text(session.id.locator.name)
                     .font(.headline)
                     .foregroundStyle(TerminalSelectionSheetPalette.primary)
                     .lineLimit(1)
@@ -616,7 +616,7 @@ private struct AvailableSessionSwitcherRow: View {
         .frame(minHeight: 52)
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(session.id.sessionName), \(session.serverName)")
+        .accessibilityLabel("\(session.id.locator.name), \(session.serverName)")
         .accessibilityValue("Available")
         .accessibilityHint("Resume this session")
         .accessibilityAddTraits(.isButton)
@@ -775,7 +775,7 @@ private struct AvailableSessionsBrowserView: View {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !term.isEmpty else { return sessions }
         return sessions.filter {
-            $0.id.sessionName.localizedCaseInsensitiveContains(term)
+            $0.id.locator.name.localizedCaseInsensitiveContains(term)
                 || $0.serverName.localizedCaseInsensitiveContains(term)
         }
     }

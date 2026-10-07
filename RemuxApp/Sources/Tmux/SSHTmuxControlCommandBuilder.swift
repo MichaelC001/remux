@@ -1,3 +1,31 @@
+/// A remote tmux that the launch or discovery script couldn't run.
+enum TmuxExecutableProblem: Equatable, Sendable {
+    case notFound
+    case notExecutable
+
+    /// Reads the scripts' exit status and stderr marker.
+    init?(exitStatus: Int, stderr: String) {
+        if exitStatus == 127,
+           stderr.localizedCaseInsensitiveContains(SSHTmuxControlCommandBuilder.tmuxNotFoundMarker) {
+            self = .notFound
+        } else if exitStatus == 126,
+                  stderr.localizedCaseInsensitiveContains(SSHTmuxControlCommandBuilder.tmuxNotExecutableMarker) {
+            self = .notExecutable
+        } else {
+            return nil
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .notFound:
+            "Install tmux on this server or update Executable Path."
+        case .notExecutable:
+            "Check the tmux executable and its permissions, then try again."
+        }
+    }
+}
+
 enum SSHTmuxControlCommandBuilder {
     static let tmuxNotFoundMarker = "remux: tmux executable not found"
     static let tmuxNotExecutableMarker = "remux: tmux executable cannot be executed"
@@ -13,8 +41,8 @@ enum SSHTmuxControlCommandBuilder {
         // expression so fish and csh do not need to understand POSIX syntax.
         [
             "exec /bin/sh -c '\(launchScript)' remux",
-            octalEncodedArgument(tmuxExecutable),
-            octalEncodedArgument(sessionName),
+            RemoteShellArgument.octalEncoded(tmuxExecutable),
+            RemoteShellArgument.octalEncoded(sessionName),
             "\(initialViewport.columns)",
             "\(initialViewport.rows)",
         ].joined(separator: " ")
@@ -26,7 +54,7 @@ enum SSHTmuxControlCommandBuilder {
         // login shell just as the attach command does.
         [
             "exec /bin/sh -c '\(discoveryScript)' remux",
-            octalEncodedArgument(tmuxExecutable),
+            RemoteShellArgument.octalEncoded(tmuxExecutable),
         ].joined(separator: " ")
     }
 
@@ -56,12 +84,4 @@ enum SSHTmuxControlCommandBuilder {
         #"echo "\#(tmuxNotFoundMarker): $tmux" >&2"#,
         "exit 127",
     ].joined(separator: "; ")
-
-    private static func octalEncodedArgument(_ value: String) -> String {
-        let bytes = value.utf8.map { byte in
-            let digits = String(byte, radix: 8)
-            return "\\0" + String(repeating: "0", count: 3 - digits.count) + digits
-        }
-        return "'\(bytes.joined())'"
-    }
 }

@@ -16,7 +16,7 @@ enum RemuxLibrarySSHPrewarmSkipReason: String, Equatable, Sendable {
 }
 
 enum RemuxLibrarySSHPrewarmEligibility: Equatable, Sendable {
-    case eligible(TmuxConnectionTarget)
+    case eligible(SessionTarget)
     case skipped(RemuxLibrarySSHPrewarmSkipReason)
 }
 
@@ -56,10 +56,10 @@ enum RemuxLibrarySSHPrewarmPlanner {
         currentGeneration: UInt64,
         isLibraryVisible: Bool,
         candidate: RemuxLibrarySSHPrewarmCandidate,
-        capturedTarget: TmuxConnectionTarget,
+        capturedTarget: SessionTarget,
         currentServer: SavedServer?,
         currentWorkspace: SavedWorkspace?,
-        currentTarget: TmuxConnectionTarget?,
+        currentTarget: SessionTarget?,
         currentTerminalSettings: TerminalSettings,
         hasActiveSessionOnServer: Bool
     ) -> RemuxLibrarySSHPrewarmEligibility {

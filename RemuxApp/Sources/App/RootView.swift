@@ -1498,16 +1498,18 @@ private struct ServerDetailView: View {
         .libraryHomeListRowSurface()
     }
 
-    @ViewBuilder
+    private var discoveryFailureTitle: String {
+        if discoveryState.hostKeyChallenge != nil {
+            return "Trust the SSH host key to check sessions"
+        }
+        return discoveryState.executableProblem?.message ?? "Couldn’t check sessions"
+    }
+
     private var discoveryFailureRow: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label(
-                discoveryState.hostKeyChallenge == nil
-                    ? "Couldn’t check sessions"
-                    : "Trust the SSH host key to check sessions",
-                systemImage: "exclamationmark.triangle"
-            )
-            .foregroundStyle(.secondary)
+            Label(discoveryFailureTitle, systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("library.server.available.failure")
 
             if discoveryState.hostKeyChallenge != nil {
                 Button("Review SSH Host Key") {

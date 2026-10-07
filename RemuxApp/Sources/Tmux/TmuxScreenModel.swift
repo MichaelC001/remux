@@ -9,9 +9,9 @@ import GhosttyKit
 /// the root model already reduces (badges, auto-reconnect).
 @MainActor
 final class TmuxScreenModel: ObservableObject {
-    typealias TransportFactory = @MainActor (TmuxConnectionTarget) -> any TmuxControlTransport
+    typealias TransportFactory = @MainActor (SessionTarget) -> any TmuxControlTransport
 
-    let target: TmuxConnectionTarget
+    let target: SessionTarget
     let sessionInstanceID: UUID
 
     /// The screen-facing facet: presents this session through the
@@ -24,7 +24,7 @@ final class TmuxScreenModel: ObservableObject {
     @Published private(set) var startupFailure: String?
 
     /// The reducer's expectations: the target this session connects to.
-    var runtimeConnectionTarget: TmuxConnectionTarget { target }
+    var runtimeConnectionTarget: SessionTarget { target }
 
     /// The viewport the root carries into the replacement model on
     /// reconnect for a sized attach. Prefers the last size reported
@@ -65,7 +65,7 @@ final class TmuxScreenModel: ObservableObject {
     private let initialClientSize: TmuxSessionController.ClientSize?
 
     init(
-        target: TmuxConnectionTarget,
+        target: SessionTarget,
         sessionInstanceID: UUID,
         transportFactory: @escaping TransportFactory,
         onRuntimeStateChange: @escaping (TerminalRuntimeStateUpdate) -> Void,

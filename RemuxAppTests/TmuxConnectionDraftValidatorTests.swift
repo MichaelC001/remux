@@ -208,6 +208,35 @@ final class TmuxConnectionDraftValidatorTests: XCTestCase {
         XCTAssertEqual(draft.tmuxExecutablePath, "/opt/tmux/bin/tmux")
     }
 
+    func testEditingKeepsWorkspaceBackendAndHerdrExecutablePath() {
+        let identityID = UUID()
+        let server = SavedServer(
+            displayName: "Laptop",
+            host: "laptop.example.com",
+            username: "demo",
+            identityID: identityID,
+            herdrExecutablePath: "/opt/herdr/bin/herdr"
+        )
+        let workspace = SavedWorkspace(serverID: server.id, backend: .herdr, sessionName: "ops")
+        var draft = TmuxConnectionDraft(server: server, workspace: workspace)
+        draft.password = "demo-password"
+
+        let result = TmuxConnectionDraftValidator.validate(
+            draft,
+            existingServerID: server.id,
+            existingWorkspaceID: workspace.id
+        )
+
+        guard case .valid(let submission) = result else {
+            return XCTFail("expected valid submission")
+        }
+        XCTAssertEqual(submission.workspace.backend, .herdr)
+        XCTAssertEqual(
+            submission.server.savedServer(identityID: identityID).herdrExecutablePath,
+            "/opt/herdr/bin/herdr"
+        )
+    }
+
     func testValidPrivateKeyDraftProducesPrivateKeyCredential() {
         var draft = validServerDraft()
         draft.authenticationKind = .privateKey

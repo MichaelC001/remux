@@ -258,14 +258,14 @@ final class TmuxScreenModelForegroundActiveCheckTests: XCTestCase {
         XCTFail(failureMessage)
     }
 
-    private func makeTarget() -> TmuxConnectionTarget {
+    private func makeTarget() -> SessionTarget {
         let server = SavedServer(
             displayName: "Build Host",
             host: "build.example.test",
             username: "builder"
         )
         let workspace = SavedWorkspace(serverID: server.id, sessionName: "base")
-        return TmuxConnectionTarget(
+        return SessionTarget(
             server: server,
             workspace: workspace,
             sshAuth: .password(

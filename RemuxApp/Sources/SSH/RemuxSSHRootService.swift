@@ -12,7 +12,7 @@ struct RemuxSSHRootKey: Hashable, Sendable {
     let username: String
     private let authFingerprint: String
 
-    init(target: TmuxConnectionTarget) {
+    init(target: SessionTarget) {
         self.serverID = target.server.id
         self.host = target.server.host
         self.port = target.server.port

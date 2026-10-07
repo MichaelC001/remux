@@ -29,7 +29,7 @@ store interfaces.
 
 ```text
 Saved server + workspace
--> TmuxConnectionTarget
+-> SessionTarget
 -> TmuxScreenModel
 -> TmuxSessionController
 -> TmuxControlTransport

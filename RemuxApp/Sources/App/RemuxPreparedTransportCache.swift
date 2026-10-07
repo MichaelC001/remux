@@ -1,7 +1,7 @@
 import Foundation
 
 struct PreparedTmuxControlTransport {
-    let target: TmuxConnectionTarget
+    let target: SessionTarget
     let transport: any TmuxControlTransport
 }
 
@@ -14,7 +14,7 @@ struct RemuxPreparedTransportCache {
 
     private var preparedByWorkspace: [SavedWorkspace.ID: PreparedTmuxControlTransport] = [:]
 
-    func containsReusableTransport(for target: TmuxConnectionTarget) -> Bool {
+    func containsReusableTransport(for target: SessionTarget) -> Bool {
         guard let prepared = preparedByWorkspace[target.workspace.id] else {
             return false
         }
@@ -25,7 +25,7 @@ struct RemuxPreparedTransportCache {
         preparedByWorkspace.updateValue(prepared, forKey: prepared.target.workspace.id)
     }
 
-    mutating func claim(for target: TmuxConnectionTarget) -> ClaimResult {
+    mutating func claim(for target: SessionTarget) -> ClaimResult {
         guard let prepared = preparedByWorkspace.removeValue(forKey: target.workspace.id) else {
             return .missing
         }
@@ -64,8 +64,8 @@ struct RemuxPreparedTransportCache {
     }
 }
 
-extension TmuxConnectionTarget {
-    func canReusePreparedTransport(for target: TmuxConnectionTarget) -> Bool {
+extension SessionTarget {
+    func canReusePreparedTransport(for target: SessionTarget) -> Bool {
         server.id == target.server.id &&
             server.host == target.server.host &&
             server.port == target.server.port &&

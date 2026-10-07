@@ -210,7 +210,7 @@ final class RemuxLibrarySSHPrewarmPlannerTests: XCTestCase {
 private struct PrewarmEligibilityContext {
     let server: SavedServer
     let workspace: SavedWorkspace
-    let target: TmuxConnectionTarget
+    let target: SessionTarget
     let candidate: RemuxLibrarySSHPrewarmCandidate
 
     func eligibility(
@@ -219,14 +219,14 @@ private struct PrewarmEligibilityContext {
         isLibraryVisible: Bool = true,
         currentServer: SavedServer? = nil,
         currentWorkspace: SavedWorkspace? = nil,
-        currentTarget: TmuxConnectionTarget? = nil,
+        currentTarget: SessionTarget? = nil,
         hasCurrentTarget: Bool = true,
         currentTerminalSettings: TerminalSettings = .default,
         hasActiveSessionOnServer: Bool = false
     ) -> RemuxLibrarySSHPrewarmEligibility {
         let resolvedServer = currentServer ?? server
         let resolvedWorkspace = currentWorkspace ?? workspace
-        let resolvedTarget = currentTarget ?? TmuxConnectionTarget(
+        let resolvedTarget = currentTarget ?? SessionTarget(
             server: resolvedServer,
             workspace: resolvedWorkspace,
             sshAuth: target.sshAuth,
@@ -253,14 +253,14 @@ private struct PrewarmEligibilityContext {
         capturedGeneration: UInt64 = 1,
         currentGeneration: UInt64 = 1,
         isLibraryVisible: Bool = true,
-        currentTarget: TmuxConnectionTarget? = nil,
+        currentTarget: SessionTarget? = nil,
         hasCurrentTarget: Bool = true,
         currentTerminalSettings: TerminalSettings = .default,
         hasActiveSessionOnServer: Bool = false
     ) -> RemuxLibrarySSHPrewarmEligibility {
         let resolvedTarget = currentTarget ?? {
             guard let currentServer, let currentWorkspace else { return target }
-            return TmuxConnectionTarget(
+            return SessionTarget(
                 server: currentServer,
                 workspace: currentWorkspace,
                 sshAuth: target.sshAuth,
@@ -286,7 +286,7 @@ private struct PrewarmEligibilityContext {
 private func makeEligibilityContext() -> PrewarmEligibilityContext {
     let server = makePrewarmServer(displayName: "Build")
     let workspace = makePrewarmWorkspace(serverID: server.id, sessionName: "base")
-    let target = TmuxConnectionTarget(
+    let target = SessionTarget(
         server: server,
         workspace: workspace,
         sshAuth: .password(
@@ -321,9 +321,9 @@ private func makePrewarmServer(
     )
 }
 
-private extension TmuxConnectionTarget {
-    func replacingAuth(_ auth: ResolvedSSHAuth) -> TmuxConnectionTarget {
-        TmuxConnectionTarget(
+private extension SessionTarget {
+    func replacingAuth(_ auth: ResolvedSSHAuth) -> SessionTarget {
+        SessionTarget(
             server: server,
             workspace: workspace,
             sshAuth: auth,
