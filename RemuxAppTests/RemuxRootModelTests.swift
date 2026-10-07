@@ -2489,6 +2489,85 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(savedCredential, .password("updated-demo-password"))
     }
 
+    func testEditServerChecksSessionsAgainWithTheSavedProfile() async throws {
+        let passwordBackedServer = makePasswordBackedServer()
+        let server = passwordBackedServer.server
+        let discoverer = RecordingTmuxSessionDiscoverer(results: [
+            .failure(
+                TmuxSessionDiscoveryError.remoteExit(
+                    status: 127,
+                    stderr: SSHTmuxControlCommandBuilder.tmuxNotFoundMarker
+                )
+            ),
+            .success(["base"]),
+        ])
+        let harness = makeHarness(
+            servers: [server],
+            identities: [passwordBackedServer.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("demo-password"),
+            identityID: passwordBackedServer.identity.id
+        )
+        await harness.model.load()
+        let sawMissingTmux = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: server.id).executableProblem == .notFound
+        }
+        XCTAssertTrue(sawMissingTmux)
+
+        await harness.model.beginEditServer(serverID: server.id)
+        harness.model.updateDraft { draft in
+            draft.tmuxExecutablePath = "/opt/homebrew/bin/tmux"
+        }
+        await harness.model.saveAndConnect()
+
+        let didCheckAgain = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: server.id).sessionNames == ["base"]
+        }
+        XCTAssertTrue(didCheckAgain)
+        let targets = await discoverer.targets()
+        XCTAssertEqual(targets.last?.server.tmuxExecutablePath, "/opt/homebrew/bin/tmux")
+    }
+
+    func testEditServerIgnoresALateResultFromTheOldSessionCheck() async throws {
+        let passwordBackedServer = makePasswordBackedServer()
+        let server = passwordBackedServer.server
+        let discoverer = FirstSuspendingTmuxSessionDiscoverer(laterNames: ["new"])
+        let harness = makeHarness(
+            servers: [server],
+            identities: [passwordBackedServer.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                await discoverer.discover(target)
+            }
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("demo-password"),
+            identityID: passwordBackedServer.identity.id
+        )
+        await harness.model.load()
+        // The launch check, with the profile from before the edit, stays in flight.
+        await discoverer.waitForFirstCall()
+
+        await harness.model.beginEditServer(serverID: server.id)
+        harness.model.updateDraft { draft in
+            draft.host = "updated.example.com"
+        }
+        await harness.model.saveAndConnect()
+
+        let didCheckAgain = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: server.id).sessionNames == ["new"]
+        }
+        XCTAssertTrue(didCheckAgain)
+        await discoverer.resumeFirst(with: ["old"])
+        let showedOldResult = await waitUntil(timeout: 0.3) {
+            harness.model.tmuxSessionDiscoveryState(for: server.id).sessionNames == ["old"]
+        }
+        XCTAssertFalse(showedOldResult)
+    }
+
     func testEditServerFromPasswordToNoneDeletesCredential() async throws {
         let passwordBackedServer = makePasswordBackedServer()
         let server = passwordBackedServer.server
@@ -4206,6 +4285,41 @@ private actor SuspendingTmuxSessionDiscoverer {
         for continuation in continuations {
             continuation.resume(returning: names)
         }
+    }
+}
+
+/// Holds the first discovery until released; later ones answer at once.
+private actor FirstSuspendingTmuxSessionDiscoverer {
+    private let laterNames: [String]
+    private var calls = 0
+    private var firstCall: CheckedContinuation<[String], Never>?
+    private var firstCallWaiter: CheckedContinuation<Void, Never>?
+
+    init(laterNames: [String]) {
+        self.laterNames = laterNames
+    }
+
+    func discover(_ target: SessionTarget) async -> [String] {
+        _ = target
+        calls += 1
+        guard calls == 1 else { return laterNames }
+        firstCallWaiter?.resume()
+        firstCallWaiter = nil
+        return await withCheckedContinuation { continuation in
+            firstCall = continuation
+        }
+    }
+
+    func waitForFirstCall() async {
+        guard calls == 0 else { return }
+        await withCheckedContinuation { continuation in
+            firstCallWaiter = continuation
+        }
+    }
+
+    func resumeFirst(with names: [String]) {
+        firstCall?.resume(returning: names)
+        firstCall = nil
     }
 }
 

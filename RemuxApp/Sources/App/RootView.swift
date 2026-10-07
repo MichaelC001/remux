@@ -1498,7 +1498,6 @@ private struct ServerDetailView: View {
         .libraryHomeListRowSurface()
     }
 
-    @ViewBuilder
     private var discoveryFailureTitle: String {
         if discoveryState.hostKeyChallenge != nil {
             return "Trust the SSH host key to check sessions"
