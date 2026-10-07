@@ -1154,17 +1154,67 @@ final class RemuxAppUITests: XCTestCase {
             "A server without tmux should be added."
         )
         XCTAssertFalse(app.alerts["Couldn’t Add Server"].exists)
-        let failure = app.descendants(matching: .any)
+        XCTAssertTrue(
+            tmuxMissingRow().waitForExistence(timeout: 5),
+            "The server page should say tmux is missing."
+        )
+    }
+
+    func testEditServerChecksSessionsAgain() {
+        // A seeded server skips the Add Server form, whose password iOS
+        // offers to save some seconds later, over the taps below.
+        app.launchEnvironment.merge(
+            [
+                "REMUX_UI_TESTING": "1",
+                "REMUX_UI_TEST_TMUX_MISSING": "1",
+                "REMUX_DEBUG_SEED_CONNECTION": "1",
+                "REMUX_DEBUG_SERVER_HOST": "example.com",
+                "REMUX_DEBUG_SERVER_USERNAME": "tester",
+                "REMUX_DEBUG_SERVER_PASSWORD": "password",
+            ],
+            uniquingKeysWith: { _, new in new }
+        )
+        app.launch()
+        openFirstServerDetail()
+        XCTAssertTrue(tmuxMissingRow().waitForExistence(timeout: 5))
+
+        let edit = app.buttons["library.server.edit"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 2))
+        edit.tap()
+        XCTAssertTrue(app.textFields["connection.name"].waitForExistence(timeout: 5))
+        let executable = app.textFields["connection.tmux-executable"]
+        for _ in 0..<4 where !executable.isHittable {
+            app.swipeUp()
+        }
+        tapFormField(executable)
+        typeTextAndConfirm("/usr/local/bin/tmux", into: executable)
+        app.buttons["connection.save"].tap()
+        XCTAssertTrue(
+            waitForElementToDisappear(app.textFields["connection.name"], timeout: 5),
+            "Saving the edited server should close the form."
+        )
+
+        XCTAssertTrue(
+            waitForElementToDisappear(
+                app.descendants(matching: .any)["library.server.available.loading"],
+                timeout: 5
+            ),
+            "The server page should check its sessions again after the edit."
+        )
+        XCTAssertTrue(
+            tmuxMissingRow().waitForExistence(timeout: 2),
+            "The edited path still finds no tmux."
+        )
+    }
+
+    private func tmuxMissingRow() -> XCUIElement {
+        app.descendants(matching: .any)
             .matching(identifier: "library.server.available.failure")
             .matching(NSPredicate(
                 format: "label CONTAINS %@",
                 "Install tmux on this server or update Executable Path."
             ))
             .firstMatch
-        XCTAssertTrue(
-            failure.waitForExistence(timeout: 5),
-            "The server page should say tmux is missing."
-        )
     }
 
     func testLiveSessionSwitcherDiscoversAndResumesSessionsWhenConfigured() throws {
