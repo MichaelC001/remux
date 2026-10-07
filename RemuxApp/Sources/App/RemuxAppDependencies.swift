@@ -12,6 +12,17 @@ enum RemuxConnectionTimeouts {
     static let sftpOperation: TimeAmount = .seconds(15)
 }
 
+enum SSHAccessVerificationError: Error, Equatable, LocalizedError {
+    case commandFailed(status: Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .commandFailed(let status):
+            "The server accepted the login but couldn't run a command (exit status \(status))."
+        }
+    }
+}
+
 struct RemuxAppDependencies: Sendable {
     private struct TailscaleSSHCheckConfiguration {
         let authenticationTimeout: TimeAmount
@@ -26,25 +37,30 @@ struct RemuxAppDependencies: Sendable {
     let publicKeyInstaller: SSHPublicKeyInstaller
     private let sshRootService: RemuxSSHRootService
     private let transportFactory: @Sendable (
-        _ target: TmuxConnectionTarget,
+        _ target: SessionTarget,
         _ trustedHostStore: TrustedHostStore,
         _ sshRootService: RemuxSSHRootService
     ) -> any TmuxControlTransport
     private let sshConnectionPrewarmer: @Sendable (
-        _ target: TmuxConnectionTarget,
+        _ target: SessionTarget,
         _ trustedHostStore: TrustedHostStore,
         _ sshRootService: RemuxSSHRootService
     ) async -> Void
     private let attachmentTransferServiceFactory: @Sendable (
-        _ target: TmuxConnectionTarget,
+        _ target: SessionTarget,
         _ trustedHostStore: TrustedHostStore,
         _ sshRootService: RemuxSSHRootService
     ) -> any GhosttyAttachmentTransferService
     private let tmuxSessionDiscoverer: @Sendable (
-        _ target: TmuxConnectionTarget,
+        _ target: SessionTarget,
         _ trustedHostStore: TrustedHostStore,
         _ sshRootService: RemuxSSHRootService
     ) async throws -> [String]
+    private let sshAccessVerifier: @Sendable (
+        _ target: SessionTarget,
+        _ trustedHostStore: TrustedHostStore,
+        _ sshRootService: RemuxSSHRootService
+    ) async throws -> Void
     private let debugConnectionSeeder: @Sendable (
         _ profileRepository: any ConnectionProfileRepository,
         _ credentialStore: any SSHCredentialStore
@@ -59,25 +75,30 @@ struct RemuxAppDependencies: Sendable {
         publicKeyInstaller: SSHPublicKeyInstaller,
         sshRootService: RemuxSSHRootService = RemuxSSHRootService(),
         transportFactory: @escaping @Sendable (
-            _ target: TmuxConnectionTarget,
+            _ target: SessionTarget,
             _ trustedHostStore: TrustedHostStore,
             _ sshRootService: RemuxSSHRootService
         ) -> any TmuxControlTransport = RemuxAppDependencies.liveTransport,
         sshConnectionPrewarmer: @escaping @Sendable (
-            _ target: TmuxConnectionTarget,
+            _ target: SessionTarget,
             _ trustedHostStore: TrustedHostStore,
             _ sshRootService: RemuxSSHRootService
         ) async -> Void = RemuxAppDependencies.liveSSHConnectionPrewarmer,
         attachmentTransferServiceFactory: @escaping @Sendable (
-            _ target: TmuxConnectionTarget,
+            _ target: SessionTarget,
             _ trustedHostStore: TrustedHostStore,
             _ sshRootService: RemuxSSHRootService
         ) -> any GhosttyAttachmentTransferService = RemuxAppDependencies.liveAttachmentTransferService,
         tmuxSessionDiscoverer: @escaping @Sendable (
-            _ target: TmuxConnectionTarget,
+            _ target: SessionTarget,
             _ trustedHostStore: TrustedHostStore,
             _ sshRootService: RemuxSSHRootService
         ) async throws -> [String] = RemuxAppDependencies.liveTmuxSessionDiscoverer,
+        sshAccessVerifier: @escaping @Sendable (
+            _ target: SessionTarget,
+            _ trustedHostStore: TrustedHostStore,
+            _ sshRootService: RemuxSSHRootService
+        ) async throws -> Void = RemuxAppDependencies.liveSSHAccessVerifier,
         debugConnectionSeeder: @escaping @Sendable (
             _ profileRepository: any ConnectionProfileRepository,
             _ credentialStore: any SSHCredentialStore
@@ -94,6 +115,7 @@ struct RemuxAppDependencies: Sendable {
         self.sshConnectionPrewarmer = sshConnectionPrewarmer
         self.attachmentTransferServiceFactory = attachmentTransferServiceFactory
         self.tmuxSessionDiscoverer = tmuxSessionDiscoverer
+        self.sshAccessVerifier = sshAccessVerifier
         self.debugConnectionSeeder = debugConnectionSeeder
     }
 
@@ -163,7 +185,7 @@ struct RemuxAppDependencies: Sendable {
         }
     }
 
-    func makeTransport(for target: TmuxConnectionTarget) -> any TmuxControlTransport {
+    func makeTransport(for target: SessionTarget) -> any TmuxControlTransport {
         transportFactory(target, trustedHostStore, sshRootService)
     }
 
@@ -171,16 +193,22 @@ struct RemuxAppDependencies: Sendable {
         sshRootService.tailscaleSSHCheckChallengeBroker.events
     }
 
-    func prewarmSSHConnection(for target: TmuxConnectionTarget) async {
+    func prewarmSSHConnection(for target: SessionTarget) async {
         await sshConnectionPrewarmer(target, trustedHostStore, sshRootService)
     }
 
-    func makeAttachmentTransferService(for target: TmuxConnectionTarget) -> any GhosttyAttachmentTransferService {
+    func makeAttachmentTransferService(for target: SessionTarget) -> any GhosttyAttachmentTransferService {
         attachmentTransferServiceFactory(target, trustedHostStore, sshRootService)
     }
 
-    func discoverTmuxSessions(for target: TmuxConnectionTarget) async throws -> [String] {
+    func discoverTmuxSessions(for target: SessionTarget) async throws -> [String] {
         try await tmuxSessionDiscoverer(target, trustedHostStore, sshRootService)
+    }
+
+    /// Checks that Remux can sign in to the server and run a command, without
+    /// requiring tmux or any other multiplexer there.
+    func verifySSHAccess(for target: SessionTarget) async throws {
+        try await sshAccessVerifier(target, trustedHostStore, sshRootService)
     }
 
     func closeIdleSSHConnections(forServerID serverID: SavedServer.ID) {
@@ -190,7 +218,7 @@ struct RemuxAppDependencies: Sendable {
     }
 
     private static func liveTransport(
-        target: TmuxConnectionTarget,
+        target: SessionTarget,
         trustedHostStore: TrustedHostStore,
         sshRootService: RemuxSSHRootService
     ) -> any TmuxControlTransport {
@@ -206,7 +234,7 @@ struct RemuxAppDependencies: Sendable {
     }
 
     private static func liveSSHConnectionPrewarmer(
-        target: TmuxConnectionTarget,
+        target: SessionTarget,
         trustedHostStore: TrustedHostStore,
         sshRootService: RemuxSSHRootService
     ) async {
@@ -232,7 +260,7 @@ struct RemuxAppDependencies: Sendable {
     }
 
     static func sshConfiguration(
-        for target: TmuxConnectionTarget,
+        for target: SessionTarget,
         trustedHostStore: TrustedHostStore,
         tailscaleSSHCheckChallengeBroker: TailscaleSSHCheckChallengeBroker? = nil,
         traceFlowID: String?
@@ -263,7 +291,7 @@ struct RemuxAppDependencies: Sendable {
     }
 
     static func attachmentSSHRootConfiguration(
-        for target: TmuxConnectionTarget,
+        for target: SessionTarget,
         trustedHostStore: TrustedHostStore,
         tailscaleSSHCheckChallengeBroker: TailscaleSSHCheckChallengeBroker? = nil
     ) -> RemuxSSHRootConfiguration {
@@ -276,7 +304,7 @@ struct RemuxAppDependencies: Sendable {
     }
 
     private static func liveAttachmentTransferService(
-        target: TmuxConnectionTarget,
+        target: SessionTarget,
         trustedHostStore: TrustedHostStore,
         sshRootService: RemuxSSHRootService
     ) -> any GhosttyAttachmentTransferService {
@@ -295,10 +323,57 @@ struct RemuxAppDependencies: Sendable {
     }
 
     private static func liveTmuxSessionDiscoverer(
-        target: TmuxConnectionTarget,
+        target: SessionTarget,
         trustedHostStore: TrustedHostStore,
         sshRootService: RemuxSSHRootService
     ) async throws -> [String] {
+        try await withClaimedSSHRoot(
+            for: target,
+            trustedHostStore: trustedHostStore,
+            sshRootService: sshRootService
+        ) { claimedRoot, configuration, trace in
+            try await TmuxSessionDiscovery.discover(
+                using: claimedRoot,
+                tmuxExecutable: configuration.tmuxExecutable,
+                trace: trace
+            )
+        }
+    }
+
+    private static func liveSSHAccessVerifier(
+        target: SessionTarget,
+        trustedHostStore: TrustedHostStore,
+        sshRootService: RemuxSSHRootService
+    ) async throws {
+        try await withClaimedSSHRoot(
+            for: target,
+            trustedHostStore: trustedHostStore,
+            sshRootService: sshRootService
+        ) { claimedRoot, _, trace in
+            let result = try await RemuxSSHExecSession.run(
+                using: claimedRoot,
+                command: "exit 0",
+                stdin: nil,
+                trace: trace
+            )
+            guard result.exitStatus == 0 else {
+                throw SSHAccessVerificationError.commandFailed(status: result.exitStatus)
+            }
+        }
+    }
+
+    /// Connects, verifies the host key and authenticates through a prepared
+    /// SSH root, runs `operation` on the claimed root, then releases it.
+    private static func withClaimedSSHRoot<Result>(
+        for target: SessionTarget,
+        trustedHostStore: TrustedHostStore,
+        sshRootService: RemuxSSHRootService,
+        operation: (
+            RemuxSSHClaimedRoot,
+            SSHTmuxControlConfiguration,
+            RemuxTransportStartupTrace
+        ) async throws -> Result
+    ) async throws -> Result {
         let trace = RemuxTransportStartupTrace(
             flowID: "session.discovery.\(target.server.id.uuidString)"
         )
@@ -309,7 +384,7 @@ struct RemuxAppDependencies: Sendable {
             traceFlowID: nil
         )
         guard let rootKey = configuration.sshRootKey else {
-            preconditionFailure("Tmux discovery requires an SSH root key")
+            preconditionFailure("Server exec requires an SSH root key")
         }
 
         let preparedRoot = await sshRootService.preparedRoot(
@@ -320,13 +395,9 @@ struct RemuxAppDependencies: Sendable {
         do {
             let sshRoot = try await preparedRoot.sshRoot()
             let claimedRoot = try await preparedRoot.claim(sshRoot, trace: trace)
-            let sessions = try await TmuxSessionDiscovery.discover(
-                using: claimedRoot,
-                tmuxExecutable: configuration.tmuxExecutable,
-                trace: trace
-            )
+            let result = try await operation(claimedRoot, configuration, trace)
             await preparedRoot.cancelAndCleanup()
-            return sessions
+            return result
         } catch {
             await preparedRoot.cancelAndCleanup()
             throw error
@@ -334,7 +405,7 @@ struct RemuxAppDependencies: Sendable {
     }
 
     private static func sshRootConfiguration(
-        for target: TmuxConnectionTarget,
+        for target: SessionTarget,
         trustedHostStore: TrustedHostStore,
         tailscaleSSHCheckChallengeBroker: TailscaleSSHCheckChallengeBroker?,
         connectTimeout: TimeAmount
@@ -432,6 +503,9 @@ struct RemuxAppDependencies: Sendable {
         let tailscaleSSHCheckChallenge = ProcessInfo.processInfo.environment[
             "REMUX_UI_TEST_TAILSCALE_CHECK_BANNER"
         ].flatMap(TailscaleSSHCheckChallenge.parse(from:))
+        let simulatesMissingTmux = ProcessInfo.processInfo.environment[
+            "REMUX_UI_TEST_TMUX_MISSING"
+        ] == "1"
 
         return RemuxAppDependencies(
             profileRepository: InMemoryConnectionProfileRepository(),
@@ -458,34 +532,59 @@ struct RemuxAppDependencies: Sendable {
             },
             sshConnectionPrewarmer: { _, _, _ in
             },
+            // UI tests reach no real server: discovery and verification
+            // answer like a server that signs in and whose tmux has only the
+            // seeded session, if any.
             tmuxSessionDiscoverer: { target, _, sshRootService in
-                guard target.sshAuth.credential == .none,
-                      let tailscaleSSHCheckChallenge else {
-                    return try await RemuxAppDependencies.liveTmuxSessionDiscoverer(
-                        target: target,
-                        trustedHostStore: trustedHostStore,
+                if target.sshAuth.credential == .none, let tailscaleSSHCheckChallenge {
+                    try await simulateTailscaleSSHCheck(
+                        tailscaleSSHCheckChallenge,
+                        sshRootService: sshRootService
+                    )
+                    return []
+                }
+                if simulatesMissingTmux {
+                    // What the discovery script reports when tmux isn't found.
+                    let executable = target.server.tmuxExecutablePath ?? "tmux"
+                    throw TmuxSessionDiscoveryError.remoteExit(
+                        status: 127,
+                        stderr: "\(SSHTmuxControlCommandBuilder.tmuxNotFoundMarker): \(executable)\n"
+                    )
+                }
+                return DebugConnectionProfileSeeder.seededSessionName().map { [$0] } ?? []
+            },
+            sshAccessVerifier: { target, _, sshRootService in
+                if target.sshAuth.credential == .none, let tailscaleSSHCheckChallenge {
+                    try await simulateTailscaleSSHCheck(
+                        tailscaleSSHCheckChallenge,
                         sshRootService: sshRootService
                     )
                 }
-
-                let suspension = AsyncThrowingStream.makeStream(of: Void.self)
-                let request = TailscaleSSHCheckRequest(
-                    id: UUID(),
-                    challenge: tailscaleSSHCheckChallenge,
-                    cancel: {
-                        suspension.continuation.finish(throwing: CancellationError())
-                    }
-                )
-                sshRootService.tailscaleSSHCheckChallengeBroker.handle(.presented(request))
-                defer {
-                    sshRootService.tailscaleSSHCheckChallengeBroker.handle(.finished(request.id))
-                    suspension.continuation.finish()
-                }
-                for try await _ in suspension.stream {
-                }
-                return []
             }
         )
+    }
+
+    /// Presents `challenge` as the server's Tailscale SSH check and waits
+    /// until the user cancels it.
+    private static func simulateTailscaleSSHCheck(
+        _ challenge: TailscaleSSHCheckChallenge,
+        sshRootService: RemuxSSHRootService
+    ) async throws {
+        let suspension = AsyncThrowingStream.makeStream(of: Void.self)
+        let request = TailscaleSSHCheckRequest(
+            id: UUID(),
+            challenge: challenge,
+            cancel: {
+                suspension.continuation.finish(throwing: CancellationError())
+            }
+        )
+        sshRootService.tailscaleSSHCheckChallengeBroker.handle(.presented(request))
+        defer {
+            sshRootService.tailscaleSSHCheckChallengeBroker.handle(.finished(request.id))
+            suspension.continuation.finish()
+        }
+        for try await _ in suspension.stream {
+        }
     }
 
     private static func uiTestingTransportChunks() -> [Data] {
@@ -493,7 +592,10 @@ struct RemuxAppDependencies: Sendable {
             return []
         }
 
-        let paneState = "%0;83;44;0;0;1;;;;0;4294967295;4294967295;0;1;0;0;0;0;0;0;0;0;;;0;0;43;8,16\n"
+        // Answers GhosttyKit's `list-panes -s -F` request. The line needs every
+        // field of that format, through pane_current_command and
+        // pane_current_path, or the client rejects the attach.
+        let paneState = "%0;83;44;0;0;1;;;;0;4294967295;4294967295;0;1;0;0;0;0;0;0;0;0;;;0;0;43;8,16;zsh;/home/demo\n"
         let window = "$42 @0 1 %0 83 44 b7dd,83x44,0,0,0 b7dd,83x44,0,0,0 window-0\n"
         let transcript = "%begin 1 1 0\n%end 1 1 0\n%session-changed $42 main\n"
             + "%begin 2 2 1\n3.1\n%end 2 2 1\n"

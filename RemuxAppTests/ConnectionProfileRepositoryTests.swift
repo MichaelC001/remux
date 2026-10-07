@@ -286,6 +286,58 @@ final class ConnectionProfileRepositoryTests: XCTestCase {
         let server = try JSONDecoder().decode(SavedServer.self, from: data)
 
         XCTAssertNil(server.tmuxExecutablePath)
+        XCTAssertNil(server.herdrExecutablePath)
+    }
+
+    func testSavedServerCodablePreservesHerdrExecutablePath() throws {
+        let server = SavedServer(
+            displayName: "Example",
+            host: "example.test",
+            username: "deploy",
+            identityID: UUID(),
+            herdrExecutablePath: "/home/deploy/.local/bin/herdr"
+        )
+
+        let decoded = try JSONDecoder().decode(
+            SavedServer.self,
+            from: try JSONEncoder().encode(server)
+        )
+
+        XCTAssertEqual(decoded, server)
+        XCTAssertEqual(decoded.herdrExecutablePath, "/home/deploy/.local/bin/herdr")
+    }
+
+    func testWorkspaceSavedBeforeBackendsDecodesAsTmuxWithSameID() throws {
+        let workspace = SavedWorkspace(
+            serverID: UUID(),
+            sessionName: "ops",
+            lastOpenedAt: Date(timeIntervalSinceReferenceDate: 1_000)
+        )
+        var legacy = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try JSONEncoder().encode(workspace)) as? [String: Any]
+        )
+        XCTAssertNotNil(legacy.removeValue(forKey: "backend"))
+
+        let decoded = try JSONDecoder().decode(
+            SavedWorkspace.self,
+            from: try JSONSerialization.data(withJSONObject: legacy)
+        )
+
+        XCTAssertEqual(decoded.id, workspace.id)
+        XCTAssertEqual(decoded.backend, .tmux)
+        XCTAssertEqual(decoded, workspace)
+    }
+
+    func testSavedWorkspaceCodablePreservesBackend() throws {
+        let workspace = SavedWorkspace(serverID: UUID(), backend: .herdr, sessionName: "ops")
+
+        let decoded = try JSONDecoder().decode(
+            SavedWorkspace.self,
+            from: try JSONEncoder().encode(workspace)
+        )
+
+        XCTAssertEqual(decoded, workspace)
+        XCTAssertEqual(decoded.locator, SessionLocator(backend: .herdr, name: "ops"))
     }
 
     func testSSHIdentityCodablePreservesFields() throws {

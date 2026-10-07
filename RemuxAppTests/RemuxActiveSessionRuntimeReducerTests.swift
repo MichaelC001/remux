@@ -214,7 +214,7 @@ private func makeSession(
         username: "builder"
     )
     let workspace = SavedWorkspace(serverID: server.id, sessionName: "base")
-    let target = TmuxConnectionTarget(
+    let target = SessionTarget(
         server: server,
         workspace: workspace,
         sshAuth: .password(

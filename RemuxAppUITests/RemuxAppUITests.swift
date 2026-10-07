@@ -4,14 +4,13 @@ import UIKit
 import XCTest
 
 final class RemuxAppUITests: XCTestCase {
+    /// The connection fields of the harness's live SSH configuration. The app
+    /// reads the credential from the same file itself.
     private struct LiveSSHConfiguration: Decodable {
         var displayName: String?
         let host: String
         var port: String?
         let username: String
-        var password: String?
-        var privateKeyPEM: String?
-        var privateKeyPassphrase: String?
         var sessionName: String?
         var tmuxExecutablePath: String?
     }
@@ -22,13 +21,65 @@ final class RemuxAppUITests: XCTestCase {
 
     private var app: XCUIApplication!
     private var acceptedExpectedLiveHostKey = false
+    private var launchedLiveSSHApp = false
 
-    override func setUp() {
-        super.setUp()
+    override func setUpWithError() throws {
+        try super.setUpWithError()
         continueAfterFailure = false
 
         app = XCUIApplication()
         installSystemPromptMonitor()
+        try waitForEarlierLiveTestCleanupThenMarkThisTest()
+    }
+
+    override func tearDown() {
+        // The cleanup harness removes a live test's tmux sessions as soon as
+        // the test ends. An app left running would reattach and recreate them.
+        if launchedLiveSSHApp {
+            app.terminate()
+        }
+        super.tearDown()
+    }
+
+    /// The cleanup harness checks and cleans up after a live test once XCTest
+    /// reports its result, by which time the next test may have started. So
+    /// each test creates `<test>.awaiting-cleanup` in setUp, before its body
+    /// runs; the harness removes it when it is done with the test, and the
+    /// next test waits for that in setUp. If the harness could not remove the
+    /// test's sessions, it keeps the marker and writes "cleanup failed" in it.
+    private func waitForEarlierLiveTestCleanupThenMarkThisTest() throws {
+        guard let records = liveHarnessRunDirectory?.appendingPathComponent("tests", isDirectory: true) else {
+            return
+        }
+        let suffix = ".awaiting-cleanup"
+        let timeout: TimeInterval = 120
+        let started = Date()
+        while true {
+            let awaiting = try FileManager.default.contentsOfDirectory(atPath: records.path)
+                .filter { $0.hasSuffix(suffix) }
+            if awaiting.isEmpty {
+                break
+            }
+            for marker in awaiting {
+                if let contents = FileManager.default.contents(atPath: records.appendingPathComponent(marker).path),
+                   !contents.isEmpty {
+                    throw LiveSSHCleanupHarnessError(
+                        description: "The cleanup harness could not remove the tmux sessions of \(marker.dropLast(suffix.count)); refusing to start a test that could see them."
+                    )
+                }
+            }
+            guard Date().timeIntervalSince(started) < timeout else {
+                throw LiveSSHCleanupHarnessError(
+                    description: "The cleanup harness has not finished with \(awaiting.joined(separator: ", ")) after \(Int(timeout)) s; refusing to start a test that could see its tmux sessions."
+                )
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        let waited = Date().timeIntervalSince(started)
+        if waited >= 0.2 {
+            print(String(format: "Waited %.1f s for the cleanup harness to finish the previous test.", waited))
+        }
+        try Data().write(to: records.appendingPathComponent(liveHarnessTestMethod + suffix))
     }
 
     private func attachScreenshot(named name: String) {
@@ -81,6 +132,7 @@ final class RemuxAppUITests: XCTestCase {
 
         attachScreenshot(named: "toolbar-keys-control-moved")
 
+        waitForLiveTerminalInputReady(timeout: 10)
         first.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(forDuration: 1.2)
         XCTAssertTrue(app.buttons["terminal.shortcuts.settings"].waitForExistence(timeout: 2))
@@ -165,11 +217,14 @@ final class RemuxAppUITests: XCTestCase {
         stop.tap()
 
         let status = app.staticTexts["terminal.composer.dictation.status"]
-        XCTAssertTrue(status.waitForExistence(timeout: 1))
+        XCTAssertTrue(status.waitForExistence(timeout: 3))
         XCTAssertEqual(status.label, "Transcribing…")
         XCTAssertNotNil(waitForKeyboardPresence(false, label: "transcribing kept keyboard hidden"))
         XCTAssertFalse(keyboardDismiss.exists)
         attachScreenshot(named: "composer-dictation-transcribing")
+        // The editor stays in the accessibility tree while transcribing but
+        // ignores taps, so wait for the transcription itself to finish.
+        XCTAssertTrue(waitForElementToDisappear(status, timeout: 5), "Dictation kept transcribing.")
 
         let field = app.textViews["terminal.composer.field"]
         XCTAssertTrue(field.waitForExistence(timeout: 3))
@@ -209,10 +264,11 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertFalse(keyboardDismiss.exists)
         stop.tap()
 
-        XCTAssertTrue(status.waitForExistence(timeout: 1))
+        XCTAssertTrue(status.waitForExistence(timeout: 3))
         XCTAssertEqual(status.label, "Transcribing…")
         XCTAssertNotNil(waitForKeyboardPresence(true, label: "transcribing kept keyboard visible"))
         XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
+        XCTAssertTrue(waitForElementToDisappear(status, timeout: 5), "Dictation kept transcribing.")
         XCTAssertTrue(field.waitForExistence(timeout: 3))
         XCTAssertNotNil(waitForKeyboardPresence(true, label: "dictation stopped with keyboard visible"))
         XCTAssertEqual(app.keyboards.firstMatch.frame, visibleKeyboardFrame)
@@ -582,7 +638,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertFalse(app.textFields["connection.name"].waitForExistence(timeout: 0.5))
         XCTAssertFalse(app.secureTextFields["connection.password"].exists)
         sessionName.tap()
-        sessionName.typeText("logs")
+        typeTextAndConfirm("logs", into: sessionName)
         app.swipeUp()
         XCTAssertTrue(app.buttons["connection.save"].waitForExistence(timeout: 2))
         saveConnectionAndWaitForTerminal()
@@ -741,7 +797,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(app.buttons["connection.private-key.install"].isEnabled)
 
         let host = app.textFields["connection.host"]
-        host.tap()
+        tapFormField(host)
         host.typeText(".changed")
         XCTAssertTrue(
             waitForElementToDisappear(inlineStatus, timeout: 3),
@@ -985,7 +1041,7 @@ final class RemuxAppUITests: XCTestCase {
         )
 
         sendTerminalCommand(
-            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_ESCAPE_\" + (\"OK\" if b and b[0]==27 else \"BAD\"))'"
+            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f, termios.TCSANOW); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_ESCAPE_\" + (\"OK\" if b and b[0]==27 else \"BAD\"))'"
         )
         escape.tap()
         RunLoop.current.run(until: Date().addingTimeInterval(1))
@@ -1027,7 +1083,7 @@ final class RemuxAppUITests: XCTestCase {
         )
 
         sendTerminalCommand(
-            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_PLAIN_C_\" + (\"OK\" if b and b[0]==99 else \"BAD\"))'"
+            "python3 -c 'import os,sys,termios,tty; f=sys.stdin.fileno(); o=termios.tcgetattr(f); tty.setraw(f, termios.TCSANOW); b=os.read(f,1); termios.tcsetattr(f,termios.TCSADRAIN,o); print(\"REMUX_PLAIN_C_\" + (\"OK\" if b and b[0]==99 else \"BAD\"))'"
         )
         control.tap()
         openHomeFromTerminal()
@@ -1080,6 +1136,85 @@ final class RemuxAppUITests: XCTestCase {
 
         app.buttons["terminal.sessions.close"].tap()
         XCTAssertTrue(app.otherElements["terminal.input.ready"].waitForExistence(timeout: 2))
+    }
+
+    /// The SSH server is simulated: it signs in and reports that tmux isn't
+    /// installed, as the discovery script does on a host without tmux.
+    func testAddServerWhenTmuxIsMissing() {
+        app.launchEnvironment["REMUX_UI_TEST_TMUX_MISSING"] = "1"
+        launchSimulatorApp()
+        openConnectionSetup()
+        fillConnectionForm()
+
+        app.buttons["connection.save"].tap()
+        dismissPasswordManagerPromptIfPresent()
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["library.server.detail"].waitForExistence(timeout: 5),
+            "A server without tmux should be added."
+        )
+        XCTAssertFalse(app.alerts["Couldn’t Add Server"].exists)
+        XCTAssertTrue(
+            tmuxMissingRow().waitForExistence(timeout: 5),
+            "The server page should say tmux is missing."
+        )
+    }
+
+    func testEditServerChecksSessionsAgain() {
+        // A seeded server skips the Add Server form, whose password iOS
+        // offers to save some seconds later, over the taps below.
+        app.launchEnvironment.merge(
+            [
+                "REMUX_UI_TESTING": "1",
+                "REMUX_UI_TEST_TMUX_MISSING": "1",
+                "REMUX_DEBUG_SEED_CONNECTION": "1",
+                "REMUX_DEBUG_SERVER_HOST": "example.com",
+                "REMUX_DEBUG_SERVER_USERNAME": "tester",
+                "REMUX_DEBUG_SERVER_PASSWORD": "password",
+            ],
+            uniquingKeysWith: { _, new in new }
+        )
+        app.launch()
+        openFirstServerDetail()
+        XCTAssertTrue(tmuxMissingRow().waitForExistence(timeout: 5))
+
+        let edit = app.buttons["library.server.edit"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 2))
+        edit.tap()
+        XCTAssertTrue(app.textFields["connection.name"].waitForExistence(timeout: 5))
+        let executable = app.textFields["connection.tmux-executable"]
+        for _ in 0..<4 where !executable.isHittable {
+            app.swipeUp()
+        }
+        tapFormField(executable)
+        typeTextAndConfirm("/usr/local/bin/tmux", into: executable)
+        app.buttons["connection.save"].tap()
+        XCTAssertTrue(
+            waitForElementToDisappear(app.textFields["connection.name"], timeout: 5),
+            "Saving the edited server should close the form."
+        )
+
+        XCTAssertTrue(
+            waitForElementToDisappear(
+                app.descendants(matching: .any)["library.server.available.loading"],
+                timeout: 5
+            ),
+            "The server page should check its sessions again after the edit."
+        )
+        XCTAssertTrue(
+            tmuxMissingRow().waitForExistence(timeout: 2),
+            "The edited path still finds no tmux."
+        )
+    }
+
+    private func tmuxMissingRow() -> XCUIElement {
+        app.descendants(matching: .any)
+            .matching(identifier: "library.server.available.failure")
+            .matching(NSPredicate(
+                format: "label CONTAINS %@",
+                "Install tmux on this server or update Executable Path."
+            ))
+            .firstMatch
     }
 
     func testLiveSessionSwitcherDiscoversAndResumesSessionsWhenConfigured() throws {
@@ -1969,20 +2104,7 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     func testLiveWindowNamesAndRenameWhenConfigured() throws {
-        let sessionName: String
-        if let override = liveSessionNameOverride() {
-            guard override.range(
-                of: #"^remux-latency-[A-Za-z0-9._-]+$"#,
-                options: .regularExpression
-            ) != nil else {
-                throw LiveSSHCleanupHarnessError(
-                    description: "Refusing unsafe window-name fixture session \(override)."
-                )
-            }
-            sessionName = override
-        } else {
-            sessionName = try generatedLiveLatencySessionName("window-names")
-        }
+        let sessionName = try generatedLiveLatencySessionName("window-names")
         defer {
             cleanupGeneratedLiveLatencySessionIfPossible(sessionName)
         }
@@ -2618,16 +2740,16 @@ final class RemuxAppUITests: XCTestCase {
         try requireLiveSSHConfigurationExists()
         let manifestPath = try liveGeneratedSessionManifestPath()
 
-        if let override = liveSessionNameOverride() {
+        if let assigned = liveHarnessTestValue("session") {
             XCTAssertTrue(
-                override.range(
+                assigned.range(
                     of: #"^remux-latency-[A-Za-z0-9._-]+$"#,
                     options: .regularExpression
                 ) != nil,
-                "Refusing to use non-allowlisted live tmux session override \(override)."
+                "Refusing to use non-allowlisted harness-assigned live tmux session \(assigned)."
             )
-            recordGeneratedLiveLatencySession(override, manifestPath: manifestPath)
-            return override
+            recordGeneratedLiveLatencySession(assigned, manifestPath: manifestPath)
+            return assigned
         }
 
         let safePurpose = purpose.replacingOccurrences(
@@ -2641,27 +2763,35 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func liveGeneratedSessionManifestPath() throws -> String {
-        guard liveCleanupHarnessEnabled() else {
+        guard liveCleanupHarnessEnabled(), let path = liveHarnessTestRecordPath("sessions") else {
             throw LiveSSHCleanupHarnessError(
                 description: "Live SSH UI tests that create remux-latency-* tmux sessions must run through scripts/remux_live_ui_test_with_cleanup.sh; refusing to create a remote tmux session without remote kill-session cleanup."
             )
         }
 
-        if let manifestPath = ProcessInfo.processInfo.environment["REMUX_LIVE_GENERATED_SESSION_MANIFEST"],
-           !manifestPath.isEmpty {
-            return manifestPath
-        }
-
-        return "/tmp/remux-live-generated-sessions.txt"
+        return path
     }
 
     private func liveCleanupHarnessEnabled() -> Bool {
         liveCleanupHarnessFieldsIfEnabled() != nil
     }
 
-    private func liveCleanupHarnessFieldsIfEnabled() -> [String: String]? {
-        let url = URL(fileURLWithPath: "/tmp/remux-live-cleanup-harness.txt")
+    /// The cleanup harness gives each run its own directory, which reaches the
+    /// test runner as TEST_RUNNER_REMUX_LIVE_RUN_DIR. It holds the harness
+    /// marker and each test's records.
+    private var liveHarnessRunDirectory: URL? {
         guard
+            let path = ProcessInfo.processInfo.environment["REMUX_LIVE_RUN_DIR"],
+            !path.isEmpty
+        else {
+            return nil
+        }
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
+
+    private func liveCleanupHarnessFieldsIfEnabled() -> [String: String]? {
+        guard
+            let url = liveHarnessRunDirectory?.appendingPathComponent("harness.txt"),
             let data = try? Data(contentsOf: url),
             let value = String(data: data, encoding: .utf8)
         else {
@@ -2709,24 +2839,26 @@ final class RemuxAppUITests: XCTestCase {
         return errno == EPERM
     }
 
+    /// The live SSH configuration file the cleanup harness was given.
+    private func liveSSHConfigurationPath() throws -> String {
+        guard liveHarnessRunDirectory != nil else {
+            throw XCTSkip("Run live SSH UI tests through scripts/remux_live_ui_test_with_cleanup.sh.")
+        }
+        guard let path = liveCleanupHarnessFieldsIfEnabled()?["config"] else {
+            throw LiveSSHCleanupHarnessError(
+                description: "The live UI test cleanup harness marker is missing, stale or has no config."
+            )
+        }
+        return path
+    }
+
     private func requireLiveSSHConfigurationExists() throws {
-        if liveSSHConfigurationDataFromEnvironment() != nil {
-            return
-        }
-        let configurationPath = "/tmp/remux-live-ssh.json"
-        guard FileManager.default.fileExists(atPath: configurationPath) else {
-            throw XCTSkip("Create \(configurationPath) inside the simulator to run live SSH UI testing.")
-        }
+        _ = try liveSSHConfigurationPath()
     }
 
     private func liveAgentTUISessionName() throws -> String {
         try requireLiveSSHConfigurationExists()
-        guard let sessionName = liveCleanupHarnessOverride("REMUX_LIVE_AGENT_TUI_SESSION") ??
-            liveHarnessValue(
-                environmentKey: "REMUX_LIVE_AGENT_TUI_SESSION",
-                fallbackPath: "/tmp/remux-live-agent-tui-session.txt"
-            )
-        else {
+        guard let sessionName = liveCleanupHarnessOverride("REMUX_LIVE_AGENT_TUI_SESSION") else {
             let description = "Set REMUX_LIVE_AGENT_TUI_SESSION to an existing two-pane tmux session running real agent TUIs."
             if liveCleanupHarnessEnabled() {
                 throw LiveSSHCleanupHarnessError(description: description)
@@ -2745,42 +2877,30 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func requireLivePreparedFixture(_ fixtureName: String) throws {
-        let preparedFixture = livePreparedFixtureName()
-        guard preparedFixture == fixtureName else {
+        guard liveHarnessTestValue("fixture") == fixtureName else {
             throw XCTSkip("Run this live SSH UI test through scripts/remux_live_ui_test_with_cleanup.sh so it can prepare the \(fixtureName) tmux fixture.")
         }
     }
 
-    private func liveSessionNameOverride() -> String? {
-        liveHarnessValue(
-            environmentKey: "REMUX_LIVE_SESSION_NAME_OVERRIDE",
-            fallbackPath: "/tmp/remux-live-session-name-override.txt"
-        )
+    /// XCTest names a test "-[RemuxUITests.RemuxAppUITests testLiveExample]".
+    private var liveHarnessTestMethod: String {
+        String(name.split(separator: " ").last?.dropLast() ?? "")
     }
 
-    private func livePreparedFixtureName() -> String? {
-        liveHarnessValue(
-            environmentKey: "REMUX_LIVE_PREPARED_FIXTURE",
-            fallbackPath: "/tmp/remux-live-prepared-fixture.txt"
-        )
+    /// The cleanup harness assigns values to individual tests, such as a
+    /// prepared fixture's tmux session, as `<field>.<test method>=<value>`
+    /// marker lines, so tests sharing one xcodebuild run never share them.
+    private func liveHarnessTestValue(_ field: String) -> String? {
+        liveCleanupHarnessFieldsIfEnabled()?["\(field).\(liveHarnessTestMethod)"]
     }
 
-    private func liveHarnessValue(environmentKey: String, fallbackPath: String) -> String? {
-        if let environmentValue = ProcessInfo.processInfo.environment[environmentKey],
-           !environmentValue.isEmpty {
-            return environmentValue
-        }
-
-        let url = URL(fileURLWithPath: fallbackPath)
-        guard
-            let data = try? Data(contentsOf: url),
-            let rawValue = String(data: data, encoding: .utf8)
-        else {
-            return nil
-        }
-
-        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        return value.isEmpty ? nil : value
+    /// Each test records its generated tmux sessions and tmux expectations in
+    /// its own files, which the cleanup harness checks and cleans up as soon
+    /// as the test ends.
+    private func liveHarnessTestRecordPath(_ kind: String) -> String? {
+        liveHarnessRunDirectory?
+            .appendingPathComponent("tests/\(liveHarnessTestMethod).\(kind)")
+            .path
     }
 
     private func recordGeneratedLiveLatencySession(_ sessionName: String, manifestPath: String) {
@@ -2895,9 +3015,10 @@ final class RemuxAppUITests: XCTestCase {
     }
 
     private func recordLiveTmuxExpectation(fields: [String]) {
-        let manifestPath = ProcessInfo.processInfo.environment["REMUX_LIVE_TMUX_EXPECTATION_MANIFEST"]
-            .flatMap { $0.isEmpty ? nil : $0 }
-            ?? "/tmp/remux-live-tmux-expectations.txt"
+        guard let manifestPath = liveHarnessTestRecordPath("expectations") else {
+            XCTFail("Live tmux expectations need the cleanup harness's run directory.")
+            return
+        }
 
         for field in fields {
             XCTAssertFalse(field.contains("\t"), "Live tmux expectation fields cannot contain tabs.")
@@ -3052,6 +3173,7 @@ final class RemuxAppUITests: XCTestCase {
         app.launchEnvironment.merge(
             [
                 "REMUX_UI_TESTING": "1",
+                "REMUX_UI_TEST_INPUT_READY": "1",
                 "REMUX_DEBUG_SEED_CONNECTION": "1",
                 "REMUX_DEBUG_SERVER_NAME": "UI Test Server",
                 "REMUX_DEBUG_SERVER_HOST": "example.com",
@@ -3067,6 +3189,7 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertTrue(session.waitForExistence(timeout: 5))
         session.tap()
         XCTAssertTrue(app.buttons["terminal.toolbar-key.0"].waitForExistence(timeout: 5))
+        waitForLiveTerminalInputReady(timeout: 10)
     }
 
     private func selectToolbarKey(_ title: String) {
@@ -3079,7 +3202,11 @@ final class RemuxAppUITests: XCTestCase {
         traceRuntime: Bool = false,
         sessionNameOverride: String? = nil
     ) throws {
-        let configuration = try liveSSHConfiguration()
+        let configurationPath = try liveSSHConfigurationPath()
+        let configuration = try JSONDecoder().decode(
+            LiveSSHConfiguration.self,
+            from: Data(contentsOf: URL(fileURLWithPath: configurationPath))
+        )
         let displayName = configuration.displayName ?? "Live SSH"
         let sessionName = sessionNameOverride ?? configuration.sessionName ?? "remux-live-e2e"
 
@@ -3091,18 +3218,9 @@ final class RemuxAppUITests: XCTestCase {
         if let tmuxExecutablePath = configuration.tmuxExecutablePath {
             app.launchEnvironment["REMUX_DEBUG_TMUX_EXECUTABLE_PATH"] = tmuxExecutablePath
         }
-        if let privateKeyPEM = configuration.privateKeyPEM, !privateKeyPEM.isEmpty {
-            app.launchEnvironment["REMUX_DEBUG_PRIVATE_KEY"] = privateKeyPEM
-            if let passphrase = configuration.privateKeyPassphrase {
-                app.launchEnvironment["REMUX_DEBUG_PRIVATE_KEY_PASSPHRASE"] = passphrase
-            }
-        } else if let password = configuration.password, !password.isEmpty {
-            app.launchEnvironment["REMUX_DEBUG_SERVER_PASSWORD"] = password
-        } else {
-            throw LiveSSHCleanupHarnessError(
-                description: "/tmp/remux-live-ssh.json must include password or privateKeyPEM."
-            )
-        }
+        // XCTest records the launch environment in the result bundle, so the
+        // app reads the password or private key from the file itself.
+        app.launchEnvironment["REMUX_DEBUG_CREDENTIALS_FILE"] = configurationPath
         app.launchEnvironment["REMUX_DEBUG_TMUX_SESSION"] = sessionName
         app.launchEnvironment["REMUX_DEBUG_EPHEMERAL_STORAGE"] = "1"
         if traceRuntime {
@@ -3113,6 +3231,7 @@ final class RemuxAppUITests: XCTestCase {
             app.launchEnvironment["GHOSTTY_TRACE_SURFACE_INIT"] = "1"
         }
         forwardTraceEnvironment()
+        launchedLiveSSHApp = true
         app.launch()
     }
 
@@ -3138,28 +3257,6 @@ final class RemuxAppUITests: XCTestCase {
             }
             app.launchEnvironment[key] = value
         }
-    }
-
-    private func liveSSHConfiguration() throws -> LiveSSHConfiguration {
-        if let data = liveSSHConfigurationDataFromEnvironment() {
-            return try JSONDecoder().decode(LiveSSHConfiguration.self, from: data)
-        }
-        let configurationURL = URL(fileURLWithPath: "/tmp/remux-live-ssh.json")
-        guard FileManager.default.fileExists(atPath: configurationURL.path) else {
-            throw XCTSkip("Create /tmp/remux-live-ssh.json inside the simulator to run live SSH UI testing.")
-        }
-
-        let data = try Data(contentsOf: configurationURL)
-        return try JSONDecoder().decode(LiveSSHConfiguration.self, from: data)
-    }
-
-    private func liveSSHConfigurationDataFromEnvironment() -> Data? {
-        guard let encoded = ProcessInfo.processInfo.environment[
-            "REMUX_LIVE_SSH_CONFIGURATION_BASE64"
-        ], !encoded.isEmpty else {
-            return nil
-        }
-        return Data(base64Encoded: encoded)
     }
 
     private func waitForLiveTerminalReady(timeout: TimeInterval) {
@@ -3202,12 +3299,8 @@ final class RemuxAppUITests: XCTestCase {
     private func trustExpectedUnknownLiveHostKeyIfNeeded() -> Bool {
         let verifyTitle = app.staticTexts["Verify Server"]
         guard verifyTitle.exists else { return false }
-        guard let expectedHostKey = liveHarnessValue(
-            environmentKey: "REMUX_LIVE_EXPECTED_HOST_KEY",
-            fallbackPath: "/tmp/remux-live-expected-host-key.txt"
-        )
-        else {
-            XCTFail("Live SSH host-key verification requires REMUX_LIVE_EXPECTED_HOST_KEY.")
+        guard let expectedHostKey = liveCleanupHarnessFieldsIfEnabled()?["expectedHostKey"] else {
+            XCTFail("Live SSH host-key verification requires the cleanup harness's expected host key.")
             return false
         }
 
@@ -3789,8 +3882,8 @@ final class RemuxAppUITests: XCTestCase {
         app.textFields["connection.host"].tap()
         app.textFields["connection.host"].typeText("127.0.0.1")
 
-        app.textFields["connection.username"].tap()
-        app.textFields["connection.username"].typeText("demo\n")
+        tapFormField(app.textFields["connection.username"])
+        typeTextThenReturn("demo", into: app.textFields["connection.username"])
 
         let password = app.secureTextFields["connection.password"]
         XCTAssertTrue(password.waitForExistence(timeout: 2))
@@ -3806,8 +3899,62 @@ final class RemuxAppUITests: XCTestCase {
         app.textFields["connection.host"].tap()
         app.textFields["connection.host"].typeText("100.64.0.10")
 
-        app.textFields["connection.username"].tap()
-        app.textFields["connection.username"].typeText("demo\n")
+        tapFormField(app.textFields["connection.username"])
+        typeTextThenReturn("demo", into: app.textFields["connection.username"])
+    }
+
+    /// Taps a server form field once a tap can reach it. With the keyboard up,
+    /// a field can sit right at the keyboard's top edge, where the tap lands on
+    /// the keyboard toolbar. A field scrolled off the top is scrolled back by
+    /// the tap itself, which then arrives while the form is still moving and
+    /// only stops the scroll. Either way the field never gets focus.
+    private func tapFormField(_ field: XCUIElement) {
+        if isSoftwareKeyboardOnScreen(app.keyboards.firstMatch) {
+            app.buttons["Done"].firstMatch.tap()
+            XCTAssertNotNil(waitForKeyboardPresence(false, label: "server form keyboard hidden"))
+        }
+        if !field.isHittable {
+            app.swipeDown()
+        }
+        XCTAssertTrue(waitForElementToSettle(field), "\(field) kept moving.")
+        field.tap()
+    }
+
+    private func waitForElementToSettle(_ element: XCUIElement, timeout: TimeInterval = 3) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        var previousFrame = element.frame
+        while Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+            let frame = element.frame
+            if frame == previousFrame, element.isHittable {
+                return true
+            }
+            previousFrame = frame
+        }
+        return false
+    }
+
+    /// Types the text, waits until the field shows it, then presses Return.
+    /// Typed as one burst, the Return can reach the server form before the
+    /// field has applied the text: the field then reverts to an earlier value
+    /// or ignores the Return, leaving focus on it.
+    private func typeTextThenReturn(_ text: String, into field: XCUIElement) {
+        typeTextAndConfirm(text, into: field)
+        field.typeText("\n")
+    }
+
+    /// Types the text and waits until the field shows it.
+    private func typeTextAndConfirm(_ text: String, into field: XCUIElement) {
+        field.typeText(text)
+        let applied = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", text),
+            object: field
+        )
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [applied], timeout: 5),
+            .completed,
+            "\(field) does not show \"\(text)\"."
+        )
     }
 
     private func selectAuthentication(_ name: String) {
@@ -3835,8 +3982,8 @@ final class RemuxAppUITests: XCTestCase {
         XCTAssertEqual(port.value as? String, "22")
 
         let username = app.textFields["connection.username"]
-        username.tap()
-        username.typeText("demo\n")
+        tapFormField(username)
+        typeTextThenReturn("demo", into: username)
     }
 
     private func saveConnectionAndWaitForTerminal() {
@@ -3847,10 +3994,10 @@ final class RemuxAppUITests: XCTestCase {
 
     private func saveServerAndStartSession() {
         app.buttons["connection.save"].tap()
-        dismissPasswordManagerPromptIfPresent()
 
         let serverDetail = app.descendants(matching: .any)["library.server.detail"]
         XCTAssertTrue(serverDetail.waitForExistence(timeout: 5))
+        declinePasswordManagerPromptAfterAddingServer()
         let newSessionButton = app.buttons["library.server.new-session.empty"]
         XCTAssertTrue(newSessionButton.waitForExistence(timeout: 2))
         newSessionButton.tap()
@@ -3858,8 +4005,19 @@ final class RemuxAppUITests: XCTestCase {
         let sessionName = app.textFields["connection.session"]
         XCTAssertTrue(sessionName.waitForExistence(timeout: 2))
         sessionName.tap()
-        sessionName.typeText("base")
+        typeTextAndConfirm("base", into: sessionName)
         saveConnectionAndWaitForTerminal()
+    }
+
+    /// After the Add Server form closes, iOS offers to save its password. The
+    /// offer appears a few seconds later, on top of whatever the test is doing
+    /// by then, and takes the taps and keystrokes meant for the app. So wait
+    /// for it and decline it before going on.
+    private func declinePasswordManagerPromptAfterAddingServer() {
+        let notNow = app.buttons["Not Now"]
+        if notNow.waitForExistence(timeout: 10) {
+            declinePasswordManagerPrompt(notNow)
+        }
     }
 
     private func openHomeFromTerminal() {
@@ -4011,17 +4169,32 @@ final class RemuxAppUITests: XCTestCase {
     private func dismissPasswordManagerPromptIfPresent() {
         let appNotNowButton = app.buttons["Not Now"]
         if appNotNowButton.waitForExistence(timeout: 1) {
-            appNotNowButton.tap()
+            declinePasswordManagerPrompt(appNotNowButton)
             return
         }
 
         app.tap()
         if appNotNowButton.waitForExistence(timeout: 1) {
-            appNotNowButton.tap()
+            declinePasswordManagerPrompt(appNotNowButton)
             return
         }
 
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.32, dy: 0.63)).tap()
+    }
+
+    /// The Save Password prompt ignores taps for a moment after it appears,
+    /// even once it looks settled, and then stays up and covers the app. So
+    /// tap Not Now again until the prompt goes away.
+    private func declinePasswordManagerPrompt(_ notNow: XCUIElement) {
+        for _ in 0..<5 {
+            if notNow.isHittable {
+                notNow.tap()
+            }
+            if waitForElementToDisappear(notNow, timeout: 2) {
+                return
+            }
+        }
+        XCTFail("The Save Password prompt stayed up.")
     }
 
     private func installSystemPromptMonitor() {
@@ -4498,8 +4671,8 @@ final class RemuxAppUITests: XCTestCase {
         host.typeText("server.example.com")
 
         let user = app.textFields["connection.username"]
-        user.tap()
-        user.typeText("demo\n")
+        tapFormField(user)
+        typeTextThenReturn("demo", into: user)
 
         let pwd = app.secureTextFields["connection.password"]
         XCTAssertTrue(pwd.waitForExistence(timeout: 2))

@@ -96,7 +96,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             tmuxExecutablePath: executablePath
         )
         let workspace = SavedWorkspace(serverID: server.id, sessionName: "base")
-        let target = TmuxConnectionTarget(
+        let target = SessionTarget(
             server: server,
             workspace: workspace,
             sshAuth: makePasswordAuth(server: server, password: "pw")
@@ -128,7 +128,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
                 .appendingPathComponent(UUID().uuidString, isDirectory: true)
         )
         let broker = TailscaleSSHCheckChallengeBroker()
-        let tailscaleTarget = TmuxConnectionTarget(
+        let tailscaleTarget = SessionTarget(
             server: server,
             workspace: workspace,
             sshAuth: .none(
@@ -137,7 +137,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
                 displayLabel: server.displayName
             )
         )
-        let passwordTarget = TmuxConnectionTarget(
+        let passwordTarget = SessionTarget(
             server: server,
             workspace: workspace,
             sshAuth: makePasswordAuth(server: server, password: "pw")
@@ -569,22 +569,22 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         let base = SavedWorkspace(serverID: server.id, sessionName: "base")
         let logs = SavedWorkspace(serverID: server.id, sessionName: "logs")
 
-        let baseTarget = TmuxConnectionTarget(
+        let baseTarget = SessionTarget(
             server: server,
             workspace: base,
             sshAuth: makePasswordAuth(server: server, password: "test-password")
         )
-        let logsTarget = TmuxConnectionTarget(
+        let logsTarget = SessionTarget(
             server: server,
             workspace: logs,
             sshAuth: makePasswordAuth(server: server, password: "test-password")
         )
-        let changedPasswordTarget = TmuxConnectionTarget(
+        let changedPasswordTarget = SessionTarget(
             server: server,
             workspace: base,
             sshAuth: makePasswordAuth(server: server, password: "other-test-password")
         )
-        let changedSavedUserPreservedAuthTarget = TmuxConnectionTarget(
+        let changedSavedUserPreservedAuthTarget = SessionTarget(
             server: SavedServer(
                 id: server.id,
                 displayName: server.displayName,
@@ -595,7 +595,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             workspace: base,
             sshAuth: baseTarget.sshAuth
         )
-        let changedAuthUserTarget = TmuxConnectionTarget(
+        let changedAuthUserTarget = SessionTarget(
             server: SavedServer(
                 id: server.id,
                 displayName: server.displayName,
@@ -1414,7 +1414,7 @@ final class SSHTmuxControlTransportTests: XCTestCase {
         )
         let workspace = SavedWorkspace(serverID: server.id, sessionName: "base")
         return RemuxSSHRootKey(
-            target: TmuxConnectionTarget(
+            target: SessionTarget(
                 server: server,
                 workspace: workspace,
                 sshAuth: makePasswordAuth(

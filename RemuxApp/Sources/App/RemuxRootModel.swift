@@ -23,13 +23,13 @@ enum SSHPublicKeyInstallDraftError: Error, Equatable, LocalizedError {
 
 struct ActiveTerminalSession: Identifiable, Equatable, Sendable {
     let id: SavedWorkspace.ID
-    var target: TmuxConnectionTarget
+    var target: SessionTarget
     var instanceID: UUID
     var runtimeState: TerminalRuntimeState
     var automaticReconnectAttemptedSources: Set<TerminalReconnectSource>
 
     init(
-        target: TmuxConnectionTarget,
+        target: SessionTarget,
         instanceID: UUID = UUID(),
         runtimeState: TerminalRuntimeState = .connecting,
         automaticReconnectAttemptedSources: Set<TerminalReconnectSource> = []
@@ -117,12 +117,15 @@ struct TmuxSessionDiscoveryState: Equatable {
     static let idle = TmuxSessionDiscoveryState(
         phase: .idle,
         lastSuccessfulSessionNames: nil,
-        hostKeyChallenge: nil
+        hostKeyChallenge: nil,
+        executableProblem: nil
     )
 
     let phase: Phase
     let lastSuccessfulSessionNames: [String]?
     let hostKeyChallenge: SSHHostKeyTrustChallenge?
+    /// Why the last refresh failed, when it was the server's tmux itself.
+    let executableProblem: TmuxExecutableProblem?
 
     var sessionNames: [String] {
         lastSuccessfulSessionNames ?? []
@@ -136,7 +139,8 @@ struct TmuxSessionDiscoveryState: Equatable {
         Self(
             phase: .loading,
             lastSuccessfulSessionNames: lastSuccessfulSessionNames,
-            hostKeyChallenge: nil
+            hostKeyChallenge: nil,
+            executableProblem: nil
         )
     }
 
@@ -144,15 +148,20 @@ struct TmuxSessionDiscoveryState: Equatable {
         Self(
             phase: .loaded,
             lastSuccessfulSessionNames: sessionNames,
-            hostKeyChallenge: nil
+            hostKeyChallenge: nil,
+            executableProblem: nil
         )
     }
 
-    func failingRefresh(hostKeyChallenge: SSHHostKeyTrustChallenge? = nil) -> Self {
+    func failingRefresh(
+        hostKeyChallenge: SSHHostKeyTrustChallenge? = nil,
+        executableProblem: TmuxExecutableProblem? = nil
+    ) -> Self {
         Self(
             phase: .failed,
             lastSuccessfulSessionNames: lastSuccessfulSessionNames,
-            hostKeyChallenge: hostKeyChallenge
+            hostKeyChallenge: hostKeyChallenge,
+            executableProblem: executableProblem
         )
     }
 
@@ -161,7 +170,8 @@ struct TmuxSessionDiscoveryState: Equatable {
         return Self(
             phase: .loaded,
             lastSuccessfulSessionNames: lastSuccessfulSessionNames,
-            hostKeyChallenge: nil
+            hostKeyChallenge: nil,
+            executableProblem: nil
         )
     }
 
@@ -174,17 +184,21 @@ struct TmuxSessionDiscoveryState: Equatable {
         return Self(
             phase: phase,
             lastSuccessfulSessionNames: lastSuccessfulSessionNames,
-            hostKeyChallenge: hostKeyChallenge
+            hostKeyChallenge: hostKeyChallenge,
+            executableProblem: executableProblem
         )
     }
 }
 
 enum TmuxSessionReconciliation {
+    /// Hides a saved tmux workspace once a successful discovery no longer lists
+    /// it. tmux discovery says nothing about other backends' sessions.
     static func includesSavedWorkspace(
         _ workspace: SavedWorkspace,
         discoveryStates: [SavedServer.ID: TmuxSessionDiscoveryState]
     ) -> Bool {
-        guard let discoveredNames = discoveryStates[workspace.serverID]?
+        guard workspace.backend == .tmux,
+              let discoveredNames = discoveryStates[workspace.serverID]?
             .lastSuccessfulSessionNames else {
             return true
         }
@@ -213,7 +227,7 @@ final class RemuxRootModel: ObservableObject {
     }
 
     typealias TerminalScreenModelFactory = @MainActor @Sendable (
-        TmuxConnectionTarget,
+        SessionTarget,
         UUID,
         @escaping TmuxScreenModel.TransportFactory,
         @escaping (TerminalRuntimeStateUpdate) -> Void,
@@ -778,19 +792,19 @@ final class RemuxRootModel: ObservableObject {
                     from: submission,
                     identityCredential: identityCredential
                 )
-                let discoveryTarget = target(
-                    server: server,
-                    workspace: SavedWorkspace(serverID: server.id, sessionName: ""),
-                    sshAuth: sshAuth
-                )
-                let sessionNames = try await dependencies.discoverTmuxSessions(
-                    for: discoveryTarget
+                // Only SSH is checked: a server is valid without tmux, for
+                // example one that runs only Herdr.
+                try await dependencies.verifySSHAccess(
+                    for: target(
+                        server: server,
+                        workspace: SavedWorkspace(serverID: server.id, sessionName: ""),
+                        sshAuth: sshAuth
+                    )
                 )
                 guard isCurrentSetupAction(action) else { return nil }
                 return await persistVerifiedNewServer(
                     server,
                     identityCredential: identityCredential,
-                    discoveredSessionNames: sessionNames,
                     setup: setup,
                     action: action
                 )
@@ -817,7 +831,6 @@ final class RemuxRootModel: ObservableObject {
     private func persistVerifiedNewServer(
         _ server: SavedServer,
         identityCredential: SSHIdentityCredentialPair,
-        discoveredSessionNames: [String],
         setup: ConnectionSetupState,
         action: SetupAction
     ) async -> SavedServer.ID? {
@@ -839,11 +852,8 @@ final class RemuxRootModel: ObservableObject {
             savedServer = true
             updateLibrary(try await dependencies.profileRepository.loadSnapshot())
             guard isCurrentSetupAction(action) else { return nil }
-            tmuxSessionDiscoveryStates[server.id] = TmuxSessionDiscoveryState.idle
-                .finishingRefresh(
-                    with: Self.normalizedTmuxSessionNames(discoveredSessionNames)
-                )
             finishSetupSession(action.setupID)
+            refreshTmuxSessions(for: server.id)
             scheduleLibrarySSHPrewarm(snapshot: library)
             return server.id
         } catch {
@@ -918,6 +928,20 @@ final class RemuxRootModel: ObservableObject {
                 }
 
                 invalidateTmuxSessionRefresh(for: serverID)
+                // However this save ends, check the server's sessions again
+                // against the profile it leaves saved. A check started during
+                // the save would carry the old profile and be dropped as stale.
+                // From saving the server until the library is reloaded, the
+                // library still has the old profile, and a check would sign in
+                // to the old address with the new credential. A save that ends
+                // there leaves the app failed, and the next launch checks again.
+                var libraryMatchesSavedServer = true
+                defer {
+                    invalidateTmuxSessionRefresh(for: serverID)
+                    if libraryMatchesSavedServer {
+                        refreshTmuxSessions(for: serverID)
+                    }
+                }
                 let server = submission.savedServer(identityID: updatedIdentityCredential.identity.id)
                 cancelLibrarySSHPrewarm()
                 let previousCredential = try await dependencies.credentialStore.loadCredential(
@@ -948,6 +972,7 @@ final class RemuxRootModel: ObservableObject {
                         return
                     }
                     try await dependencies.profileRepository.saveServer(server)
+                    libraryMatchesSavedServer = false
                     guard isCurrentSetupAction(action) else { return }
                     discardEditServerTrustSnapshot(setupID: action.setupID)
                 } catch {
@@ -961,6 +986,7 @@ final class RemuxRootModel: ObservableObject {
                 let library = try await dependencies.profileRepository.loadSnapshot()
                 guard isCurrentSetupAction(action) else { return }
                 updateLibrary(library)
+                libraryMatchesSavedServer = true
                 let updatedSSHAuth = try await resolveSSHAuth(for: server)
                 guard isCurrentSetupAction(action) else { return }
                 closePreparedTransports(forServerID: server.id)
@@ -1191,6 +1217,7 @@ final class RemuxRootModel: ObservableObject {
         await connect(server: server, workspace: workspace)
     }
 
+    /// Opens a session found by discovery, which lists tmux sessions.
     func connectToDiscoveredSession(
         named sessionName: String,
         on serverID: SavedServer.ID
@@ -1199,9 +1226,10 @@ final class RemuxRootModel: ObservableObject {
               let server = library.server(id: serverID) else {
             return
         }
+        let locator = SessionLocator(backend: .tmux, name: sessionName)
         let workspace = library.workspaces(for: serverID).first {
-            $0.sessionName == sessionName
-        } ?? SavedWorkspace(serverID: serverID, sessionName: sessionName)
+            $0.locator == locator
+        } ?? SavedWorkspace(serverID: serverID, backend: locator.backend, sessionName: locator.name)
         await connect(server: server, workspace: workspace)
     }
 
@@ -1581,7 +1609,7 @@ final class RemuxRootModel: ObservableObject {
         terminalSettingsSaveFailed = false
     }
 
-    func makeTransport(for target: TmuxConnectionTarget) -> any TmuxControlTransport {
+    func makeTransport(for target: SessionTarget) -> any TmuxControlTransport {
         preparedTransportCoordinator.claimOrCreateTransport(for: target)
     }
 
@@ -1716,23 +1744,6 @@ final class RemuxRootModel: ObservableObject {
     private static func newServerVerificationMessage(for error: any Error) -> String {
         if let tailscaleCheckError = error as? TailscaleSSHCheckError {
             return tailscaleCheckError.localizedDescription
-        }
-
-        if let discoveryError = error as? TmuxSessionDiscoveryError,
-           case .remoteExit(let status, let stderr) = discoveryError {
-            if status == 127,
-               stderr.localizedCaseInsensitiveContains(
-                   SSHTmuxControlCommandBuilder.tmuxNotFoundMarker
-               ) {
-                return "Install tmux on this server or update Executable Path."
-            }
-            if status == 126,
-               stderr.localizedCaseInsensitiveContains(
-                   SSHTmuxControlCommandBuilder.tmuxNotExecutableMarker
-               ) {
-                return "Check the tmux executable and its permissions, then try again."
-            }
-            return discoveryError.localizedDescription
         }
 
         let reason = GhosttyTerminalDisconnectReasonClassifier.transportStartFailure(error)
@@ -1935,8 +1946,8 @@ final class RemuxRootModel: ObservableObject {
         server: SavedServer,
         workspace: SavedWorkspace,
         sshAuth: ResolvedSSHAuth
-    ) -> TmuxConnectionTarget {
-        TmuxConnectionTarget(
+    ) -> SessionTarget {
+        SessionTarget(
             server: server,
             workspace: workspace,
             sshAuth: sshAuth,
@@ -1975,8 +1986,12 @@ final class RemuxRootModel: ObservableObject {
             guard isCurrentTmuxSessionRefresh(server, refreshID: refreshID) else { return }
             // Discovery is auxiliary to an already-running terminal. Keep its
             // failure inside the sheet rather than replacing the app route.
+            var executableProblem: TmuxExecutableProblem?
+            if case .remoteExit(let status, let stderr) = error as? TmuxSessionDiscoveryError {
+                executableProblem = TmuxExecutableProblem(exitStatus: status, stderr: stderr)
+            }
             tmuxSessionDiscoveryStates[server.id] = tmuxSessionDiscoveryState(for: server.id)
-                .failingRefresh()
+                .failingRefresh(executableProblem: executableProblem)
         }
     }
 
@@ -2033,7 +2048,7 @@ final class RemuxRootModel: ObservableObject {
     }
 
     private static func makeDefaultTerminalScreenModel(
-        target: TmuxConnectionTarget,
+        target: SessionTarget,
         sessionInstanceID: UUID,
         transportFactory: @escaping TmuxScreenModel.TransportFactory,
         onRuntimeStateChange: @escaping (TerminalRuntimeStateUpdate) -> Void,
@@ -2191,7 +2206,7 @@ final class RemuxRootModel: ObservableObject {
     }
 
     private func prepareTransport(
-        for target: TmuxConnectionTarget,
+        for target: SessionTarget,
         reason: RemuxPreparedTransportPrepareReason
     ) {
         preparedTransportCoordinator.prepareTransport(for: target, reason: reason)

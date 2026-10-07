@@ -136,6 +136,35 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertNotNil(harness.model.library.workspace(id: opened.id))
     }
 
+    func testDiscoveredTmuxSessionDoesNotOpenSameNamedHerdrWorkspace() async throws {
+        let pair = makePasswordBackedServer()
+        let herdrOps = SavedWorkspace(serverID: pair.server.id, backend: .herdr, sessionName: "ops")
+        let discoverer = RecordingTmuxSessionDiscoverer(
+            results: [.success(["ops"]), .success(["ops"]), .success(["ops"])]
+        )
+        let harness = makeHarness(
+            servers: [pair.server],
+            workspaces: [herdrOps],
+            identities: [pair.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
+        await harness.model.load()
+        let didLoadSessions = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: pair.server.id).phase == .loaded
+        }
+        XCTAssertTrue(didLoadSessions)
+
+        await harness.model.connectToDiscoveredSession(named: "ops", on: pair.server.id)
+
+        let opened = try XCTUnwrap(harness.model.activeSessions.first)
+        XCTAssertNotEqual(opened.id, herdrOps.id)
+        XCTAssertEqual(opened.target.locator, SessionLocator(backend: .tmux, name: "ops"))
+        XCTAssertEqual(harness.model.library.workspace(id: herdrOps.id), herdrOps)
+    }
+
     func testLaunchDiscoveryStartsForEverySavedServer() async throws {
         let first = makePasswordBackedServer()
         let second = makePasswordBackedServer()
@@ -1262,10 +1291,14 @@ final class RemuxRootModelTests: XCTestCase {
     }
 
     func testSaveNewServerPersistsNoWorkspaceAndReturnsToLibrary() async throws {
+        let verifier = RecordingSSHAccessVerifier(results: [.success(())])
         let discoverer = RecordingTmuxSessionDiscoverer(results: [.success(["base", "ops"])])
         let harness = makeHarness(
             tmuxSessionDiscoverer: { target, _, _ in
                 try await discoverer.discover(target)
+            },
+            sshAccessVerifier: { target, _, _ in
+                try await verifier.verify(target)
             }
         )
         await harness.model.load()
@@ -1295,18 +1328,19 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(identity.name, "Example Server")
         XCTAssertEqual(identity.authenticationKind, .password)
         XCTAssertEqual(savedCredential, .password("demo-password"))
-        XCTAssertEqual(
-            harness.model.tmuxSessionDiscoveryState(for: serverID).sessionNames,
-            ["base", "ops"]
-        )
-        let verifiedTargets = await discoverer.targets()
+        // Discovery runs after the server is saved, not as its verification.
+        let didDiscover = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: serverID).sessionNames == ["base", "ops"]
+        }
+        XCTAssertTrue(didDiscover)
+        let verifiedTargets = await verifier.targets()
         let verifiedTarget = try XCTUnwrap(verifiedTargets.first)
         XCTAssertEqual(verifiedTarget.server, server)
         XCTAssertEqual(verifiedTarget.sshAuth.username, "demo")
         XCTAssertEqual(verifiedTarget.sshAuth.credential, .password("demo-password"))
     }
 
-    func testNewServerVerificationFailureKeepsDraftWithoutPersistingProfile() async throws {
+    func testNewServerWithoutTmuxIsSaved() async throws {
         let discoverer = RecordingTmuxSessionDiscoverer(
             results: [
                 .failure(
@@ -1320,6 +1354,60 @@ final class RemuxRootModelTests: XCTestCase {
         let harness = makeHarness(
             tmuxSessionDiscoverer: { target, _, _ in
                 try await discoverer.discover(target)
+            }
+        )
+        await harness.model.load()
+        harness.model.beginNewServer()
+        harness.model.updateDraft { draft in
+            draft.displayName = "Herdr Only"
+            draft.host = "server.example.com"
+            draft.port = "22"
+            draft.username = "demo"
+            draft.password = "demo-password"
+        }
+
+        let savedServerID = await harness.model.saveAndConnect()
+
+        let serverID = try XCTUnwrap(savedServerID)
+        XCTAssertEqual(harness.model.state, .library)
+        let snapshot = try await harness.profileRepository.loadSnapshot()
+        XCTAssertNotNil(snapshot.server(id: serverID))
+        let discoveryFailed = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: serverID).phase == .failed
+        }
+        XCTAssertTrue(discoveryFailed)
+        XCTAssertEqual(
+            harness.model.tmuxSessionDiscoveryState(for: serverID).executableProblem,
+            .notFound
+        )
+    }
+
+    func testDiscoveryFailureOtherThanTmuxStaysGeneric() async throws {
+        let pair = makePasswordBackedServer()
+        let discoverer = RecordingTmuxSessionDiscoverer(
+            results: [.failure(SSHAccessVerificationError.commandFailed(status: 1))]
+        )
+        let harness = makeHarness(
+            servers: [pair.server],
+            identities: [pair.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        try await harness.credentialHelper.savePassword("secret", for: pair.server.id)
+        await harness.model.load()
+
+        let discoveryFailed = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: pair.server.id).phase == .failed
+        }
+        XCTAssertTrue(discoveryFailed)
+        XCTAssertNil(harness.model.tmuxSessionDiscoveryState(for: pair.server.id).executableProblem)
+    }
+
+    func testNewServerVerificationFailureKeepsDraftWithoutPersistingProfile() async throws {
+        let harness = makeHarness(
+            sshAccessVerifier: { _, _, _ in
+                throw SSHAccessVerificationError.commandFailed(status: 1)
             }
         )
         await harness.model.load()
@@ -1339,7 +1427,9 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertEqual(setup.draft.displayName, "Example Server")
         XCTAssertEqual(
             setup.submissionIssue,
-            .verificationFailed("Install tmux on this server or update Executable Path.")
+            .verificationFailed(
+                "The server accepted the login but couldn't run a command (exit status 1)."
+            )
         )
         let snapshot = try await harness.profileRepository.loadSnapshot()
         let credentials = await harness.credentialStore.credentialsSnapshot()
@@ -1348,10 +1438,14 @@ final class RemuxRootModelTests: XCTestCase {
     }
 
     func testNewServerHostKeyTrustRetriesVerificationBeforePersistence() async throws {
-        let discoverer = RecordingTmuxSessionDiscoverer(results: [])
+        let verifier = RecordingSSHAccessVerifier(results: [])
+        let discoverer = RecordingTmuxSessionDiscoverer(results: [.success(["base"])])
         let harness = makeHarness(
             tmuxSessionDiscoverer: { target, _, _ in
                 try await discoverer.discover(target)
+            },
+            sshAccessVerifier: { target, _, _ in
+                try await verifier.verify(target)
             }
         )
         await harness.model.load()
@@ -1361,9 +1455,9 @@ final class RemuxRootModelTests: XCTestCase {
             serverID: serverID,
             host: "server.example.com"
         )
-        await discoverer.appendResults([
+        await verifier.appendResults([
             .failure(TrustedHostStoreError.hostKeyTrustRequired(challenge)),
-            .success(["base"]),
+            .success(()),
         ])
         harness.model.updateDraft { draft in
             draft.displayName = "Example Server"
@@ -1391,19 +1485,19 @@ final class RemuxRootModelTests: XCTestCase {
         let savedServerID = await harness.model.saveAndConnect()
 
         XCTAssertEqual(savedServerID, serverID)
-        let verifiedTargets = await discoverer.targets()
+        let verifiedTargets = await verifier.targets()
         XCTAssertEqual(verifiedTargets.count, 2)
-        XCTAssertEqual(
-            harness.model.tmuxSessionDiscoveryState(for: serverID).sessionNames,
-            ["base"]
-        )
+        let didDiscover = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: serverID).sessionNames == ["base"]
+        }
+        XCTAssertTrue(didDiscover)
     }
 
     func testNewServerPersistenceFailureKeepsDraftAndTrustUntilCancel() async throws {
-        let discoverer = RecordingTmuxSessionDiscoverer(results: [])
+        let verifier = RecordingSSHAccessVerifier(results: [])
         let harness = makeHarness(
-            tmuxSessionDiscoverer: { target, _, _ in
-                try await discoverer.discover(target)
+            sshAccessVerifier: { target, _, _ in
+                try await verifier.verify(target)
             }
         )
         await harness.model.load()
@@ -1413,9 +1507,9 @@ final class RemuxRootModelTests: XCTestCase {
             serverID: serverID,
             host: "server.example.com"
         )
-        await discoverer.appendResults([
+        await verifier.appendResults([
             .failure(TrustedHostStoreError.hostKeyTrustRequired(challenge)),
-            .success(["base"]),
+            .success(()),
         ])
         harness.model.updateDraft { draft in
             draft.displayName = "Example Server"
@@ -1459,10 +1553,10 @@ final class RemuxRootModelTests: XCTestCase {
     }
 
     func testSaveNewServerPersistsNoneAuthenticationWithoutCredential() async throws {
-        let discoverer = RecordingTmuxSessionDiscoverer(results: [.success(["base"])])
+        let verifier = RecordingSSHAccessVerifier(results: [.success(())])
         let harness = makeHarness(
-            tmuxSessionDiscoverer: { target, _, _ in
-                try await discoverer.discover(target)
+            sshAccessVerifier: { target, _, _ in
+                try await verifier.verify(target)
             }
         )
         await harness.model.load()
@@ -1483,7 +1577,7 @@ final class RemuxRootModelTests: XCTestCase {
         let snapshot = try await harness.profileRepository.loadSnapshot()
         let identity = try XCTUnwrap(snapshot.identities.first)
         let savedCredential = try await harness.credentialStore.loadCredential(identityID: identity.id)
-        let verifiedTargets = await discoverer.targets()
+        let verifiedTargets = await verifier.targets()
         let verifiedTarget = try XCTUnwrap(verifiedTargets.first)
         XCTAssertEqual(harness.model.state, .library)
         XCTAssertTrue(harness.model.activeSessions.isEmpty)
@@ -2393,6 +2487,133 @@ final class RemuxRootModelTests: XCTestCase {
             identityID: passwordBackedServer.identity.id
         )
         XCTAssertEqual(savedCredential, .password("updated-demo-password"))
+    }
+
+    func testEditServerChecksSessionsAgainWithTheSavedProfile() async throws {
+        let passwordBackedServer = makePasswordBackedServer()
+        let server = passwordBackedServer.server
+        let discoverer = RecordingTmuxSessionDiscoverer(results: [
+            .failure(
+                TmuxSessionDiscoveryError.remoteExit(
+                    status: 127,
+                    stderr: SSHTmuxControlCommandBuilder.tmuxNotFoundMarker
+                )
+            ),
+            .success(["base"]),
+        ])
+        let harness = makeHarness(
+            servers: [server],
+            identities: [passwordBackedServer.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("demo-password"),
+            identityID: passwordBackedServer.identity.id
+        )
+        await harness.model.load()
+        let sawMissingTmux = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: server.id).executableProblem == .notFound
+        }
+        XCTAssertTrue(sawMissingTmux)
+
+        await harness.model.beginEditServer(serverID: server.id)
+        harness.model.updateDraft { draft in
+            draft.tmuxExecutablePath = "/opt/homebrew/bin/tmux"
+        }
+        await harness.model.saveAndConnect()
+
+        let didCheckAgain = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: server.id).sessionNames == ["base"]
+        }
+        XCTAssertTrue(didCheckAgain)
+        let targets = await discoverer.targets()
+        XCTAssertEqual(targets.last?.server.tmuxExecutablePath, "/opt/homebrew/bin/tmux")
+    }
+
+    func testEditServerIgnoresALateResultFromTheOldSessionCheck() async throws {
+        let passwordBackedServer = makePasswordBackedServer()
+        let server = passwordBackedServer.server
+        let discoverer = FirstSuspendingTmuxSessionDiscoverer(laterNames: ["new"])
+        let harness = makeHarness(
+            servers: [server],
+            identities: [passwordBackedServer.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                await discoverer.discover(target)
+            }
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("demo-password"),
+            identityID: passwordBackedServer.identity.id
+        )
+        await harness.model.load()
+        // The launch check, with the profile from before the edit, stays in flight.
+        await discoverer.waitForFirstCall()
+
+        await harness.model.beginEditServer(serverID: server.id)
+        harness.model.updateDraft { draft in
+            draft.host = "updated.example.com"
+        }
+        await harness.model.saveAndConnect()
+
+        let didCheckAgain = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: server.id).sessionNames == ["new"]
+        }
+        XCTAssertTrue(didCheckAgain)
+        await discoverer.resumeFirst(with: ["old"])
+        let showedOldResult = await waitUntil(timeout: 0.3) {
+            harness.model.tmuxSessionDiscoveryState(for: server.id).sessionNames == ["old"]
+        }
+        XCTAssertFalse(showedOldResult)
+    }
+
+    func testEditServerChecksNoSessionsWhenTheSavedServerFailsToLoad() async throws {
+        let passwordBackedServer = makePasswordBackedServer()
+        let server = passwordBackedServer.server
+        let discoverer = RecordingTmuxSessionDiscoverer(results: [
+            .success(["base"]),
+            .success(["base"]),
+        ])
+        let harness = makeHarness(
+            servers: [server],
+            identities: [passwordBackedServer.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("demo-password"),
+            identityID: passwordBackedServer.identity.id
+        )
+        await harness.model.load()
+        let didCheck = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: server.id).sessionNames == ["base"]
+        }
+        XCTAssertTrue(didCheck)
+
+        await harness.model.beginEditServer(serverID: server.id)
+        harness.model.updateDraft { draft in
+            draft.host = "updated.example.com"
+            draft.password = "updated-password"
+        }
+        await harness.profileRepository.suspendNextLoad(
+            thenThrow: ConnectionProfileRepositoryError.missingServer(server.id)
+        )
+        let saveTask = Task {
+            await harness.model.saveAndConnect()
+        }
+        await harness.profileRepository.waitForSuspendedLoad()
+        await harness.profileRepository.resumeSuspendedLoad()
+        _ = await saveTask.value
+        guard case .failed = harness.model.state else {
+            return XCTFail("expected the reload after the save to fail")
+        }
+
+        // The library still has the old host, while the new password is saved.
+        try await Task.sleep(for: .milliseconds(300))
+        let checkedHosts = await discoverer.targets().map(\.server.host)
+        XCTAssertEqual(checkedHosts, [server.host], "Only the launch check should reach a server.")
     }
 
     func testEditServerFromPasswordToNoneDeletesCredential() async throws {
@@ -3759,25 +3980,30 @@ final class RemuxRootModelTests: XCTestCase {
         settings: TerminalSettings = .default,
         settingsRepository: (any TerminalSettingsRepository)? = nil,
         transportFactory: (@Sendable (
-            TmuxConnectionTarget,
+            SessionTarget,
             TrustedHostStore,
             RemuxSSHRootService
         ) -> any TmuxControlTransport)? = nil,
         sshConnectionPrewarmer: (@Sendable (
-            TmuxConnectionTarget,
+            SessionTarget,
             TrustedHostStore,
             RemuxSSHRootService
         ) async -> Void)? = nil,
         attachmentTransferServiceFactory: (@Sendable (
-            TmuxConnectionTarget,
+            SessionTarget,
             TrustedHostStore,
             RemuxSSHRootService
         ) -> any GhosttyAttachmentTransferService)? = nil,
         tmuxSessionDiscoverer: (@Sendable (
-            TmuxConnectionTarget,
+            SessionTarget,
             TrustedHostStore,
             RemuxSSHRootService
         ) async throws -> [String])? = nil,
+        sshAccessVerifier: (@Sendable (
+            SessionTarget,
+            TrustedHostStore,
+            RemuxSSHRootService
+        ) async throws -> Void)? = nil,
         publicKeyInstaller: SSHPublicKeyInstaller? = nil,
         terminalScreenModelFactory: RemuxRootModel.TerminalScreenModelFactory? = nil
     ) -> RemuxRootModelHarness {
@@ -3818,6 +4044,7 @@ final class RemuxRootModelTests: XCTestCase {
             sshConnectionPrewarmer: resolvedSSHConnectionPrewarmer,
             attachmentTransferServiceFactory: resolvedAttachmentTransferServiceFactory,
             tmuxSessionDiscoverer: resolvedTmuxSessionDiscoverer,
+            sshAccessVerifier: sshAccessVerifier ?? { _, _, _ in },
             debugConnectionSeeder: { _, _ in false }
         )
 
@@ -4033,15 +4260,37 @@ private enum RootModelSetupTestError: Error {
     case expectedSetup
 }
 
+private actor RecordingSSHAccessVerifier {
+    private var results: [Result<Void, Error>]
+    private var recordedTargets: [SessionTarget] = []
+
+    init(results: [Result<Void, Error>]) {
+        self.results = results
+    }
+
+    func verify(_ target: SessionTarget) throws {
+        recordedTargets.append(target)
+        try results.removeFirst().get()
+    }
+
+    func appendResults(_ newResults: [Result<Void, Error>]) {
+        results.append(contentsOf: newResults)
+    }
+
+    func targets() -> [SessionTarget] {
+        recordedTargets
+    }
+}
+
 private actor RecordingTmuxSessionDiscoverer {
     private var results: [Result<[String], Error>]
-    private var recordedTargets: [TmuxConnectionTarget] = []
+    private var recordedTargets: [SessionTarget] = []
 
     init(results: [Result<[String], Error>]) {
         self.results = results
     }
 
-    func discover(_ target: TmuxConnectionTarget) throws -> [String] {
+    func discover(_ target: SessionTarget) throws -> [String] {
         recordedTargets.append(target)
         return try results.removeFirst().get()
     }
@@ -4050,7 +4299,7 @@ private actor RecordingTmuxSessionDiscoverer {
         results.append(contentsOf: newResults)
     }
 
-    func targets() -> [TmuxConnectionTarget] {
+    func targets() -> [SessionTarget] {
         recordedTargets
     }
 }
@@ -4059,7 +4308,7 @@ private actor SuspendingTmuxSessionDiscoverer {
     private var continuations: [CheckedContinuation<[String], Never>] = []
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
-    func discover(_ target: TmuxConnectionTarget) async -> [String] {
+    func discover(_ target: SessionTarget) async -> [String] {
         _ = target
         let waiters = waiters
         self.waiters.removeAll()
@@ -4084,6 +4333,41 @@ private actor SuspendingTmuxSessionDiscoverer {
         for continuation in continuations {
             continuation.resume(returning: names)
         }
+    }
+}
+
+/// Holds the first discovery until released; later ones answer at once.
+private actor FirstSuspendingTmuxSessionDiscoverer {
+    private let laterNames: [String]
+    private var calls = 0
+    private var firstCall: CheckedContinuation<[String], Never>?
+    private var firstCallWaiter: CheckedContinuation<Void, Never>?
+
+    init(laterNames: [String]) {
+        self.laterNames = laterNames
+    }
+
+    func discover(_ target: SessionTarget) async -> [String] {
+        _ = target
+        calls += 1
+        guard calls == 1 else { return laterNames }
+        firstCallWaiter?.resume()
+        firstCallWaiter = nil
+        return await withCheckedContinuation { continuation in
+            firstCall = continuation
+        }
+    }
+
+    func waitForFirstCall() async {
+        guard calls == 0 else { return }
+        await withCheckedContinuation { continuation in
+            firstCallWaiter = continuation
+        }
+    }
+
+    func resumeFirst(with names: [String]) {
+        firstCall?.resume(returning: names)
+        firstCall = nil
     }
 }
 
@@ -4120,7 +4404,7 @@ private actor RootModelPublicKeyInstallerRecorder {
 
 @MainActor
 private func makeTestTerminalScreenModel(
-    target: TmuxConnectionTarget,
+    target: SessionTarget,
     sessionInstanceID: UUID,
     transportFactory: @escaping TmuxScreenModel.TransportFactory,
     onRuntimeStateChange: @escaping (TerminalRuntimeStateUpdate) -> Void,
@@ -4158,7 +4442,7 @@ private final class RecordingTerminalScreenModelFactory: @unchecked Sendable {
     }
 
     func makeModel(
-        target: TmuxConnectionTarget,
+        target: SessionTarget,
         sessionInstanceID: UUID,
         transportFactory: @escaping TmuxScreenModel.TransportFactory,
         onRuntimeStateChange: @escaping (TerminalRuntimeStateUpdate) -> Void,
@@ -4189,9 +4473,9 @@ private extension TmuxSessionController.ClientSize {
 }
 
 private final class RecordingAttachmentTransferServiceFactory: @unchecked Sendable {
-    private(set) var targets: [TmuxConnectionTarget] = []
+    private(set) var targets: [SessionTarget] = []
 
-    var factory: @Sendable (TmuxConnectionTarget, TrustedHostStore, RemuxSSHRootService) -> any GhosttyAttachmentTransferService {
+    var factory: @Sendable (SessionTarget, TrustedHostStore, RemuxSSHRootService) -> any GhosttyAttachmentTransferService {
         { target, _, _ in
             self.targets.append(target)
             return FailingGhosttyAttachmentTransferService()
@@ -4218,16 +4502,16 @@ private enum RecordingRootTransportEvent: Equatable {
 
 private final class SuspendingSSHConnectionPrewarmer: @unchecked Sendable {
     private let lock = NSLock()
-    private var recordedTargets: [TmuxConnectionTarget] = []
+    private var recordedTargets: [SessionTarget] = []
     private var continuations: [CheckedContinuation<Void, Never>] = []
 
-    var targets: [TmuxConnectionTarget] {
+    var targets: [SessionTarget] {
         lock.lock()
         defer { lock.unlock() }
         return recordedTargets
     }
 
-    func recordAndSuspend(_ target: TmuxConnectionTarget) async {
+    func recordAndSuspend(_ target: SessionTarget) async {
         await withCheckedContinuation { continuation in
             lock.lock()
             recordedTargets.append(target)
@@ -4250,15 +4534,15 @@ private final class SuspendingSSHConnectionPrewarmer: @unchecked Sendable {
 
 private final class RecordingSSHConnectionPrewarmer: @unchecked Sendable {
     private let lock = NSLock()
-    private var recordedTargets: [TmuxConnectionTarget] = []
+    private var recordedTargets: [SessionTarget] = []
 
-    var targets: [TmuxConnectionTarget] {
+    var targets: [SessionTarget] {
         lock.lock()
         defer { lock.unlock() }
         return recordedTargets
     }
 
-    func record(_ target: TmuxConnectionTarget) {
+    func record(_ target: SessionTarget) {
         lock.lock()
         recordedTargets.append(target)
         lock.unlock()
@@ -4274,7 +4558,7 @@ private final class RecordingSSHConnectionPrewarmer: @unchecked Sendable {
 private final class RecordingRootTransportFactory: @unchecked Sendable {
     private let lock = NSLock()
     private var recordedEvents: [RecordingRootTransportEvent] = []
-    private var recordedTargets: [TmuxConnectionTarget] = []
+    private var recordedTargets: [SessionTarget] = []
 
     var events: [RecordingRootTransportEvent] {
         lock.lock()
@@ -4299,14 +4583,14 @@ private final class RecordingRootTransportFactory: @unchecked Sendable {
         })
     }
 
-    var targets: [TmuxConnectionTarget] {
+    var targets: [SessionTarget] {
         lock.lock()
         defer { lock.unlock() }
         return recordedTargets
     }
 
     func makeTransport(
-        target: TmuxConnectionTarget,
+        target: SessionTarget,
         trustedHostStore: TrustedHostStore
     ) -> any TmuxControlTransport {
         _ = trustedHostStore
@@ -4316,7 +4600,7 @@ private final class RecordingRootTransportFactory: @unchecked Sendable {
         return transport
     }
 
-    func record(target: TmuxConnectionTarget) {
+    func record(target: SessionTarget) {
         lock.lock()
         recordedTargets.append(target)
         lock.unlock()

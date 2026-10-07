@@ -16,7 +16,7 @@ final class SessionSwitcherProjectionTests: XCTestCase {
             selectedSessionID: nil
         )
         XCTAssertEqual(projection.availableSessions.map(\.id.serverID), [zulu.id, zulu.id, alpha.id])
-        XCTAssertEqual(projection.availableSessions.map(\.id.sessionName), ["a", "z", "b"])
+        XCTAssertEqual(projection.availableSessions.map(\.id.locator.name), ["a", "z", "b"])
     }
 
     @MainActor
@@ -129,16 +129,47 @@ final class SessionSwitcherProjectionTests: XCTestCase {
         XCTAssertEqual(
             projection.availableSessions.map(\.id),
             [
-                RemoteTmuxSessionIdentity(serverID: production.id, sessionName: "remote"),
-                RemoteTmuxSessionIdentity(serverID: staging.id, sessionName: "logs"),
+                RemoteSessionIdentity(serverID: production.id, locator: SessionLocator(backend: .tmux, name: "remote")),
+                RemoteSessionIdentity(serverID: staging.id, locator: SessionLocator(backend: .tmux, name: "logs")),
             ]
         )
         XCTAssertFalse(projection.recentSessions.contains { $0.id == missing.id })
         XCTAssertFalse(
-            projection.availableSessions.contains { $0.id.sessionName == "recent" }
+            projection.availableSessions.contains { $0.id.locator.name == "recent" }
         )
         XCTAssertEqual(projection.availableSessionNames(on: production.id), ["remote"])
         XCTAssertEqual(projection.availableSessionNames(on: staging.id), ["logs"])
+    }
+
+    func testSameNamedTmuxAndHerdrSessionsStayDistinct() {
+        let server = makeServer(name: "Production")
+        let herdrOps = SavedWorkspace(
+            serverID: server.id,
+            backend: .herdr,
+            sessionName: "ops",
+            lastOpenedAt: Date(timeIntervalSince1970: 200)
+        )
+        let herdrAgents = SavedWorkspace(
+            serverID: server.id,
+            backend: .herdr,
+            sessionName: "agents",
+            lastOpenedAt: Date(timeIntervalSince1970: 100)
+        )
+
+        let projection = SessionSwitcherProjection(
+            snapshot: snapshot(servers: [server], workspaces: [herdrOps, herdrAgents]),
+            activeSessions: [],
+            discoveryStates: [server.id: loadedDiscovery(["ops"])],
+            selectedSessionID: nil
+        )
+
+        // tmux discovery neither hides Herdr sessions it doesn't list nor
+        // treats a Herdr "ops" as the tmux "ops" it does list.
+        XCTAssertEqual(projection.recentSessions.map(\.id), [herdrOps.id, herdrAgents.id])
+        XCTAssertEqual(
+            projection.availableSessions.map(\.id),
+            [RemoteSessionIdentity(serverID: server.id, locator: SessionLocator(backend: .tmux, name: "ops"))]
+        )
     }
 
     func testProjectionKeepsLargeAvailableInventoryOutOfQuickSheet() {
@@ -157,11 +188,11 @@ final class SessionSwitcherProjectionTests: XCTestCase {
         XCTAssertEqual(projection.hiddenAvailableSessionCount, 2)
         XCTAssertEqual(
             projection.availableSessionNames(on: server.id),
-            projection.availableSessions.map(\.id.sessionName)
+            projection.availableSessions.map(\.id.locator.name)
         )
         XCTAssertEqual(
-            projection.inlineAvailableSessions.map(\.id.sessionName),
-            Array(projection.availableSessions.prefix(3)).map(\.id.sessionName)
+            projection.inlineAvailableSessions.map(\.id.locator.name),
+            Array(projection.availableSessions.prefix(3)).map(\.id.locator.name)
         )
     }
 
@@ -290,7 +321,7 @@ final class SessionSwitcherProjectionTests: XCTestCase {
             displayLabel: server.displayName
         )
         return ActiveTerminalSession(
-            target: TmuxConnectionTarget(
+            target: SessionTarget(
                 server: server,
                 workspace: workspace,
                 sshAuth: auth

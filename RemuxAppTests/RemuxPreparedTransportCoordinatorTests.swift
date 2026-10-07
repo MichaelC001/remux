@@ -168,7 +168,7 @@ private func makePreparedCoordinatorTarget(
     serverID: SavedServer.ID = SavedServer.ID(),
     workspaceID: SavedWorkspace.ID = SavedWorkspace.ID(),
     password: String = "secret"
-) -> TmuxConnectionTarget {
+) -> SessionTarget {
     let server = SavedServer(
         id: serverID,
         displayName: "Build Host",
@@ -181,7 +181,7 @@ private func makePreparedCoordinatorTarget(
         sessionName: "base",
         lastOpenedAt: Date(timeIntervalSince1970: 0)
     )
-    return TmuxConnectionTarget(
+    return SessionTarget(
         server: server,
         workspace: workspace,
         sshAuth: .password(
@@ -211,9 +211,9 @@ private final class PreparedCoordinatorTransportFactory: @unchecked Sendable {
     private let lock = NSLock()
     private var nextIndex = 0
     private var recordedEvents: [PreparedCoordinatorTransportEvent] = []
-    private var recordedTargets: [TmuxConnectionTarget] = []
+    private var recordedTargets: [SessionTarget] = []
 
-    func makeTransport(for target: TmuxConnectionTarget) -> PreparedCoordinatorTransport {
+    func makeTransport(for target: SessionTarget) -> PreparedCoordinatorTransport {
         lock.lock()
         let index = nextIndex
         nextIndex += 1
@@ -242,7 +242,7 @@ private final class PreparedCoordinatorTransportFactory: @unchecked Sendable {
         return recordedEvents
     }
 
-    func createdTargets() -> [TmuxConnectionTarget] {
+    func createdTargets() -> [SessionTarget] {
         lock.lock()
         defer { lock.unlock() }
         return recordedTargets

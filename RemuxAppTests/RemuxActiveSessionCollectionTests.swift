@@ -232,9 +232,9 @@ private func makeTarget(
     sessionName: String = "base",
     password: String = "secret",
     terminalSettings: TerminalSettings = .default
-) -> TmuxConnectionTarget {
+) -> SessionTarget {
     let workspace = SavedWorkspace(serverID: server.id, sessionName: sessionName)
-    return TmuxConnectionTarget(
+    return SessionTarget(
         server: server,
         workspace: workspace,
         sshAuth: .password(
