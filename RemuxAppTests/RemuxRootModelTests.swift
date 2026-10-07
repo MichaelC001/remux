@@ -2568,6 +2568,54 @@ final class RemuxRootModelTests: XCTestCase {
         XCTAssertFalse(showedOldResult)
     }
 
+    func testEditServerChecksNoSessionsWhenTheSavedServerFailsToLoad() async throws {
+        let passwordBackedServer = makePasswordBackedServer()
+        let server = passwordBackedServer.server
+        let discoverer = RecordingTmuxSessionDiscoverer(results: [
+            .success(["base"]),
+            .success(["base"]),
+        ])
+        let harness = makeHarness(
+            servers: [server],
+            identities: [passwordBackedServer.identity],
+            tmuxSessionDiscoverer: { target, _, _ in
+                try await discoverer.discover(target)
+            }
+        )
+        try await harness.credentialStore.saveCredential(
+            .password("demo-password"),
+            identityID: passwordBackedServer.identity.id
+        )
+        await harness.model.load()
+        let didCheck = await waitUntil {
+            harness.model.tmuxSessionDiscoveryState(for: server.id).sessionNames == ["base"]
+        }
+        XCTAssertTrue(didCheck)
+
+        await harness.model.beginEditServer(serverID: server.id)
+        harness.model.updateDraft { draft in
+            draft.host = "updated.example.com"
+            draft.password = "updated-password"
+        }
+        await harness.profileRepository.suspendNextLoad(
+            thenThrow: ConnectionProfileRepositoryError.missingServer(server.id)
+        )
+        let saveTask = Task {
+            await harness.model.saveAndConnect()
+        }
+        await harness.profileRepository.waitForSuspendedLoad()
+        await harness.profileRepository.resumeSuspendedLoad()
+        _ = await saveTask.value
+        guard case .failed = harness.model.state else {
+            return XCTFail("expected the reload after the save to fail")
+        }
+
+        // The library still has the old host, while the new password is saved.
+        try await Task.sleep(for: .milliseconds(300))
+        let checkedHosts = await discoverer.targets().map(\.server.host)
+        XCTAssertEqual(checkedHosts, [server.host], "Only the launch check should reach a server.")
+    }
+
     func testEditServerFromPasswordToNoneDeletesCredential() async throws {
         let passwordBackedServer = makePasswordBackedServer()
         let server = passwordBackedServer.server

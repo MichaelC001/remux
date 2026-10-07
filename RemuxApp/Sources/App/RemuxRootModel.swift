@@ -931,7 +931,17 @@ final class RemuxRootModel: ObservableObject {
                 // However this save ends, check the server's sessions again
                 // against the profile it leaves saved. A check started during
                 // the save would carry the old profile and be dropped as stale.
-                defer { restartTmuxSessionRefresh(for: serverID) }
+                // From saving the server until the library is reloaded, the
+                // library still has the old profile, and a check would sign in
+                // to the old address with the new credential. A save that ends
+                // there leaves the app failed, and the next launch checks again.
+                var libraryMatchesSavedServer = true
+                defer {
+                    invalidateTmuxSessionRefresh(for: serverID)
+                    if libraryMatchesSavedServer {
+                        refreshTmuxSessions(for: serverID)
+                    }
+                }
                 let server = submission.savedServer(identityID: updatedIdentityCredential.identity.id)
                 cancelLibrarySSHPrewarm()
                 let previousCredential = try await dependencies.credentialStore.loadCredential(
@@ -962,6 +972,7 @@ final class RemuxRootModel: ObservableObject {
                         return
                     }
                     try await dependencies.profileRepository.saveServer(server)
+                    libraryMatchesSavedServer = false
                     guard isCurrentSetupAction(action) else { return }
                     discardEditServerTrustSnapshot(setupID: action.setupID)
                 } catch {
@@ -975,6 +986,7 @@ final class RemuxRootModel: ObservableObject {
                 let library = try await dependencies.profileRepository.loadSnapshot()
                 guard isCurrentSetupAction(action) else { return }
                 updateLibrary(library)
+                libraryMatchesSavedServer = true
                 let updatedSSHAuth = try await resolveSSHAuth(for: server)
                 guard isCurrentSetupAction(action) else { return }
                 closePreparedTransports(forServerID: server.id)
@@ -2014,13 +2026,6 @@ final class RemuxRootModel: ObservableObject {
     private func invalidateTmuxSessionRefresh(for serverID: SavedServer.ID) {
         tmuxSessionRefreshes.removeValue(forKey: serverID)?.task.cancel()
         tmuxSessionDiscoveryStates.removeValue(forKey: serverID)
-    }
-
-    /// Replaces any session check for the server with a new one, so a check
-    /// started with an outdated profile can't leave the page waiting.
-    private func restartTmuxSessionRefresh(for serverID: SavedServer.ID) {
-        invalidateTmuxSessionRefresh(for: serverID)
-        refreshTmuxSessions(for: serverID)
     }
 
     private func cancelTmuxSessionRefreshForInteractiveConnection(
