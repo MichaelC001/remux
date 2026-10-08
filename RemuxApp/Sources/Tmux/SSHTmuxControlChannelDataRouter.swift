@@ -37,6 +37,14 @@ struct SSHTmuxStartupDiagnostics: Equatable, Sendable, CustomStringConvertible {
     let extendedDataByteCount: Int
     let stderrPreview: String?
     let extendedDataPreview: String?
+    /// Output before tmux's first protocol line: login-shell output and, on a
+    /// pseudo-terminal, the launch script's stderr.
+    let startupOutputPreview: String?
+
+    /// Every message the launch could have written, wherever it arrived.
+    var messages: String {
+        [startupOutputPreview, stderrPreview].compactMap { $0 }.joined(separator: "\n")
+    }
 
     var isEmpty: Bool {
         stdoutByteCount == 0 &&
@@ -50,6 +58,9 @@ struct SSHTmuxStartupDiagnostics: Equatable, Sendable, CustomStringConvertible {
             "stderr_bytes=\(stderrByteCount)",
             "extended_bytes=\(extendedDataByteCount)",
         ]
+        if let startupOutputPreview {
+            fields.append("startup_preview=\"\(startupOutputPreview)\"")
+        }
         if let stderrPreview {
             fields.append("stderr_preview=\"\(stderrPreview)\"")
         }
@@ -62,11 +73,16 @@ struct SSHTmuxStartupDiagnostics: Equatable, Sendable, CustomStringConvertible {
 
 private struct SSHTmuxStartupDiagnosticsAccumulator: Equatable, Sendable {
     private var stdout = SSHTmuxBoundedStreamPreview()
+    private var startupOutput = SSHTmuxBoundedStreamPreview()
     private var stderr = SSHTmuxBoundedStreamPreview()
     private var extendedData = SSHTmuxBoundedStreamPreview()
 
     mutating func recordStdout(_ data: Data) {
         stdout.append(data)
+    }
+
+    mutating func recordStartupOutput(_ data: Data) {
+        startupOutput.append(data)
     }
 
     mutating func recordStderr(_ data: Data) {
@@ -83,21 +99,40 @@ private struct SSHTmuxStartupDiagnosticsAccumulator: Equatable, Sendable {
             stderrByteCount: stderr.byteCount,
             extendedDataByteCount: extendedData.byteCount,
             stderrPreview: stderr.preview,
-            extendedDataPreview: extendedData.preview
+            extendedDataPreview: extendedData.preview,
+            startupOutputPreview: startupOutput.preview
         )
         return diagnostics.isEmpty ? nil : diagnostics
     }
 }
 
 enum SSHTmuxControlChannelDataRoute: Equatable, Sendable {
-    case stdout(reportFirstOutput: Bool)
+    /// tmux control-mode bytes. `isFirst` marks the start of the protocol.
+    case controlOutput(Data, isFirst: Bool)
+    /// Stdout before tmux's first protocol line, kept only as diagnostics.
+    case startupOutput
     case stderr
     case extendedData
 }
 
+/// Splits the channel into tmux's control protocol and everything else. The
+/// protocol starts at tmux's first reply guard, `%begin <time> <number>
+/// <flags>`, which a plain control client receives before anything else
+/// (tmux's cmdq_guard). Anything earlier on stdout came from the login shell
+/// or the launch script, including their stderr, which a pty merges into
+/// stdout. A line there that merely starts with `%` must not start the
+/// protocol: the native parser skips an unknown `%` line but breaks on the
+/// next line that doesn't start with `%`.
 final class SSHTmuxControlChannelDataRouter: @unchecked Sendable {
+    /// A longer line can't be a reply guard.
+    private static let maximumReplyGuardLength = 64
+
     private let lock = NIOLock()
-    private var didReportFirstOutput = false
+    private var protocolStarted = false
+    private var atLineStart = true
+    /// The current line while it can still be tmux's first reply guard. It
+    /// can span chunks, so it is held back until the line ends.
+    private var candidateLine: Data?
     private var startupDiagnostics = SSHTmuxStartupDiagnosticsAccumulator()
 
     var diagnostics: SSHTmuxStartupDiagnostics? {
@@ -114,9 +149,14 @@ final class SSHTmuxControlChannelDataRouter: @unchecked Sendable {
             switch type {
             case .channel:
                 startupDiagnostics.recordStdout(data)
-                let reportFirstOutput = !didReportFirstOutput
-                didReportFirstOutput = true
-                return .stdout(reportFirstOutput: reportFirstOutput)
+                if protocolStarted {
+                    return .controlOutput(data, isFirst: false)
+                }
+                guard let output = protocolOutput(startingIn: data) else {
+                    return .startupOutput
+                }
+                protocolStarted = true
+                return .controlOutput(output, isFirst: true)
 
             case .stdErr:
                 startupDiagnostics.recordStderr(data)
@@ -126,6 +166,54 @@ final class SSHTmuxControlChannelDataRouter: @unchecked Sendable {
                 startupDiagnostics.recordExtendedData(data)
                 return .extendedData
             }
+        }
+    }
+
+    /// tmux's output from its first reply guard on, once that line has ended
+    /// in `data`; nil while it hasn't. Everything before it is recorded as
+    /// startup output.
+    private func protocolOutput(startingIn data: Data) -> Data? {
+        var startupOutput = Data()
+        for index in data.indices {
+            let byte = data[index]
+            if atLineStart, byte == UInt8(ascii: "%") {
+                candidateLine = Data()
+            }
+            atLineStart = byte == UInt8(ascii: "\n")
+            guard var line = candidateLine else {
+                startupOutput.append(byte)
+                continue
+            }
+            line.append(byte)
+            if byte == UInt8(ascii: "\n") {
+                candidateLine = nil
+                if Self.isReplyGuard(line) {
+                    startupDiagnostics.recordStartupOutput(startupOutput)
+                    line.append(contentsOf: data[data.index(after: index)...])
+                    return line
+                }
+                startupOutput.append(line)
+            } else if line.count > Self.maximumReplyGuardLength {
+                candidateLine = nil
+                startupOutput.append(line)
+            } else {
+                candidateLine = line
+            }
+        }
+        startupDiagnostics.recordStartupOutput(startupOutput)
+        return nil
+    }
+
+    /// Reads a line the way the native parser reads a reply guard:
+    /// `%begin`, then three unsigned numbers, an optional `\r`, nothing else.
+    private static func isReplyGuard(_ line: Data) -> Bool {
+        var text = line
+        if text.last == UInt8(ascii: "\n") { text.removeLast() }
+        if text.last == UInt8(ascii: "\r") { text.removeLast() }
+        let fields = text.split(separator: UInt8(ascii: " "), omittingEmptySubsequences: false)
+        guard fields.count == 4, fields[0].elementsEqual("%begin".utf8) else { return false }
+        return fields.dropFirst().allSatisfy { field in
+            !field.isEmpty && field.allSatisfy { (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0) }
         }
     }
 }

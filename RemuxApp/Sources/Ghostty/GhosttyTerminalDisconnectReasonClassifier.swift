@@ -70,7 +70,7 @@ enum GhosttyTerminalDisconnectReasonClassifier {
     ) -> String? {
         TmuxExecutableProblem(
             exitStatus: status,
-            stderr: diagnostics?.stderrPreview ?? ""
+            output: diagnostics?.messages ?? ""
         )?.message
     }
 

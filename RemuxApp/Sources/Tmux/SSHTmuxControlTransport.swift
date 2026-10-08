@@ -660,41 +660,46 @@ private enum SSHTmuxControlBootstrap {
             "startup.exec.request viewport=\(GhosttyRuntimeTrace.viewportDescription(viewport)) commandBytes=\(command.lengthOfBytes(using: .utf8)) preview=\(GhosttyRuntimeTrace.preview(Data(command.utf8), limit: 220))"
         )
 
-        // Deliberately NO pseudo-terminal: the control-mode protocol is a
-        // plain byte stream pumped straight into Ghostty's session parser. A PTY
-        // would force `tmux -CC` (which demands a tty and wraps the stream
-        // in a DCS 1000p envelope Ghostty's parser must not see) and adds
-        // echo and CRLF line-discipline hazards. `tmux -C` over a bare exec
-        // channel emits exactly the verified wire contract; TERM is exported
-        // by the remote command line and the client size is owned by the
-        // session's refresh-client reporting.
+        // `tmux -C` (never `-CC`, which wraps the stream in a DCS envelope)
+        // runs on a raw pseudo-terminal: the bytes are those of a plain exec
+        // channel, and sshd hangs up the client when the channel or the
+        // connection goes away. tmux (through 3.7) never finishes exiting a
+        // control client whose output cannot drain, so without the hangup a
+        // dropped connection or a killed app can leave a stuck client on the
+        // server. TERM is exported by the remote command line, and the client
+        // size comes from refresh-client, not the pty.
         let execConnection = try await RemuxSSHExecSession.open(
             using: claimedConnection,
             command: command,
+            pseudoTerminal: true,
             trace: trace,
             onData: { type, data in
                 switch router.route(type: type, data: data) {
-                case .stdout(let reportFirstOutput):
+                case .controlOutput(let output, let isFirst):
                     traceControlByteChunk(
-                        data,
+                        output,
                         direction: "rx",
                         source: "ssh.channelRead",
                         viewportDescription: viewportTraceState.description()
                     )
                     GhosttyRuntimeTrace.latency(
-                        "ssh.channelRead bytes=\(data.count) preview=\(GhosttyRuntimeTrace.preview(data, limit: 160))"
+                        "ssh.channelRead bytes=\(output.count) preview=\(GhosttyRuntimeTrace.preview(output, limit: 160))"
                     )
-                    if reportFirstOutput {
+                    if isFirst {
                         firstOutputGate.succeed()
                         trace.event(
                             "firstOutput",
                             fields: [
-                                "bytes": "\(data.count)",
-                                "preview": GhosttyRuntimeTrace.preview(data, limit: 80),
+                                "bytes": "\(output.count)",
+                                "preview": GhosttyRuntimeTrace.preview(output, limit: 80),
                             ]
                         )
                     }
-                    onOutput(data)
+                    onOutput(output)
+                case .startupOutput:
+                    GhosttyRuntimeTrace.latency(
+                        "ssh.channelRead.startup bytes=\(data.count) preview=\(GhosttyRuntimeTrace.preview(data, limit: 160))"
+                    )
                 case .stderr:
                     GhosttyRuntimeTrace.latency(
                         "ssh.channelRead.stderr bytes=\(data.count) preview=\(GhosttyRuntimeTrace.preview(data, limit: 160))"

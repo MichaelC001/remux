@@ -309,7 +309,9 @@ private actor ForegroundInactiveTransport: TmuxControlTransport, TmuxControlTran
     }
 
     func send(_ data: Data) async throws {
-        _ = data
+        if TmuxControlClientExit.isRequested(in: data) {
+            continuation.finish()
+        }
     }
 
     func close(disposition: TmuxControlTransportCloseDisposition) async {
@@ -365,7 +367,9 @@ private actor ForegroundSuspendingTransport: TmuxControlTransport, TmuxControlTr
     }
 
     func send(_ data: Data) async throws {
-        _ = data
+        if TmuxControlClientExit.isRequested(in: data) {
+            continuation.finish()
+        }
     }
 
     func close(disposition: TmuxControlTransportCloseDisposition) async {

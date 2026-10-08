@@ -30,6 +30,9 @@ actor DeterministicTmuxControlTransport: TmuxControlTransport {
 
     func send(_ data: Data) async throws {
         sentCommands.append(data)
+        if TmuxControlClientExit.isRequested(in: data) {
+            continuation.finish()
+        }
     }
 
     func close(disposition: TmuxControlTransportCloseDisposition) async {

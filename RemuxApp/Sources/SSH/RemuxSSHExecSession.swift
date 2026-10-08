@@ -193,9 +193,34 @@ final class RemuxSSHExecLifetimeOwner: @unchecked Sendable {
 }
 
 enum RemuxSSHExecSession {
+    /// A raw pseudo-terminal (the `cfmakeraw` modes): no echo, line editing,
+    /// signal characters, flow control, or byte translation, so the stream
+    /// carries the same bytes as a plain exec channel. Unlike a plain exec
+    /// channel, sshd hangs up the command when the channel or the connection
+    /// goes away. The size is unused by the command.
+    static let rawPseudoTerminalRequest = SSHChannelRequestEvent.PseudoTerminalRequest(
+        wantReply: false,
+        term: "xterm-256color",
+        terminalCharacterWidth: 80,
+        terminalRowHeight: 24,
+        terminalPixelWidth: 0,
+        terminalPixelHeight: 0,
+        terminalModes: SSHTerminalModes([
+            .PARMRK: 0, .ISTRIP: 0, .INLCR: 0, .IGNCR: 0, .ICRNL: 0,
+            .IXON: 0, .IXOFF: 0, .IXANY: 0,
+            .OPOST: 0, .ONLCR: 0,
+            .ECHO: 0, .ECHONL: 0, .ICANON: 0, .ISIG: 0, .IEXTEN: 0,
+            .PARENB: 0, .CS8: 1,
+        ])
+    )
+
+    /// Opens a long-lived exec channel. With `pseudoTerminal`, the command
+    /// runs on `rawPseudoTerminalRequest`; a server that refuses the pty runs
+    /// it on a plain channel, where stderr stays a separate stream.
     static func open(
         using claimedRoot: RemuxSSHClaimedRoot,
         command: String,
+        pseudoTerminal: Bool,
         trace: RemuxTransportStartupTrace,
         onData: @escaping @Sendable (SSHChannelData.DataType, Data) -> Void,
         onFinish: @escaping @Sendable (Int?, Error?) -> Void
@@ -208,6 +233,7 @@ enum RemuxSSHExecSession {
                 trace: trace,
                 lifetime: lifetime,
                 closeOnRemoteEOFAndExitStatus: false,
+                pseudoTerminal: pseudoTerminal,
                 onData: onData,
                 onFinish: onFinish
             )
@@ -238,6 +264,7 @@ enum RemuxSSHExecSession {
         trace: RemuxTransportStartupTrace,
         lifetime: RemuxSSHExecLifetimeOwner,
         closeOnRemoteEOFAndExitStatus: Bool,
+        pseudoTerminal: Bool = false,
         onData: @escaping @Sendable (SSHChannelData.DataType, Data) -> Void,
         onFinish: @escaping @Sendable (Int?, Error?) -> Void
     ) async throws -> RemuxSSHExecConnection {
@@ -263,6 +290,9 @@ enum RemuxSSHExecSession {
                 fields: ["commandBytes": "\(command.lengthOfBytes(using: .utf8))"]
             ) {
                 try Task.checkCancellation()
+                if pseudoTerminal {
+                    try await sessionChannel.triggerUserOutboundEvent(rawPseudoTerminalRequest)
+                }
                 handler.expectExecReply()
                 try await sessionChannel.triggerUserOutboundEvent(
                     SSHChannelRequestEvent.ExecRequest(
