@@ -1164,8 +1164,8 @@ final class SSHTmuxControlTransportTests: XCTestCase {
 
     func testChannelDataRouterForwardsControlProtocolFromItsFirstLine() {
         let router = SSHTmuxControlChannelDataRouter()
-        let first = Data("%begin 1 0\n".utf8)
-        let second = Data("%end 1 0\n".utf8)
+        let first = Data("%begin 1791441415 267 0\n".utf8)
+        let second = Data("%end 1791441415 267 0\n".utf8)
 
         XCTAssertEqual(
             router.route(type: .channel, data: first),
@@ -1191,12 +1191,12 @@ final class SSHTmuxControlTransportTests: XCTestCase {
             .startupOutput
         )
         XCTAssertEqual(
-            router.route(type: .channel, data: Data("login\n%begin 1 0\n%end".utf8)),
-            .controlOutput(Data("%begin 1 0\n%end".utf8), isFirst: true)
+            router.route(type: .channel, data: Data("login\n%begin 1791441415 267 0\n%end".utf8)),
+            .controlOutput(Data("%begin 1791441415 267 0\n%end".utf8), isFirst: true)
         )
         XCTAssertEqual(
-            router.route(type: .channel, data: Data(" 1 0\nlater text\n".utf8)),
-            .controlOutput(Data(" 1 0\nlater text\n".utf8), isFirst: false)
+            router.route(type: .channel, data: Data(" 1791441415 267 0\nlater text\n".utf8)),
+            .controlOutput(Data(" 1791441415 267 0\nlater text\n".utf8), isFirst: false)
         )
 
         XCTAssertEqual(
@@ -1210,8 +1210,47 @@ final class SSHTmuxControlTransportTests: XCTestCase {
 
         XCTAssertEqual(router.route(type: .channel, data: Data("motd\n".utf8)), .startupOutput)
         XCTAssertEqual(
-            router.route(type: .channel, data: Data("%begin 1 0\n".utf8)),
-            .controlOutput(Data("%begin 1 0\n".utf8), isFirst: true)
+            router.route(type: .channel, data: Data("%begin 1791441415 267 0\n".utf8)),
+            .controlOutput(Data("%begin 1791441415 267 0\n".utf8), isFirst: true)
+        )
+    }
+
+    /// On a pty the shell's stderr arrives on stdout. A line that only starts
+    /// with `%` there must not start the protocol: the native parser skips an
+    /// unknown `%` line but breaks on the next line that doesn't start with `%`.
+    func testChannelDataRouterStartsTheProtocolOnlyAtTmuxsFirstReply() {
+        for banner in ["% Welcome\nAuthorized users only\n", "% Welcome\n\n"] {
+            let router = SSHTmuxControlChannelDataRouter()
+            let reply = Data("%begin 1791441415 267 0\n%end 1791441415 267 0\n".utf8)
+
+            XCTAssertEqual(router.route(type: .channel, data: Data(banner.utf8)), .startupOutput, banner)
+            XCTAssertEqual(
+                router.route(type: .channel, data: reply),
+                .controlOutput(reply, isFirst: true),
+                banner
+            )
+        }
+    }
+
+    func testChannelDataRouterHoldsTmuxsFirstReplyUntilItsLineEnds() {
+        let router = SSHTmuxControlChannelDataRouter()
+
+        XCTAssertEqual(router.route(type: .channel, data: Data("motd\n%beg".utf8)), .startupOutput)
+        XCTAssertEqual(
+            router.route(type: .channel, data: Data("in 1791441415 267 0\n%end".utf8)),
+            .controlOutput(Data("%begin 1791441415 267 0\n%end".utf8), isFirst: true)
+        )
+        XCTAssertEqual(router.diagnostics?.startupOutputPreview, "motd\\x0A")
+    }
+
+    func testChannelDataRouterKeepsAMalformedReplyGuardAsStartupOutput() {
+        let router = SSHTmuxControlChannelDataRouter()
+
+        XCTAssertEqual(router.route(type: .channel, data: Data("%begin now\n".utf8)), .startupOutput)
+        XCTAssertEqual(router.route(type: .channel, data: Data("%begin 1 2\n".utf8)), .startupOutput)
+        XCTAssertEqual(
+            router.route(type: .channel, data: Data("%begin 1791441415 267 0\n".utf8)),
+            .controlOutput(Data("%begin 1791441415 267 0\n".utf8), isFirst: true)
         )
     }
 
