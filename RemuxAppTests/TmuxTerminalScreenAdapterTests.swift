@@ -558,14 +558,14 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 600))
         let viewController = UIViewController()
         window.rootViewController = viewController
-        viewController.view.addSubview(firstPane.view)
+        viewController.view.addSubview(firstPane.renderer.view)
         window.isHidden = false
         defer { window.isHidden = true }
-        for _ in 0..<100 where firstPane.presentation != .ready {
+        for _ in 0..<100 where firstPane.renderer.presentation != .ready {
             try await Task.sleep(for: .milliseconds(20))
         }
-        XCTAssertEqual(firstPane.presentation, .ready)
-        XCTAssertEqual(secondPane.presentation, .pending, "a hydrated unattached pane is not ready")
+        XCTAssertEqual(firstPane.renderer.presentation, .ready)
+        XCTAssertEqual(secondPane.renderer.presentation, .pending, "a hydrated unattached pane is not ready")
         XCTAssertEqual(
             TerminalReadinessProjector.runtimeState(adapter.terminalScreenPresentationProjection.readiness),
             .connected

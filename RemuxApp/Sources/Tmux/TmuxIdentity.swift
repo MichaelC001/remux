@@ -56,20 +56,6 @@ struct TmuxWindowID: RawRepresentable, Hashable, Comparable, Sendable,
     }
 }
 
-/// Identity of one native Ghostty surface instance. Recreating the surface for
-/// the same tmux pane creates a new value even though its `TmuxPaneID` is unchanged.
-struct TerminalSurfaceInstanceID: RawRepresentable, Hashable, Sendable {
-    let rawValue: UUID
-
-    init(rawValue: UUID) {
-        self.rawValue = rawValue
-    }
-
-    init() {
-        self.rawValue = UUID()
-    }
-}
-
 /// Owns the reversible identity boundary between tmux's typed numeric IDs and
 /// the UUIDs used by terminal presentation projections.
 struct TmuxTerminalIdentityRegistry {
