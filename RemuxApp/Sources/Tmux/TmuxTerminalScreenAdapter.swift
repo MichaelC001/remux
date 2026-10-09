@@ -91,7 +91,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
     private var multipaneZoomDefault = TmuxMultipaneZoomDefaultPolicy()
 
     private var commandFailureMessage: String?
-    private(set) var commandFailureEvent: GhosttyTmuxCommandFailureEvent?
+    private(set) var commandFailureEvent: GhosttyTerminalCommandFailureEvent?
     private var commandFailureToken: UInt64 = 0
 
     private var subscriptions: [AnyCancellable] = []
@@ -265,8 +265,8 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
                         ? (isFocused ? fullWindowFrame : nil)
                         : normalFrame,
                     isFocused: isFocused,
-                    tmuxCurrentCommand: pane.currentCommand,
-                    tmuxCurrentPath: pane.currentPath
+                    currentCommand: pane.currentCommand,
+                    currentPath: pane.currentPath
                 )
             }
 
@@ -460,7 +460,7 @@ final class TmuxTerminalScreenAdapter: ObservableObject {
         commandFailureToken &+= 1
         let message = "tmux: \(Self.failureLabel(for: request)) failed"
         commandFailureMessage = message
-        commandFailureEvent = GhosttyTmuxCommandFailureEvent(
+        commandFailureEvent = GhosttyTerminalCommandFailureEvent(
             token: commandFailureToken,
             message: message
         )
@@ -680,12 +680,12 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         controller?.claimActiveViewportIfNeeded()
     }
 
-    func refreshTmuxPaneMetadata(inTopLevel id: UUID) {
+    func refreshPaneMetadata(inTopLevel id: UUID) {
         guard let windowID = identities.windowID(for: id) else { return }
         controller?.requestRefreshWindowPaneMetadata(windowID: windowID)
     }
 
-    func focusTmuxPane(_ id: UUID) -> GhosttyTmuxModelActionOutcome {
+    func focusPane(_ id: UUID) -> GhosttyTerminalActionOutcome {
         guard let paneID = identities.paneID(for: id), let controller else {
             GhosttyRuntimeTrace.flowEventIfActive(
                 GhosttyRuntimeTrace.paneSwitchFlow,
@@ -718,9 +718,9 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         return .queued
     }
 
-    func focusTmuxTopLevel(_ id: UUID) -> GhosttyTmuxModelActionOutcome {
+    func focusTopLevel(_ id: UUID) -> GhosttyTerminalActionOutcome {
         guard let windowID = identities.windowID(for: id), let controller else {
-            return .missingTarget(.window(id))
+            return .missingTarget(.topLevel(id))
         }
         pendingFocusedPaneID = nil
         if let topology = latestTopology,
@@ -732,9 +732,9 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         return .queued
     }
 
-    func focusAdjacentTmuxTopLevel(
+    func focusAdjacentTopLevel(
         _ direction: GhosttyRuntimeSelectionDirection
-    ) -> GhosttyTmuxModelActionOutcome {
+    ) -> GhosttyTerminalActionOutcome {
         guard
             let controller,
             let topology = latestTopology,
@@ -742,7 +742,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
             let activeWindowID = topology.activeWindowID,
             let activeIndex = topology.windows.firstIndex(where: { $0.id == activeWindowID })
         else {
-            return .missingTarget(.adjacentWindow)
+            return .missingTarget(.adjacentTopLevel)
         }
 
         let targetIndex = direction.advancedIndex(
@@ -750,7 +750,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
             count: topology.windows.count
         )
         guard targetIndex != activeIndex else {
-            return .missingTarget(.adjacentWindow)
+            return .missingTarget(.adjacentTopLevel)
         }
         let targetWindow = topology.windows[targetIndex]
         requestWindowSelection(targetWindow, in: topology, controller: controller)
@@ -774,15 +774,15 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         )
     }
 
-    func createTmuxWindow() -> GhosttyTmuxModelActionOutcome {
+    func createTopLevel() -> GhosttyTerminalActionOutcome {
         guard let controller else { return .missingTarget(.host) }
         controller.requestNewWindow()
         return .queued
     }
 
-    func splitFocusedTmuxPane(
+    func splitFocusedPane(
         _ direction: ghostty_action_split_direction_e
-    ) -> GhosttyTmuxModelActionOutcome {
+    ) -> GhosttyTerminalActionOutcome {
         guard let controller,
               let activeManagedPaneID,
               let topology = latestTopology,
@@ -817,7 +817,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         return .queued
     }
 
-    func setFocusedTmuxPaneZoomed(_ zoomed: Bool) -> GhosttyTmuxModelActionOutcome {
+    func setFocusedPaneZoomed(_ zoomed: Bool) -> GhosttyTerminalActionOutcome {
         guard let controller,
               let activeManagedPaneID,
               let topology = latestTopology,
@@ -952,7 +952,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         }
     }
 
-    func closeTmuxPane(_ id: UUID) -> GhosttyTmuxModelActionOutcome {
+    func closePane(_ id: UUID) -> GhosttyTerminalActionOutcome {
         guard let paneID = identities.paneID(for: id), let controller else {
             return .missingTarget(.pane(id))
         }
@@ -968,15 +968,15 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         return .queued
     }
 
-    func closeTmuxWindow(_ id: UUID) -> GhosttyTmuxModelActionOutcome {
+    func closeTopLevel(_ id: UUID) -> GhosttyTerminalActionOutcome {
         guard let windowID = identities.windowID(for: id), let controller else {
-            return .missingTarget(.window(id))
+            return .missingTarget(.topLevel(id))
         }
         controller.requestCloseWindow(windowID: windowID)
         return .queued
     }
 
-    func enterFocusedTmuxCopyMode() -> GhosttyTmuxModelActionOutcome {
+    func enterFocusedTmuxCopyMode() -> GhosttyTerminalActionOutcome {
         guard let controller, let activeManagedPaneID else {
             return .missingTarget(.focusedPane)
         }
@@ -986,26 +986,26 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
 
     // MARK: Selection sheet projections
 
-    func createTmuxWindowInteractionEffect() -> GhosttyTmuxTopologyActionInteractionEffect {
-        GhosttyTerminalPresentationProjector.createTmuxWindowInteractionEffect()
+    func createTopLevelInteractionEffect() -> GhosttyTopologyActionInteractionEffect {
+        GhosttyTerminalPresentationProjector.createTopLevelInteractionEffect()
     }
 
-    func splitFocusedTmuxPaneInteractionEffect() -> GhosttyTmuxTopologyActionInteractionEffect {
-        GhosttyTerminalPresentationProjector.splitFocusedTmuxPaneInteractionEffect()
+    func splitFocusedPaneInteractionEffect() -> GhosttyTopologyActionInteractionEffect {
+        GhosttyTerminalPresentationProjector.splitFocusedPaneInteractionEffect()
     }
 
-    func closeTmuxWindowInteractionEffect(_ id: UUID) -> GhosttyTmuxTopologyActionInteractionEffect {
-        GhosttyTerminalPresentationProjector.closeTmuxWindowInteractionEffect(
+    func closeTopLevelInteractionEffect(_ id: UUID) -> GhosttyTopologyActionInteractionEffect {
+        GhosttyTerminalPresentationProjector.closeTopLevelInteractionEffect(
             id,
             snapshot: topologySnapshot
         )
     }
 
-    func closeTmuxPaneInteractionEffect(
+    func closePaneInteractionEffect(
         _ id: UUID,
         inTopLevel topLevelID: UUID
-    ) -> GhosttyTmuxTopologyActionInteractionEffect {
-        GhosttyTerminalPresentationProjector.closeTmuxPaneInteractionEffect(
+    ) -> GhosttyTopologyActionInteractionEffect {
+        GhosttyTerminalPresentationProjector.closePaneInteractionEffect(
             id,
             inTopLevel: topLevelID,
             snapshot: topologySnapshot
@@ -1042,6 +1042,8 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
             snapshot: topologySnapshot
         )
     }
+
+    var topLevelNoun: GhosttyTopLevelNoun { .window }
 
     func windowSelectionSheetRenderProjection() -> GhosttyWindowSelectionSheetRenderProjection {
         let projection = GhosttyTerminalPresentationProjector.windowSelectionSheetRenderProjection(

@@ -31,6 +31,7 @@ struct GhosttyWindowSelectionSheet: View {
     @State private var pendingContextAction: GhosttyWindowRemovalRequest?
 
     let projection: GhosttyWindowSelectionSheetRenderProjection
+    let topLevelNoun: GhosttyTopLevelNoun
     let sessionName: String
     let layout: PanePreviewLayout.Metrics
     let contentHeight: CGFloat
@@ -42,7 +43,7 @@ struct GhosttyWindowSelectionSheet: View {
     var body: some View {
         NavigationStack {
             TerminalSelectionSheetContent(
-                context: "\(sessionName) · \(projection.windows.count) \(projection.windows.count == 1 ? "window" : "windows")"
+                context: "\(sessionName) · \(projection.windows.count) \((projection.windows.count == 1 ? topLevelNoun.singular : topLevelNoun.plural).lowercased())"
             ) {
                 ScrollView(showsIndicators: false) {
                     windowGrid(
@@ -59,13 +60,13 @@ struct GhosttyWindowSelectionSheet: View {
                 )
             } actions: {
                 TerminalSelectionSheetActionButton(
-                    title: "New Window",
+                    title: "New \(topLevelNoun.singular)",
                     systemName: "plus",
                     accessibilityIdentifier: "terminal.window.new",
                     action: onCreateWindow
                 )
             }
-            .navigationTitle("Windows")
+            .navigationTitle(topLevelNoun.plural)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -75,7 +76,7 @@ struct GhosttyWindowSelectionSheet: View {
                     } label: {
                         Image(systemName: "xmark")
                     }
-                    .accessibilityLabel("Close Windows")
+                    .accessibilityLabel("Close \(topLevelNoun.plural)")
                     .accessibilityIdentifier("terminal.windows.close")
                 }
             }
@@ -93,12 +94,12 @@ struct GhosttyWindowSelectionSheet: View {
             }
         }
         .confirmationDialog(
-            "Remove Window?",
+            "Remove \(topLevelNoun.singular)?",
             isPresented: pendingRemovalBinding,
             titleVisibility: .visible,
             presenting: pendingRemoval
         ) { request in
-            Button("Remove Window \(request.displayIndex)", role: .destructive) {
+            Button("Remove \(topLevelNoun.singular) \(request.displayIndex)", role: .destructive) {
                 onRemoveWindow(request.id)
                 pendingRemoval = nil
             }
@@ -145,6 +146,7 @@ struct GhosttyWindowSelectionSheet: View {
                         onSelect(window.id)
                     } label: {
                         GhosttyWindowSelectionTile(
+                            topLevelNoun: topLevelNoun,
                             displayIndex: window.displayIndex,
                             displayName: window.displayName,
                             totalCount: window.totalCount,
@@ -169,7 +171,7 @@ struct GhosttyWindowSelectionSheet: View {
 
                     if pendingContextAction?.id == window.id {
                         GhosttySelectionContextActionButton(
-                            title: "Remove Window \(window.displayIndex)",
+                            title: "Remove \(topLevelNoun.singular) \(window.displayIndex)",
                             accessibilityIdentifier: "terminal.window.remove.\(window.displayIndex)",
                             action: confirmPendingContextAction
                         )
@@ -180,7 +182,7 @@ struct GhosttyWindowSelectionSheet: View {
                 }
                 .frame(width: layout.tilePointSize.width, height: layout.tilePointSize.height)
                 .animation(.spring(response: 0.24, dampingFraction: 0.82), value: pendingContextAction?.id)
-                .accessibilityAction(named: Text("Remove Window \(window.displayIndex)")) {
+                .accessibilityAction(named: Text("Remove \(topLevelNoun.singular) \(window.displayIndex)")) {
                     Haptic.warning()
                     pendingRemoval = request
                 }
@@ -208,7 +210,7 @@ struct GhosttyWindowSelectionSheet: View {
     }
 
     private func windowRemovalMessage(for request: GhosttyWindowRemovalRequest) -> String {
-        "This will close Window \(request.displayIndex) and \(request.paneCount) \(request.paneCount == 1 ? "pane" : "panes")."
+        "This will close \(topLevelNoun.singular) \(request.displayIndex) and \(request.paneCount) \(request.paneCount == 1 ? "pane" : "panes")."
     }
 }
 
@@ -219,6 +221,7 @@ struct GhosttyPaneSelectionSheet: View {
     @State private var pendingContextAction: GhosttyPaneRemovalRequest?
 
     let projection: GhosttyPaneSelectionSheetRenderProjection
+    let topLevelNoun: GhosttyTopLevelNoun
     let topologySize: CGSize
     let commandFailureMessage: String?
     let onSplitPane: (() -> Void)?
@@ -375,7 +378,8 @@ struct GhosttyPaneSelectionSheet: View {
 
     private func paneRemovalMessage(for request: GhosttyPaneRemovalRequest) -> String {
         if request.isOnlyPane {
-            return "This is the only pane in the window, so removing it can close the window too."
+            let noun = topLevelNoun.singular.lowercased()
+            return "This is the only pane in the \(noun), so removing it can close the \(noun) too."
         }
         return "This will close the pane."
     }
@@ -472,6 +476,7 @@ private struct GhosttyRenderedPreviewSurface: View {
 }
 
 private struct GhosttyWindowSelectionTile: View {
+    let topLevelNoun: GhosttyTopLevelNoun
     let displayIndex: Int
     let displayName: String
     let totalCount: Int
@@ -531,7 +536,7 @@ private struct GhosttyWindowSelectionTile: View {
 
     private var metadata: some View {
         HStack(spacing: 4) {
-            Text(displayName.isEmpty ? "Window \(displayIndex)" : displayName)
+            Text(displayName.isEmpty ? "\(topLevelNoun.singular) \(displayIndex)" : displayName)
                 .fontWeight(.semibold)
 
             Text("·")
@@ -546,7 +551,7 @@ private struct GhosttyWindowSelectionTile: View {
 
     private var accessibilityLabel: String {
         let paneText = "\(paneCount) \(paneCount == 1 ? "pane" : "panes")"
-        let positional = "Window \(displayIndex) of \(totalCount)"
+        let positional = "\(topLevelNoun.singular) \(displayIndex) of \(totalCount)"
         let named = displayName.isEmpty ? positional : "\(positional), \(displayName)"
         if isSelected {
             return "\(named), \(paneText), active"
@@ -698,9 +703,9 @@ private struct GhosttyPaneTopologyDiagram: View {
     private func directoryName(
         _ pane: GhosttyPaneSelectionSheetRenderProjection.Pane
     ) -> String {
-        guard !pane.tmuxCurrentPath.isEmpty else { return "—" }
-        let name = (pane.tmuxCurrentPath as NSString).lastPathComponent
-        return name.isEmpty ? pane.tmuxCurrentPath : name
+        guard !pane.currentPath.isEmpty else { return "—" }
+        let name = (pane.currentPath as NSString).lastPathComponent
+        return name.isEmpty ? pane.currentPath : name
     }
 
     private func paneLabel(
@@ -734,7 +739,7 @@ private struct GhosttyPaneTopologyDiagram: View {
     private func commandName(
         for pane: GhosttyPaneSelectionSheetRenderProjection.Pane
     ) -> String {
-        pane.tmuxCurrentCommand.isEmpty ? "—" : pane.tmuxCurrentCommand
+        pane.currentCommand.isEmpty ? "—" : pane.currentCommand
     }
 
     private func accessibilityLabel(

@@ -54,8 +54,8 @@ final class GhosttyTerminalDebugLatencyProbeController {
     func submitIfReady(
         readiness: TerminalReadinessSnapshot,
         sendInput: @MainActor (String) -> FocusedTerminalInputSubmissionResult,
-        split: @MainActor (ghostty_action_split_direction_e) -> GhosttyTmuxModelActionOutcome,
-        newWindow: @MainActor () -> GhosttyTmuxModelActionOutcome
+        split: @MainActor (ghostty_action_split_direction_e) -> GhosttyTerminalActionOutcome,
+        newWindow: @MainActor () -> GhosttyTerminalActionOutcome
     ) -> SubmissionResult? {
         guard var probe else { return nil }
         guard delaySatisfied else { return nil }

@@ -145,6 +145,7 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     let isCompact: Bool
     let isControlArmed: Bool
     let toolbarKeys: TerminalToolbarKeys
+    let topLevelNoun: GhosttyTopLevelNoun
     let selectedWindowIndex: Int?
     let windowCount: Int
     let paneCount: Int
@@ -386,8 +387,8 @@ struct GhosttyKeyboardChrome<ComposerContent: View>: View {
     }
 
     private var windowAccessibilityLabel: String {
-        guard windowCount > 0 else { return "Windows" }
-        return "Window \(displayIndex(selectedWindowIndex, count: windowCount)) of \(windowCount)"
+        guard windowCount > 0 else { return topLevelNoun.plural }
+        return "\(topLevelNoun.singular) \(displayIndex(selectedWindowIndex, count: windowCount)) of \(windowCount)"
     }
 
     private var windowBadge: String? {

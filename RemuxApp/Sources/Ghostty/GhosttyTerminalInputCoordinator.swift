@@ -295,7 +295,7 @@ struct GhosttyTopologyActionInputRefocusCoordinator: Equatable {
     }
 
     mutating func prepare(
-        actionEffect: GhosttyTmuxTopologyActionInteractionEffect,
+        actionEffect: GhosttyTopologyActionInteractionEffect,
         activeLeafID: UUID?,
         keyboardMode: GhosttyKeyboardChromeMode,
         keyboardOwner: GhosttyKeyboardOwner = .terminal
@@ -312,8 +312,8 @@ struct GhosttyTopologyActionInputRefocusCoordinator: Equatable {
     }
 
     mutating func complete(
-        actionEffect: GhosttyTmuxTopologyActionInteractionEffect,
-        outcome: GhosttyTmuxModelActionOutcome
+        actionEffect: GhosttyTopologyActionInteractionEffect,
+        outcome: GhosttyTerminalActionOutcome
     ) -> Effect? {
         guard outcome.isQueued else {
             guard actionEffect.requestsInputRefocus else { return nil }
@@ -345,13 +345,13 @@ struct GhosttyTopologyActionInputRefocusCoordinator: Equatable {
 
     @discardableResult
     mutating func perform(
-        actionEffect: GhosttyTmuxTopologyActionInteractionEffect,
+        actionEffect: GhosttyTopologyActionInteractionEffect,
         activeLeafID: UUID?,
         keyboardMode: GhosttyKeyboardChromeMode,
         keyboardOwner: GhosttyKeyboardOwner = .terminal,
         apply: (Effect) -> EffectApplicationFeedback,
-        action: () -> GhosttyTmuxModelActionOutcome
-    ) -> GhosttyTmuxModelActionOutcome {
+        action: () -> GhosttyTerminalActionOutcome
+    ) -> GhosttyTerminalActionOutcome {
         if let effect = prepare(
             actionEffect: actionEffect,
             activeLeafID: activeLeafID,
