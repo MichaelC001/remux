@@ -72,6 +72,7 @@ final class TmuxTerminalSession: ObservableObject {
         transport: any TmuxControlTransport,
         baseSurfaceConfig: @escaping () -> ghostty_terminal_surface_config_s,
         paneViewTheme: @escaping () -> TerminalTheme,
+        zoomOwner: TmuxZoomOwner? = nil,
         createPaneSurface: @escaping PaneSurfaceCreator = TmuxPaneSurface.create
     ) {
         self.app = app
@@ -104,7 +105,7 @@ final class TmuxTerminalSession: ObservableObject {
             onRequestFailed: { request in
                 MainActor.assumeIsolated { relay.target?.handleRequestFailed(request) }
             }
-        ))
+        ), zoomOwner: zoomOwner)
         self.controller = controller
         self.link = TmuxSessionLink(controller: controller, transport: transport)
         relay.target = self

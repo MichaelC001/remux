@@ -498,6 +498,111 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         )
     }
 
+    func testOwnedZoomMarksEachWindowItZooms() async throws {
+        let owner = Self.zoomOwner
+        let harness = try await readyController(
+            listWindowsBody: Self.twoUnzoomedWindows,
+            expectedPaneCount: 4,
+            zoomOwner: owner
+        )
+
+        harness.controller.requestSetWindowsZoomed(windowIDs: [0, 1], zoomed: true)
+        await drain(harness.controller)
+
+        XCTAssertEqual(
+            harness.recorder.takeStrings(),
+            [
+                "resize-pane -Z -t %0 ; \(owner.markIfZoomedCommand(windowID: 0)) ; "
+                    + "resize-pane -Z -t %2 ; \(owner.markIfZoomedCommand(windowID: 1))\n",
+            ]
+        )
+    }
+
+    func testReleaseUnzoomsOwnedWindowsAndClearsOnlyThisOwnersMarks() async throws {
+        let owner = Self.zoomOwner
+        let harness = try await readyController(
+            listWindowsBody: Self.twoZoomedWindows,
+            expectedPaneCount: 4,
+            zoomOwner: owner
+        )
+
+        harness.controller.requestReleaseZoom(windowIDs: [0, 1])
+        await drain(harness.controller)
+
+        XCTAssertEqual(
+            harness.recorder.takeStrings(),
+            [
+                "resize-pane -Z -t @0 ; \(owner.clearMarkCommand(windowID: 0)) ; "
+                    + "resize-pane -Z -t @1 ; \(owner.clearMarkCommand(windowID: 1))\n",
+            ]
+        )
+    }
+
+    func testReleaseOfAnUnzoomedWindowOnlyClearsTheMark() async throws {
+        let owner = Self.zoomOwner
+        let harness = try await readyController(
+            listWindowsBody: Self.twoPaneUnzoomedWindow,
+            expectedPaneCount: 2,
+            zoomOwner: owner
+        )
+
+        harness.controller.requestReleaseZoom(windowIDs: [1])
+        await drain(harness.controller)
+
+        XCTAssertEqual(
+            harness.recorder.takeStrings(),
+            ["\(owner.clearMarkCommand(windowID: 1))\n"]
+        )
+    }
+
+    func testZoomMarksQueryReportsWhichZoomsAreThisOwners() async throws {
+        let owner = Self.zoomOwner
+        let harness = try await readyController(
+            listWindowsBody: Self.twoZoomedWindows,
+            expectedPaneCount: 4,
+            zoomOwner: owner
+        )
+        var nextCommandNumber = harness.nextCommandNumber
+        let received = expectation(description: "zoom marks")
+        let marks = MarksBox()
+
+        harness.controller.requestZoomMarks { result in
+            marks.value = result
+            received.fulfill()
+        }
+        await drain(harness.controller)
+        XCTAssertEqual(harness.recorder.takeStrings(), ["\(TmuxZoomOwner.marksQuery)\n"])
+
+        harness.controller.pump(Data(responseBlock(
+            commandNumber: &nextCommandNumber,
+            body: "@0 1 \(owner.id)\n@1 1 another-phone\n@2 0 \n"
+        ).utf8))
+        await fulfillment(of: [received], timeout: 1)
+
+        XCTAssertEqual(marks.value, [
+            TmuxZoomMark(windowID: 0, zoomed: true, isOwn: true),
+            TmuxZoomMark(windowID: 1, zoomed: true, isOwn: false),
+            TmuxZoomMark(windowID: 2, zoomed: false, isOwn: false),
+        ])
+    }
+
+    func testForgettingZoomMarksLeavesTheZoomAlone() async throws {
+        let owner = Self.zoomOwner
+        let harness = try await readyController(
+            listWindowsBody: Self.twoZoomedWindows,
+            expectedPaneCount: 4,
+            zoomOwner: owner
+        )
+
+        harness.controller.requestForgetZoomMarks(windowIDs: [1])
+        await drain(harness.controller)
+
+        XCTAssertEqual(
+            harness.recorder.takeStrings(),
+            ["\(owner.clearMarkCommand(windowID: 1))\n"]
+        )
+    }
+
     func testGlobalDefaultSendsNothingWhenEveryWindowAlreadyMatches() async throws {
         let harness = try await readyController(
             listWindowsBody: Self.twoZoomedWindows,
@@ -942,6 +1047,34 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         await fulfillment(of: [zoomCreated], timeout: 1)
     }
 
+    func testOwnedSplitThatCreatesTheZoomMarksItsWindow() async throws {
+        let owner = Self.zoomOwner
+        let harness = try await readyController(
+            listWindowsBody: Self.onePaneWindow,
+            expectedPaneCount: 1,
+            zoomOwner: owner
+        )
+        var nextCommandNumber = harness.nextCommandNumber
+        let zoomCreated = expectation(description: "zooming split accepted")
+
+        harness.controller.requestSplit(
+            paneID: 0,
+            direction: .right,
+            zoom: true,
+            onZoomCreated: { zoomCreated.fulfill() }
+        )
+        await drain(harness.controller)
+        XCTAssertEqual(
+            harness.recorder.takeStrings(),
+            ["split-window -h -Z -t %0 ; \(owner.markIfZoomedCommand(windowID: 0))\n"]
+        )
+
+        harness.controller.pump(Data(responseBlock(
+            commandNumber: &nextCommandNumber
+        ).utf8))
+        await fulfillment(of: [zoomCreated], timeout: 1)
+    }
+
     func testZoomedInactivePaneCloseBatchesDeleteAndRezoom() async throws {
         let harness = try await readyController(
             listWindowsBody: Self.threePaneZoomedWindow,
@@ -1225,12 +1358,14 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
     private func readyController(
         listWindowsBody: String,
         expectedPaneCount: Int,
-        callbacks: TmuxSessionController.Callbacks = .init()
+        callbacks: TmuxSessionController.Callbacks = .init(),
+        zoomOwner: TmuxZoomOwner? = nil
     ) async throws -> ReadyControllerHarness {
         let harness = try await hydratingController(
             listWindowsBody: listWindowsBody,
             expectedPaneCount: expectedPaneCount,
-            callbacks: callbacks
+            callbacks: callbacks,
+            zoomOwner: zoomOwner
         )
         let hydrationEnd = harness.firstHydrationCommandNumber + harness.hydrationCommandCount
         let hydration = (harness.firstHydrationCommandNumber..<hydrationEnd)
@@ -1251,11 +1386,12 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
     private func hydratingController(
         listWindowsBody: String,
         expectedPaneCount: Int,
-        callbacks: TmuxSessionController.Callbacks = .init()
+        callbacks: TmuxSessionController.Callbacks = .init(),
+        zoomOwner: TmuxZoomOwner? = nil
     ) async throws -> HydratingControllerHarness {
         let runtime = try GhosttyKitRuntime()
         let recorder = ControllerOutboundRecorder()
-        let controller = TmuxSessionController(callbacks: callbacks)
+        let controller = TmuxSessionController(callbacks: callbacks, zoomOwner: zoomOwner)
         addTeardownBlock {
             await withCheckedContinuation { continuation in
                 controller.shutdown { continuation.resume() }
@@ -1455,6 +1591,10 @@ final class TmuxSessionControllerClientSizeTests: XCTestCase {
         name: "window-1"
     )
 
+    private static let zoomOwner = TmuxZoomOwner(
+        serverID: UUID(uuidString: "0D9F2A6C-5E1B-4C07-9A3D-8B6E2F4C1A75")!
+    )
+
     private static let onePaneWindow = windowRecord(
         id: 0,
         active: true,
@@ -1559,4 +1699,8 @@ private final class ControllerTopologyRecorder: @unchecked Sendable {
     var latest: TmuxSessionController.TopologySnapshot? {
         lock.withLock { snapshots.last }
     }
+}
+
+private final class MarksBox: @unchecked Sendable {
+    var value: [TmuxZoomMark] = []
 }
