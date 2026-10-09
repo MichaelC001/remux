@@ -428,6 +428,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                             isCompact: chrome.isCompact,
                             isControlArmed: terminalInputController.isControlArmed,
                             toolbarKeys: presentation.toolbarKeys,
+                            topLevelNoun: model.topLevelNoun,
                             selectedWindowIndex: interactionProjection.selectedWindowIndex,
                             windowCount: interactionProjection.windowCount,
                             paneCount: interactionProjection.paneCount,
@@ -2144,6 +2145,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
             GhosttyWindowSelectionSheet(
                 session: session,
                 projection: model.windowSelectionSheetRenderProjection(),
+                topLevelNoun: model.topLevelNoun,
                 sessionName: presentation.sessionName,
                 layout: windowLayout,
                 contentHeight: contentHeight,
@@ -2156,6 +2158,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         case .panes(let topLevelID):
             GhosttyPaneSelectionSheet(
                 projection: model.paneSelectionSheetRenderProjection(topLevelID: topLevelID),
+                topLevelNoun: model.topLevelNoun,
                 topologySize: paneTopologySize,
                 commandFailureMessage: selectionSheetCommandFailureMessage,
                 onSplitPane: {

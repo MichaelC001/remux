@@ -174,8 +174,19 @@ protocol GhosttyTerminalActionModeling: ObservableObject {
     ) -> GhosttyTopologyActionInteractionEffect
 }
 
+/// What a backend calls its top-level groups of panes, as the screen shows it:
+/// a tmux window, a Herdr tab.
+struct GhosttyTopLevelNoun: Equatable, Sendable {
+    let singular: String
+    let plural: String
+
+    static let window = GhosttyTopLevelNoun(singular: "Window", plural: "Windows")
+}
+
 @MainActor
 protocol GhosttyTerminalSelectionModeling: ObservableObject {
+    var topLevelNoun: GhosttyTopLevelNoun { get }
+
     func makePanePreviewSession(
         leafIDs: [UUID],
         pixelBudget: GhosttyPanePreviewSession.PixelBudget

@@ -1043,6 +1043,8 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
         )
     }
 
+    var topLevelNoun: GhosttyTopLevelNoun { .window }
+
     func windowSelectionSheetRenderProjection() -> GhosttyWindowSelectionSheetRenderProjection {
         let projection = GhosttyTerminalPresentationProjector.windowSelectionSheetRenderProjection(
             snapshot: topologySnapshot
