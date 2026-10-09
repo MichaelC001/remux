@@ -698,9 +698,9 @@ private struct GhosttyPaneTopologyDiagram: View {
     private func directoryName(
         _ pane: GhosttyPaneSelectionSheetRenderProjection.Pane
     ) -> String {
-        guard !pane.tmuxCurrentPath.isEmpty else { return "—" }
-        let name = (pane.tmuxCurrentPath as NSString).lastPathComponent
-        return name.isEmpty ? pane.tmuxCurrentPath : name
+        guard !pane.currentPath.isEmpty else { return "—" }
+        let name = (pane.currentPath as NSString).lastPathComponent
+        return name.isEmpty ? pane.currentPath : name
     }
 
     private func paneLabel(
@@ -734,7 +734,7 @@ private struct GhosttyPaneTopologyDiagram: View {
     private func commandName(
         for pane: GhosttyPaneSelectionSheetRenderProjection.Pane
     ) -> String {
-        pane.tmuxCurrentCommand.isEmpty ? "—" : pane.tmuxCurrentCommand
+        pane.currentCommand.isEmpty ? "—" : pane.currentCommand
     }
 
     private func accessibilityLabel(

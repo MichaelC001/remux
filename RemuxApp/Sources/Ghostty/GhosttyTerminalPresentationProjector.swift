@@ -408,8 +408,8 @@ struct GhosttyTerminalViewportPresentationProjection: Equatable {
         let normalFrame: GhosttyTerminalGridRect
         let visibleFrame: GhosttyTerminalGridRect?
         let isFocused: Bool
-        let tmuxCurrentCommand: String
-        let tmuxCurrentPath: String
+        let currentCommand: String
+        let currentPath: String
     }
 
     static let empty = GhosttyTerminalViewportPresentationProjection(
@@ -433,7 +433,7 @@ struct GhosttyTerminalViewportPresentationProjection: Equatable {
     }
 }
 
-enum GhosttyTmuxTopologyActionInteractionEffect: Equatable, Sendable {
+enum GhosttyTopologyActionInteractionEffect: Equatable, Sendable {
     case none
     case refocusOnly
     case refocusAndDismissOnQueued
@@ -485,8 +485,8 @@ struct GhosttyPaneSelectionSheetRenderProjection: Equatable, Sendable {
     struct Pane: Identifiable, Equatable, Sendable {
         let id: UUID
         let frame: GhosttyTerminalGridRect?
-        let tmuxCurrentCommand: String
-        let tmuxCurrentPath: String
+        let currentCommand: String
+        let currentPath: String
     }
 
     let panes: [Pane]
@@ -592,18 +592,18 @@ enum GhosttyTerminalPresentationProjector {
         )
     }
 
-    static func createTmuxWindowInteractionEffect() -> GhosttyTmuxTopologyActionInteractionEffect {
+    static func createTopLevelInteractionEffect() -> GhosttyTopologyActionInteractionEffect {
         .refocusAndDismissOnQueued
     }
 
-    static func splitFocusedTmuxPaneInteractionEffect() -> GhosttyTmuxTopologyActionInteractionEffect {
+    static func splitFocusedPaneInteractionEffect() -> GhosttyTopologyActionInteractionEffect {
         .refocusAndDismissOnQueued
     }
 
-    static func closeTmuxWindowInteractionEffect(
+    static func closeTopLevelInteractionEffect(
         _ id: UUID,
         snapshot: GhosttyRuntimeSurfaceTopologySnapshot
-    ) -> GhosttyTmuxTopologyActionInteractionEffect {
+    ) -> GhosttyTopologyActionInteractionEffect {
         guard snapshot.topLevels.contains(where: { $0.id == id }) else {
             return .none
         }
@@ -611,11 +611,11 @@ enum GhosttyTerminalPresentationProjector {
         return snapshot.topLevels.count <= 1 ? .refocusAndDismissOnQueued : .none
     }
 
-    static func closeTmuxPaneInteractionEffect(
+    static func closePaneInteractionEffect(
         _ id: UUID,
         inTopLevel topLevelID: UUID,
         snapshot: GhosttyRuntimeSurfaceTopologySnapshot
-    ) -> GhosttyTmuxTopologyActionInteractionEffect {
+    ) -> GhosttyTopologyActionInteractionEffect {
         guard
             let topLevel = snapshot.topLevels.first(where: { $0.id == topLevelID }),
             topLevel.leafIDs.contains(id)
@@ -735,8 +735,8 @@ enum GhosttyTerminalPresentationProjector {
             GhosttyPaneSelectionSheetRenderProjection.Pane(
                 id: paneID,
                 frame: viewportPanesByID[paneID]?.normalFrame,
-                tmuxCurrentCommand: viewportPanesByID[paneID]?.tmuxCurrentCommand ?? "",
-                tmuxCurrentPath: viewportPanesByID[paneID]?.tmuxCurrentPath ?? ""
+                currentCommand: viewportPanesByID[paneID]?.currentCommand ?? "",
+                currentPath: viewportPanesByID[paneID]?.currentPath ?? ""
             )
         }
 

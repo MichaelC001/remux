@@ -419,8 +419,8 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
             ],
             "the picker must keep canonical unzoomed geometry while the viewport is zoomed"
         )
-        XCTAssertEqual(panePicker.panes.map(\.tmuxCurrentCommand), ["nvim", "node"])
-        XCTAssertEqual(panePicker.panes.map(\.tmuxCurrentPath), ["/work/editor", "/work/server"])
+        XCTAssertEqual(panePicker.panes.map(\.currentCommand), ["nvim", "node"])
+        XCTAssertEqual(panePicker.panes.map(\.currentPath), ["/work/editor", "/work/server"])
 
         await session.shutdown()
     }
@@ -574,7 +574,7 @@ final class TmuxTerminalScreenAdapterTests: XCTestCase {
 
         let secondSurfaceID = try XCTUnwrap(adapter.terminalScreenPresentationProjection.viewport.panes
             .first(where: { adapter.tmuxPaneID(for: $0.id) == 1 })?.id)
-        _ = adapter.focusTmuxPane(secondSurfaceID)
+        _ = adapter.focusPane(secondSurfaceID)
         let pending = adapter.terminalScreenPresentationProjection
         XCTAssertEqual(pending.readiness.selectedActiveLeafID, secondSurfaceID)
         XCTAssertEqual(pending.readiness.selectedPanePresentation, .pending)

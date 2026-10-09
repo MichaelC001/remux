@@ -9,7 +9,7 @@ import GhosttyKit
 /// The tmux session stack implements it (`TmuxTerminalScreenAdapter`). The
 /// screen owns presentation behavior only; everything engine-specific flows
 /// through this boundary.
-enum GhosttyTmuxModelActionOutcome: Equatable, Sendable {
+enum GhosttyTerminalActionOutcome: Equatable, Sendable {
     case queued
     case missingTarget(GhosttyTmuxActionMissingTarget)
 
@@ -27,7 +27,7 @@ enum GhosttyTmuxModelActionOutcome: Equatable, Sendable {
     }
 }
 
-struct GhosttyTmuxCommandFailureEvent: Equatable {
+struct GhosttyTerminalCommandFailureEvent: Equatable {
     let token: UInt64
     let message: String
 }
@@ -44,7 +44,7 @@ protocol GhosttyTerminalRenderingModeling: ObservableObject {
     var terminalScreenPresentationProjection: GhosttyTerminalScreenPresentationProjection { get }
     var terminalInteractionProjection: GhosttyTerminalInteractionProjection { get }
     var terminalManagedSurfaceLookup: GhosttyManagedSurfaceLookup { get }
-    var commandFailureEvent: GhosttyTmuxCommandFailureEvent? { get }
+    var commandFailureEvent: GhosttyTerminalCommandFailureEvent? { get }
     var stateTraceLabel: String { get }
 
     func prepareInitialViewport(
@@ -123,59 +123,59 @@ protocol GhosttyTerminalInputModeling: ObservableObject {
 }
 
 @MainActor
-protocol GhosttyTmuxActionModeling: ObservableObject {
+protocol GhosttyTerminalActionModeling: ObservableObject {
     // MARK: tmux topology actions
 
     func reclaimActiveTmuxViewport()
 
     func claimActiveTmuxViewportIfNeeded()
 
-    func refreshTmuxPaneMetadata(inTopLevel id: UUID)
+    func refreshPaneMetadata(inTopLevel id: UUID)
 
     @discardableResult
-    func focusTmuxPane(_ id: UUID) -> GhosttyTmuxModelActionOutcome
+    func focusPane(_ id: UUID) -> GhosttyTerminalActionOutcome
 
     @discardableResult
-    func focusTmuxTopLevel(_ id: UUID) -> GhosttyTmuxModelActionOutcome
+    func focusTopLevel(_ id: UUID) -> GhosttyTerminalActionOutcome
 
     @discardableResult
-    func focusAdjacentTmuxTopLevel(
+    func focusAdjacentTopLevel(
         _ direction: GhosttyRuntimeSelectionDirection
-    ) -> GhosttyTmuxModelActionOutcome
+    ) -> GhosttyTerminalActionOutcome
 
     @discardableResult
-    func createTmuxWindow() -> GhosttyTmuxModelActionOutcome
+    func createTopLevel() -> GhosttyTerminalActionOutcome
 
     @discardableResult
-    func splitFocusedTmuxPane(
+    func splitFocusedPane(
         _ direction: ghostty_action_split_direction_e
-    ) -> GhosttyTmuxModelActionOutcome
+    ) -> GhosttyTerminalActionOutcome
 
     @discardableResult
-    func setFocusedTmuxPaneZoomed(_ zoomed: Bool) -> GhosttyTmuxModelActionOutcome
+    func setFocusedPaneZoomed(_ zoomed: Bool) -> GhosttyTerminalActionOutcome
 
     @discardableResult
-    func closeTmuxPane(_ id: UUID) -> GhosttyTmuxModelActionOutcome
+    func closePane(_ id: UUID) -> GhosttyTerminalActionOutcome
 
     @discardableResult
-    func closeTmuxWindow(_ id: UUID) -> GhosttyTmuxModelActionOutcome
+    func closeTopLevel(_ id: UUID) -> GhosttyTerminalActionOutcome
 
     @discardableResult
-    func enterFocusedTmuxCopyMode() -> GhosttyTmuxModelActionOutcome
+    func enterFocusedTmuxCopyMode() -> GhosttyTerminalActionOutcome
 
     // MARK: Topology action interaction effects
 
-    func createTmuxWindowInteractionEffect() -> GhosttyTmuxTopologyActionInteractionEffect
-    func splitFocusedTmuxPaneInteractionEffect() -> GhosttyTmuxTopologyActionInteractionEffect
-    func closeTmuxWindowInteractionEffect(_ id: UUID) -> GhosttyTmuxTopologyActionInteractionEffect
-    func closeTmuxPaneInteractionEffect(
+    func createTopLevelInteractionEffect() -> GhosttyTopologyActionInteractionEffect
+    func splitFocusedPaneInteractionEffect() -> GhosttyTopologyActionInteractionEffect
+    func closeTopLevelInteractionEffect(_ id: UUID) -> GhosttyTopologyActionInteractionEffect
+    func closePaneInteractionEffect(
         _ id: UUID,
         inTopLevel topLevelID: UUID
-    ) -> GhosttyTmuxTopologyActionInteractionEffect
+    ) -> GhosttyTopologyActionInteractionEffect
 }
 
 @MainActor
-protocol GhosttyTmuxSelectionModeling: ObservableObject {
+protocol GhosttyTerminalSelectionModeling: ObservableObject {
     func makePanePreviewSession(
         leafIDs: [UUID],
         pixelBudget: GhosttyPanePreviewSession.PixelBudget
@@ -199,6 +199,6 @@ protocol GhosttyTmuxSelectionModeling: ObservableObject {
 protocol GhosttyTerminalScreenModeling:
     GhosttyTerminalRenderingModeling,
     GhosttyTerminalInputModeling,
-    GhosttyTmuxActionModeling,
-    GhosttyTmuxSelectionModeling
+    GhosttyTerminalActionModeling,
+    GhosttyTerminalSelectionModeling
 {}

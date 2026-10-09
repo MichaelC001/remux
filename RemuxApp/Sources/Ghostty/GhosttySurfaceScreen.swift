@@ -640,7 +640,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 }
             }
             .onChange(of: model.commandFailureEvent) { _, event in
-                handleTmuxCommandFailureEvent(event)
+                handleCommandFailureEvent(event)
             }
 #if DEBUG
             .task {
@@ -788,7 +788,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 "workspaceID": presentation.workspaceID.uuidString,
             ]
         )
-        guard model.focusTmuxPane(surfaceID).isHandled else {
+        guard model.focusPane(surfaceID).isHandled else {
             GhosttyRuntimeTrace.flowEndIfActive(
                 "terminal.input",
                 event: "ui.tap.surface.rejected",
@@ -816,7 +816,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     private func handleWindowSwipe(_ direction: GhosttyRuntimeSelectionDirection) {
         let traceStartedAt = GhosttyRuntimeTrace.flowTraceEnabled ? GhosttyRuntimeTrace.nowNanos() : nil
-        let didFocus = model.focusAdjacentTmuxTopLevel(direction).isHandled
+        let didFocus = model.focusAdjacentTopLevel(direction).isHandled
         if let traceStartedAt {
             GhosttyRuntimeTrace.flowEventIfActive(
                 "tmux.windowSwipe",
@@ -1166,9 +1166,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
 
     @discardableResult
     private func performTopologyActionInteraction(
-        _ actionEffect: GhosttyTmuxTopologyActionInteractionEffect,
-        action: () -> GhosttyTmuxModelActionOutcome
-    ) -> GhosttyTmuxModelActionOutcome {
+        _ actionEffect: GhosttyTopologyActionInteractionEffect,
+        action: () -> GhosttyTerminalActionOutcome
+    ) -> GhosttyTerminalActionOutcome {
         topologyActionInputRefocusCoordinator.perform(
             actionEffect: actionEffect,
             activeLeafID: model.terminalInteractionProjection.selectedActiveLeafID,
@@ -1205,7 +1205,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         )
     }
 
-    private func handleTmuxCommandFailureEvent(_ event: GhosttyTmuxCommandFailureEvent?) {
+    private func handleCommandFailureEvent(_ event: GhosttyTerminalCommandFailureEvent?) {
         guard let event else { return }
         guard let effect = topologyActionInputRefocusCoordinator.cancelForCommandFailure() else { return }
 
@@ -1481,7 +1481,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         applySelectionSheetPresentation(
             .panes(topLevelID: projection.topLevelID)
         )
-        model.refreshTmuxPaneMetadata(inTopLevel: projection.topLevelID)
+        model.refreshPaneMetadata(inTopLevel: projection.topLevelID)
     }
 
     private func updateSelectionSheetViewportHold(
@@ -2029,7 +2029,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         return fields
     }
 
-    private func createTmuxWindowFromSelectionSheet() {
+    private func createTopLevelFromSelectionSheet() {
         GhosttyRuntimeTrace.flowBegin(
             "tmux.newWindow",
             event: "ui.tap.newWindow",
@@ -2038,26 +2038,26 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 "workspaceID": presentation.workspaceID.uuidString,
             ]
         )
-        let effect = model.createTmuxWindowInteractionEffect()
+        let effect = model.createTopLevelInteractionEffect()
         performTopologyActionInteraction(effect) {
-            model.createTmuxWindow()
+            model.createTopLevel()
         }
     }
 
-    private func selectTmuxWindowFromSelectionSheet(_ id: UUID) {
-        guard model.focusTmuxTopLevel(id).isHandled else { return }
+    private func selectTopLevelFromSelectionSheet(_ id: UUID) {
+        guard model.focusTopLevel(id).isHandled else { return }
         dismissSelectionSheet()
         refocusSystemKeyboardIfActive()
     }
 
-    private func closeTmuxWindowFromSelectionSheet(_ id: UUID) {
-        let effect = model.closeTmuxWindowInteractionEffect(id)
+    private func closeTopLevelFromSelectionSheet(_ id: UUID) {
+        let effect = model.closeTopLevelInteractionEffect(id)
         performTopologyActionInteraction(effect) {
-            model.closeTmuxWindow(id)
+            model.closeTopLevel(id)
         }
     }
 
-    private func splitFocusedTmuxPaneFromSelectionSheet(
+    private func splitFocusedPaneFromSelectionSheet(
         topLevelID: UUID,
         direction: ghostty_action_split_direction_e,
         event: String
@@ -2070,13 +2070,13 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 "workspaceID": presentation.workspaceID.uuidString,
             ]
         )
-        let effect = model.splitFocusedTmuxPaneInteractionEffect()
+        let effect = model.splitFocusedPaneInteractionEffect()
         performTopologyActionInteraction(effect) {
-            model.splitFocusedTmuxPane(direction)
+            model.splitFocusedPane(direction)
         }
     }
 
-    private func selectTmuxPaneFromSelectionSheet(_ id: UUID) {
+    private func selectPaneFromSelectionSheet(_ id: UUID) {
         GhosttyRuntimeTrace.flowBegin(
             GhosttyRuntimeTrace.paneSwitchFlow,
             event: "ui.tap.pane",
@@ -2086,7 +2086,7 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 "workspace_id": presentation.workspaceID.uuidString,
             ]
         )
-        guard model.focusTmuxPane(id).isHandled else {
+        guard model.focusPane(id).isHandled else {
             GhosttyRuntimeTrace.flowEndIfActive(
                 GhosttyRuntimeTrace.paneSwitchFlow,
                 event: "ui.select.rejected",
@@ -2103,15 +2103,15 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
         refocusSystemKeyboardIfActive()
     }
 
-    private func closeTmuxPaneFromSelectionSheet(_ id: UUID, topLevelID: UUID) {
-        let effect = model.closeTmuxPaneInteractionEffect(id, inTopLevel: topLevelID)
+    private func closePaneFromSelectionSheet(_ id: UUID, topLevelID: UUID) {
+        let effect = model.closePaneInteractionEffect(id, inTopLevel: topLevelID)
         performTopologyActionInteraction(effect) {
-            model.closeTmuxPane(id)
+            model.closePane(id)
         }
     }
 
-    private func setFocusedTmuxPaneZoomedFromSelectionSheet(_ zoomed: Bool) {
-        _ = model.setFocusedTmuxPaneZoomed(zoomed)
+    private func setFocusedPaneZoomedFromSelectionSheet(_ zoomed: Bool) {
+        _ = model.setFocusedPaneZoomed(zoomed)
     }
 
     private func selectionSheetContentHeight(
@@ -2148,9 +2148,9 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 layout: windowLayout,
                 contentHeight: contentHeight,
                 commandFailureMessage: selectionSheetCommandFailureMessage,
-                onCreateWindow: createTmuxWindowFromSelectionSheet,
-                onSelect: selectTmuxWindowFromSelectionSheet,
-                onRemoveWindow: closeTmuxWindowFromSelectionSheet
+                onCreateWindow: createTopLevelFromSelectionSheet,
+                onSelect: selectTopLevelFromSelectionSheet,
+                onRemoveWindow: closeTopLevelFromSelectionSheet
             )
 
         case .panes(let topLevelID):
@@ -2159,23 +2159,23 @@ struct GhosttySurfaceScreen<Model: GhosttyTerminalScreenModeling>: View {
                 topologySize: paneTopologySize,
                 commandFailureMessage: selectionSheetCommandFailureMessage,
                 onSplitPane: {
-                    splitFocusedTmuxPaneFromSelectionSheet(
+                    splitFocusedPaneFromSelectionSheet(
                         topLevelID: topLevelID,
                         direction: GHOSTTY_SPLIT_DIRECTION_RIGHT,
                         event: "ui.tap.splitPane"
                     )
                 },
                 onStackPane: {
-                    splitFocusedTmuxPaneFromSelectionSheet(
+                    splitFocusedPaneFromSelectionSheet(
                         topLevelID: topLevelID,
                         direction: GHOSTTY_SPLIT_DIRECTION_DOWN,
                         event: "ui.tap.stackPane"
                     )
                 },
-                onSetZoomed: setFocusedTmuxPaneZoomedFromSelectionSheet,
-                onSelect: selectTmuxPaneFromSelectionSheet,
+                onSetZoomed: setFocusedPaneZoomedFromSelectionSheet,
+                onSelect: selectPaneFromSelectionSheet,
                 onRemovePane: { id in
-                    closeTmuxPaneFromSelectionSheet(id, topLevelID: topLevelID)
+                    closePaneFromSelectionSheet(id, topLevelID: topLevelID)
                 }
             )
         }
