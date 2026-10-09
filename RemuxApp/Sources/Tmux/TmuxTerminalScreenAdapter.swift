@@ -720,7 +720,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
 
     func focusTopLevel(_ id: UUID) -> GhosttyTerminalActionOutcome {
         guard let windowID = identities.windowID(for: id), let controller else {
-            return .missingTarget(.window(id))
+            return .missingTarget(.topLevel(id))
         }
         pendingFocusedPaneID = nil
         if let topology = latestTopology,
@@ -742,7 +742,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
             let activeWindowID = topology.activeWindowID,
             let activeIndex = topology.windows.firstIndex(where: { $0.id == activeWindowID })
         else {
-            return .missingTarget(.adjacentWindow)
+            return .missingTarget(.adjacentTopLevel)
         }
 
         let targetIndex = direction.advancedIndex(
@@ -750,7 +750,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
             count: topology.windows.count
         )
         guard targetIndex != activeIndex else {
-            return .missingTarget(.adjacentWindow)
+            return .missingTarget(.adjacentTopLevel)
         }
         let targetWindow = topology.windows[targetIndex]
         requestWindowSelection(targetWindow, in: topology, controller: controller)
@@ -970,7 +970,7 @@ extension TmuxTerminalScreenAdapter: GhosttyTerminalScreenModeling {
 
     func closeTopLevel(_ id: UUID) -> GhosttyTerminalActionOutcome {
         guard let windowID = identities.windowID(for: id), let controller else {
-            return .missingTarget(.window(id))
+            return .missingTarget(.topLevel(id))
         }
         controller.requestCloseWindow(windowID: windowID)
         return .queued

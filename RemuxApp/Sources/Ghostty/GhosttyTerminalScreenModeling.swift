@@ -11,7 +11,7 @@ import GhosttyKit
 /// through this boundary.
 enum GhosttyTerminalActionOutcome: Equatable, Sendable {
     case queued
-    case missingTarget(GhosttyTmuxActionMissingTarget)
+    case missingTarget(GhosttyTerminalActionMissingTarget)
 
     var isHandled: Bool {
         switch self {
