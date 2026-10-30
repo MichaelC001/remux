@@ -215,11 +215,14 @@ final class HerdrTerminalScreenAdapter: ObservableObject {
             popup: model.popup.popup.map { popup in
                 let displayed = model.popup.surface?.terminalID == popup.terminalID ? model.popup.displayed : nil
                 let colors = model.terminalColors
+                let columns = model.measurement?.controlViewport.columns ?? layout.columns
+                let rows = model.measurement?.controlViewport.rows ?? layout.rows
                 return GhosttyTerminalViewportPresentationProjection.Popup(
                     id: surfaceID(forPopup: popup.terminalID),
                     title: popup.title,
                     tabLabel: layout.tab.map { model.tabName(ofTab: $0.tabID) ?? $0.label },
-                    border: Self.popupBorder(columns: layout.columns, rows: layout.rows, accent: model.popupAccent, colors: colors),
+                    viewportGrid: GhosttyTerminalGridSize(columns: UInt32(columns), rows: UInt32(rows)),
+                    border: Self.popupBorder(columns: columns, rows: rows, accent: model.popupAccent, colors: colors),
                     titleInk: Self.ink(model.popupAccent, colors: colors, minimumContrast: GhosttyTerminalColors.MinimumContrast.text),
                     tabInk: colors.map { Self.ink($0.secondaryText) } ?? .separator,
                     grid: displayed.map { GhosttyTerminalGridSize(columns: UInt32($0.grid.columns), rows: UInt32($0.grid.rows)) },
