@@ -307,6 +307,9 @@ final class HerdrScreenModel {
     private var appPhase = GhosttyAppLifecyclePhase.active
     private var lastViewport: (size: CGSize, scale: CGFloat)?
     private(set) var measurement: GhosttyTerminalViewportMeasurement?
+    /// The shell size requested from Herdr. A directly attached popup follows the physical viewport
+    /// independently while selected; a hidden session adopts the latest size for its next show.
+    private var geometry: HerdrSurfaceGeometry?
     /// When the screen first had a size, which a waiting bridge's hello deadline is held against.
     private var sizeKnownSince: ContinuousClock.Instant?
 
@@ -452,10 +455,13 @@ final class HerdrScreenModel {
         isSelected = selected
         // Where the session was asked to go applies to the show it was asked for.
         if !selected { pendingReveal = nil }
+        // Hide before presentation callbacks can reconcile the newly hidden session's size. The
+        // connection then suppresses that resize until its next show.
+        reconcileVisibility()
         reconcilePresentationActivity()
         closeReleasedSurfaces()
-        reconcileVisibility()
         reconcilePopupHold()
+        reconcileShellGeometry()
     }
 
     /// Goes to `place`, a pick from what the screen or a list shows of the session (`ask(_:bootID:)`).
@@ -702,8 +708,8 @@ final class HerdrScreenModel {
         }
     }
 
-    /// The screen's size. Herdr's client sends its size on every resize; a hidden session gets it with
-    /// the next show.
+    /// Measures the visible area for the popup and renderers. A selected independent popup keeps the
+    /// covered shell's requested geometry; a hidden session gets its latest size with the next show.
     func prepareViewport(size: CGSize, scale: CGFloat) {
         guard !stopped, let runtime else { return }
         lastViewport = (size, scale)
@@ -718,8 +724,7 @@ final class HerdrScreenModel {
         if measurement == nil { sizeKnownSince = .now }
         measurement = measured
         popup.setViewport(cell: measured.cellMetrics, columns: measured.controlViewport.columns, rows: measured.controlViewport.rows)
-        if let geometry { attempt?.ask(.resize(geometry)) }
-        resumeSizeWaiter()
+        reconcileShellGeometry()
         // The panes of a frame held off screen take a new cell size there, and the frame on screen keeps its
         // picture until they have drawn at it.
         for (paneID, surface) in pendingFrame == nil ? surfaces : stagedSurfaces {
@@ -1807,6 +1812,7 @@ final class HerdrScreenModel {
                 if let delivered { delivered.resume(returning: false) } else { inputFailed(attemptID) }
             }
         case .move(let destination, let fromAnotherTab, let ask):
+            reconcileShellGeometry(forNavigation: true)
             guard let geometry else { return moveTaken(ask, by: nil, on: attempt) }
             let request = await feed.start(
                 .moved(destination, fromAnotherTab: fromAnotherTab, columns: geometry.cols, rows: geometry.rows, zoom: zoomPolicy),
@@ -1863,14 +1869,20 @@ final class HerdrScreenModel {
         !stopped && self.attempt === attempt && !attempt.ended
     }
 
-    private var geometry: HerdrSurfaceGeometry? {
-        guard let measurement else { return nil }
-        return HerdrSurfaceGeometry(
+    private func reconcileShellGeometry(forNavigation: Bool = false) {
+        guard let measurement,
+              !isSelected || !popup.resizesIndependently || forNavigation
+        else { return }
+        let next = HerdrSurfaceGeometry(
             cellWidthPx: measurement.cellMetrics.pixelWidth,
             cellHeightPx: measurement.cellMetrics.pixelHeight,
             cols: measurement.controlViewport.columns,
             rows: measurement.controlViewport.rows
         )
+        guard next != geometry else { return }
+        geometry = next
+        attempt?.ask(.resize(next))
+        resumeSizeWaiter()
     }
 
     /// The screen's size once it has one, or nil when the attempt is over or `deadline` passed before
@@ -2084,13 +2096,18 @@ final class HerdrScreenModel {
     /// newest of a show and a hide, so each change is sent at once, even while the last is unanswered.
     /// A place or creation asked for goes right after the show, as part of it.
     private func reconcileVisibility() {
-        guard let attempt, isCurrent(attempt), attempt.isOpen, attempt.hasSnapshot, let geometry
+        guard let attempt, isCurrent(attempt), attempt.isOpen, attempt.hasSnapshot
         else { return }
         let wanted = isOnScreen
         guard wanted != attempt.wantsShown else { return }
+        let destination = wanted ? takePendingReveal() : nil
+        // An accepted navigation sizes the view it is about to show. An ordinary resume keeps a popup's
+        // covered shell size, including while its attachment is being opened again.
+        if wanted { reconcileShellGeometry(forNavigation: destination != nil) }
+        guard let geometry else { return }
         attempt.wantsShown = wanted
         attempt.visibilityPending = true
-        attempt.ask(wanted ? .show(geometry, to: takePendingReveal()) : .hide)
+        attempt.ask(wanted ? .show(geometry, to: destination) : .hide)
         // Input is offered only once a show completes, and closes as soon as a hide is asked.
         didChange()
     }
@@ -2621,6 +2638,9 @@ final class HerdrScreenModel {
     private func didChange() {
         guard !stopped else { return }
         reconcilePopupHold()
+        // Closing the popup or falling back to shell frames may need the latest size even though the
+        // physical viewport hasn't changed. Keep this independent of the attachment/renderer lifetime.
+        reconcileShellGeometry()
         // A reconnect reads as one until the session is ready again, shown or not.
         if isConnectionReady { isReconnecting = false }
         reconcileSwitchingCue()
